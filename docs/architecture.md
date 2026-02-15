@@ -284,7 +284,10 @@ System: Extract durable facts from this conversation worth remembering long-term
 [Recent N turns to extract from]
 ```
 
-Each extracted fact is stored via `engram.remember({ content, category, chat_id, thread_id })`.
+Each extracted fact is stored via `engram.remember({ content, category })`.
+
+If Engram scope fields are enabled (`ENGRAM_ENABLE_SCOPES=1`), Cortex also includes
+`chat_id` and `thread_id` for observability/filtering.
 
 **Step 2: Topic Summary Update**
 
@@ -658,30 +661,59 @@ Cortex exposes `GET /health` on port 7751:
 
 ### Service Registry Changes
 
-Wilson's `src/services.ts` needs a new entry:
+Wilson's `src/services.ts` needs a new `ServiceConfig` entry (same shape as Engram/Synapse):
 
 ```typescript
-cortex: {
+{
+  name: "cortex",
+  displayName: "Cortex",
   repo: "shetty4l/cortex",
   port: 7751,
   healthUrl: "http://localhost:7751/health",
-  installPath: "~/srv/cortex/",
-  cliPath: null,  // no CLI -- cortex is a daemon only
-  versionFile: "~/srv/cortex/latest/version.txt",
-  logPaths: { daemon: "~/srv/cortex/logs/daemon.log" }
+  installBase: "~/srv/cortex",
+  currentVersionFile: "~/srv/cortex/current-version",
+  cliPath: "~/.local/bin/cortex",
+  logFiles: {
+    daemon: "~/.config/cortex/cortex.log",
+    updater: "~/Library/Logs/wilson-updater.log"
+  }
 }
 ```
 
-Wilson's `deploy/wilson-update.sh` needs a Cortex update check alongside engram and synapse.
+Because Cortex ships a CLI, Wilson can manage it exactly like the other services (`restart`,
+`status`, and `logs` delegation).
+
+Wilson's `deploy/wilson-update.sh` needs a Cortex update check alongside Engram and Synapse
+(before Wilson self-update).
 
 ### Pre-requisite: Engram Upsert
 
 Before slice 6 (topic summaries), Engram needs upsert support:
 
 - Modify `POST /remember` to accept `{ upsert: true, idempotency_key: "..." }`
-- If a memory with that idempotency_key exists in the same scope, **update its content** instead of rejecting as a duplicate
-- Small change: ~20 lines in Engram's remember handler + a test
+- Upsert key matching follows Engram's existing idempotency scope semantics
+  (`idempotency_key` + operation + scope key)
+- If a memory with the same idempotency key exists in the same scope, **update** that memory's
+  `content`/`category`/`metadata` instead of creating a new row or returning a duplicate-style conflict
+- If no existing key match is found, create a new memory normally
+- Return a deterministic response shape so Cortex can treat create and update paths uniformly
 - Deliver as a PR to `shetty4l/engram`, release as a patch version
+
+This is required for topic summaries: Cortex writes one rolling summary per topic using
+`idempotency_key: "topic-summary:{topicKey}"`.
+
+### Cortex CLI Contract
+
+Cortex ships a CLI aligned with Engram/Synapse operational conventions:
+
+- `cortex start` -- start daemon in background
+- `cortex stop` -- stop daemon
+- `cortex restart` -- restart daemon
+- `cortex status` -- show daemon status
+- `cortex serve` -- run foreground server (for local/dev)
+
+This keeps Wilson integration simple: it can continue delegating service lifecycle commands
+through each service CLI.
 
 ---
 
@@ -705,4 +737,3 @@ Current Mac Mini state -- the foundation that Cortex will deploy into:
 ### Open Items from Phase 1
 
 - `eng-1`: version-bump.ts changes are local in engram repo, not committed/pushed yet
-- Synapse PR #6 (uptime in status) pending merge
