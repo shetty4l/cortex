@@ -2,7 +2,7 @@
 
 ## Overview
 
-Cortex is a proactive life assistant that runs 24/7 on a Mac Mini, reachable via Telegram. It remembers everything (via Engram), reasons through LLMs (via Synapse), acts on user-created schedules, and adapts its personality to context.
+Cortex is a proactive life assistant runtime that runs 24/7 on a Mac Mini. It is channel-agnostic at the core (`POST /ingest` in, outbox poll/ack out), remembers through Engram, reasons through Synapse, executes skills, and adapts its personality to context.
 
 It is part of the **Wilson system** — four services that together form a personal AI infrastructure:
 
@@ -31,10 +31,14 @@ It is part of the **Wilson system** — four services that together form a perso
 |---------|------|---------|------|
 | **Engram** | `shetty4l/engram` | Persistent semantic memory (FTS5 + decay + embeddings) | 7749 |
 | **Synapse** | `shetty4l/synapse` | OpenAI-compatible LLM proxy with provider failover | 7750 |
-| **Cortex** | `shetty4l/cortex` | Life assistant: Telegram bot + skills + scheduler | 7751 |
+| **Cortex** | `shetty4l/cortex` | Life assistant runtime: ingest/inbox/outbox + skills + scheduler | 7751 |
 | **Wilson** | `shetty4l/wilson` | Deployment orchestration CLI, manages all services | -- |
 
 All services run on a Mac Mini, managed by Wilson via macOS LaunchAgents, auto-updating from GitHub releases. All are Bun/TypeScript with zero runtime dependencies.
+
+## Implementation Reference
+
+Build contracts for Phase 2 live in `docs/phase2-implementation-spec.md`.
 
 ---
 
@@ -56,7 +60,7 @@ Cortex's architecture was designed from first principles, not ported from `deleg
 
 | Concept | Why Not |
 |---------|---------|
-| Hexagonal ports/adapters | One chat platform (Telegram), one LLM backend (Synapse), one memory store (Engram). Abstractions add cost with no benefit until a second implementation exists. Refactor if/when needed. |
+| Hexagonal ports/adapters | One runtime path (ingest/inbox/outbox), one LLM backend (Synapse), one memory store (Engram). Abstractions add cost with no benefit until a second implementation exists. Refactor if/when needed. |
 | Supervisor/worker process | delegate-assistant used this for crash isolation. Wilson's LaunchAgent restarts on crash. Single process is simpler. |
 | Tiered model routing (T0/T1/T2) | Synapse already handles provider failover. Don't duplicate routing logic. |
 | Workspace/file tools | Cortex is a life assistant, not a coding assistant. |
@@ -82,7 +86,7 @@ All decisions locked during design session (Feb 13, 2026):
 | **Topic summaries** | Engram upsert (overwrite by idempotency key) | One summary per topic, updated in place. Requires adding upsert to Engram. |
 | **Turn eviction** | TTL-based, 30 days | Middle ground: some history for debugging, bounded growth. |
 | **Engram scoping** | Single global scope | No per-user or per-topic scoping. All memories in one pool. |
-| **Scheduler** | User-created via chat (tool calling) | Users say "remind me every Monday..." and the LLM creates a persistent cron job via the `create_schedule` tool. Stored in SQLite. |
+| **Scheduler** | User-created via chat (tool calling) | Users say "remind me every Monday..." and the LLM creates a persistent cron job via a namespaced schedule tool (for example `schedule.create`). Stored in SQLite. |
 | **Persona** | Adaptive per context | Concise for tasks, warm for check-ins, firm for accountability. Reads the room. |
 | **Proactive messaging** | Yes -- scheduler can push to Telegram | Bot can initiate conversations for scheduled events, reminders, nudges. |
 | **Daemon** | Full Wilson-managed daemon | HTTP health endpoint at `:7751`. Wilson manages lifecycle, logs, updates. |
@@ -95,28 +99,26 @@ All decisions locked during design session (Feb 13, 2026):
 
 ### The Smart Loop
 
-Cortex is a single-process event loop that does two things on each tick:
+Cortex is a single-process runtime with three ingress/egress paths:
 
-1. **Poll Telegram** for new messages
-2. **Check the scheduler** for due jobs
+1. **Connector ingest**: authenticated `POST /ingest` writes durable inbox rows
+2. **Scheduler tick**: due jobs synthesize inbound events through the same ingest path
+3. **Connector delivery**: connectors claim outbox messages via `/outbox/poll` and confirm via `/outbox/ack`
 
-Both produce "inbound messages" that flow through the same agent pipeline.
+Agent processing runs per inbound event in topic order, with parallelism across topics.
 
 ```
-while (running) {
-  // 1. Poll Telegram
-  updates = telegram.poll(cursor)
-  for (update of updates) {
-    if (!isAllowedUser(update)) continue
-    topicQueues.dispatch(topicKey(update), () => handleMessage(update))
-  }
+on POST /ingest(event):
+  inbox.enqueue(event)  // idempotent on (source, external_message_id)
 
-  // 2. Check scheduler
-  dueJobs = scheduler.getDueJobs()
-  for (job of dueJobs) {
-    topicQueues.dispatch(job.topicKey, () => handleScheduledJob(job))
-  }
-}
+every schedulerTickSeconds:
+  for each due job:
+    inbox.enqueue(syntheticEvent(job))
+
+worker loop:
+  event = inbox.claimNextByTopic()
+  response = agent.handle(event)
+  outbox.enqueue(response)
 ```
 
 ### Agent: Tool-Calling Loop
@@ -131,7 +133,7 @@ function handleMessage(message):
   tools       = skills.allToolDefs()
   messages    = prompt.build(memories, history, message, tools)
 
-  // Tool-calling loop (max 10 iterations)
+  // Tool-calling loop (max 8 iterations)
   loop:
     response = synapse.chat(messages, tools)
 
@@ -144,8 +146,8 @@ function handleMessage(message):
     // Final text response
     break
 
-  // Deliver and persist
-  telegram.send(message.chatId, response.content)
+  // Persist and emit
+  outbox.enqueue(message.source, message.topicKey, response.content)
   history.saveTurn(message.topicKey, message, response)
 
   // Async: maybe extract facts
@@ -170,49 +172,16 @@ No semaphore needed. Synapse handles backpressure at the provider level.
 ### Data Flow
 
 ```
-                    +----------+
-                    | Telegram |
-                    +----+-----+
-                         | poll / send
-                         v
-+--------------------------------------------------+
-|                    loop.ts                        |
-|  +--------------+              +--------------+   |
-|  | Telegram     |              | Scheduler    |   |
-|  | messages     |              | due jobs     |   |
-|  +------+-------+              +------+-------+   |
-|         +----------+---+--------------+           |
-|                    v                              |
-|            topics.ts (TopicQueue)                  |
-|                    |                              |
-|                    v                              |
-|  +-----------------------------------------+     |
-|  |              agent.ts                    |     |
-|  |                                         |     |
-|  |  engram.recall() --> prompt.build()     |     |
-|  |  history.load() -->     |               |     |
-|  |                         v               |     |
-|  |                  synapse.chat()          |     |
-|  |                     |                   |     |
-|  |              +------+------+            |     |
-|  |              | tool calls? |            |     |
-|  |              +-yes-> skills.execute()   |     |
-|  |              |       +---> loop back    |     |
-|  |              +-no--> final response     |     |
-|  +-----------------------------------------+     |
-|                    |                              |
-|         +----------+----------+                   |
-|         v                     v                   |
-|  telegram.send()    history.save()                |
-|                         |                         |
-|                    (every N turns, async)          |
-|                         v                         |
-|                  extraction.ts                     |
-|                   |          |                     |
-|                   v          v                     |
-|            engram.remember  engram.upsert          |
-|            (facts)          (topic summary)        |
-+--------------------------------------------------+
+Connector -> POST /ingest -> inbox_messages
+Scheduler ---------------> inbox_messages (synthetic events)
+
+inbox_messages -> TopicQueue -> agent loop (Synapse + skills + approvals)
+agent loop -> turns + outbox_messages
+
+Connector <- POST /outbox/poll <- outbox_messages (leased)
+Connector -> POST /outbox/ack  -> outbox_messages (delivered)
+
+history/extraction -> Engram remember + upsert(topic summary)
 ```
 
 ---
@@ -319,9 +288,12 @@ Config is loaded from a file (`~/.config/cortex/config.json`) with environment v
 
 ```typescript
 interface CortexConfig {
-  // Telegram
-  telegramToken: string           // TELEGRAM_TOKEN env var
-  allowedUserIds: string[]        // Telegram user IDs permitted to interact
+  // Server
+  host: string                    // default: "127.0.0.1"
+  port: number                    // default: 7751
+
+  // Auth
+  ingestApiKey: string            // CORTEX_INGEST_API_KEY (required)
 
   // Services
   synapseUrl: string              // default: "http://localhost:7750"
@@ -337,10 +309,17 @@ interface CortexConfig {
   turnTtlDays: number             // default: 30 (days before turns are deleted)
 
   // Scheduler
-  schedulerTickSeconds: number    // default: 60 (seconds between scheduler checks)
+  schedulerTickSeconds: number    // default: 30
+  schedulerTimezone: string        // default: "UTC"
 
-  // Server
-  port: number                    // default: 7751 (health endpoint)
+  // Outbox
+  outboxPollDefaultBatch: number  // default: 20
+  outboxLeaseSeconds: number      // default: 60
+  outboxMaxAttempts: number       // default: 10
+
+  // Skills
+  skillDirs: string[]             // trusted local directories
+  toolTimeoutMs: number           // default: 20000
 }
 ```
 
@@ -348,40 +327,14 @@ interface CortexConfig {
 
 ## SQLite Schema
 
-Three tables. Minimal -- long-term knowledge lives in Engram, not here.
+Phase 2 schema is canonical in `docs/phase2-implementation-spec.md` and includes:
 
-```sql
--- Recent conversation turns (the active window source)
-CREATE TABLE turns (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  topic_key TEXT NOT NULL,         -- "chatId:threadId" or "chatId:root"
-  role TEXT NOT NULL,              -- "user" | "assistant"
-  content TEXT NOT NULL,
-  timestamp INTEGER NOT NULL       -- unix epoch ms
-);
-CREATE INDEX idx_turns_topic ON turns(topic_key, timestamp);
-
--- Tracks extraction progress per topic
-CREATE TABLE extraction_cursors (
-  topic_key TEXT PRIMARY KEY,
-  last_extracted_turn_id INTEGER NOT NULL,
-  turns_since_extraction INTEGER DEFAULT 0
-);
-
--- User-created scheduled jobs
-CREATE TABLE scheduler_jobs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  description TEXT NOT NULL,       -- human-readable label
-  cron TEXT NOT NULL,              -- cron expression (e.g. "0 7 * * *")
-  action TEXT NOT NULL,            -- prompt text fed to the agent when job fires
-  target_chat_id TEXT NOT NULL,    -- Telegram chat to send the response to
-  created_by_user_id TEXT,         -- who created this schedule
-  last_run_at INTEGER,             -- unix epoch ms
-  next_run_at INTEGER,             -- precomputed next fire time
-  enabled INTEGER DEFAULT 1
-);
-CREATE INDEX idx_jobs_next ON scheduler_jobs(next_run_at) WHERE enabled = 1;
-```
+- `inbox_messages`
+- `outbox_messages`
+- `pending_approvals`
+- `turns`
+- `extraction_cursors`
+- `scheduler_jobs`
 
 Database location: `~/.local/share/cortex/cortex.db`
 
@@ -391,46 +344,50 @@ Database location: `~/.local/share/cortex/cortex.db`
 
 ### Framework
 
-Skills are the bridge between the LLM and real-world capabilities. Each skill registers:
+Skills are runtime-loaded from trusted local `skillDirs` at startup. Each skill package provides metadata (`skill.json`) and an executable module (`main.ts`).
 
-1. **Tool definition** -- an OpenAI function calling schema (name, description, parameters)
-2. **Executor** -- an async function that runs when the LLM calls the tool
+Package layout:
 
-```typescript
-interface Skill {
-  name: string
-  tools: ToolDef[]                    // OpenAI function definitions
-  execute(call: ToolCall): Promise<string>  // returns result text
-}
-
-interface SkillRegistry {
-  register(skill: Skill): void
-  allToolDefs(): ToolDef[]            // aggregated from all skills
-  execute(call: ToolCall): Promise<string>
-}
+```text
+<skill-dir>/<skill-id>/
+  skill.json
+  main.ts
 ```
 
-The LLM receives all tool definitions in its prompt. When it returns tool calls, Cortex looks up the skill by tool name and executes it. Results are fed back to the model for the next iteration of the tool-calling loop.
+`skill.json` includes `id`, `name`, `version`, `runtimeApiVersion`, and `main`.
 
-Adding a new skill = adding a file to `src/skills/` and registering it. No changes to core architecture.
+`main.ts` exports:
+
+- `listTools()` returning namespaced tool definitions (`skill.tool`)
+- `execute(call, ctx)` returning tool output
+
+Load rules in core runtime:
+
+- Fail startup on missing/invalid `runtimeApiVersion`
+- Fail startup on duplicate fully-qualified tool names
+- Enforce per-tool timeout (`toolTimeoutMs`, default 20s)
+
+The LLM receives aggregated tool definitions in its prompt. When tool calls are returned, Cortex resolves by tool name and executes through the loaded skill module. Results are appended to the conversation and fed back into the next tool-loop iteration.
+
+Adding a new skill means adding a package under a trusted `skillDirs` path and restarting Cortex (startup-load only in Phase 2).
 
 ### Included Skills (Phase 2)
 
-#### Calendar (`src/skills/calendar.ts`)
+#### Calendar (`<skill-dir>/calendar/`)
 
 Reads Apple Calendar events via `osascript` (AppleScript/JXA). Runs on the Mac Mini where Calendar.app has the user's accounts.
 
 **Tools:**
-- `read_calendar` -- read events for a date range. Parameters: `startDate`, `endDate`. Returns structured event list.
+- `calendar.read` -- read events for a date range. Parameters: `startDate`, `endDate`. Returns structured event list.
 
-#### Schedule (`src/skills/schedule.ts`)
+#### Schedule (`<skill-dir>/schedule/`)
 
 CRUD for user-created scheduled jobs. The LLM uses these tools when users say things like "remind me every Monday to submit my timesheet."
 
 **Tools:**
-- `create_schedule` -- create a new cron job. Parameters: `description`, `cron`, `action` (prompt text), `target_chat_id`.
-- `list_schedules` -- list all active schedules.
-- `delete_schedule` -- remove a schedule by ID.
+- `schedule.create` -- create a new cron job. Parameters: `description`, `cron`, `action`, `target_source`, `target_topic_key`.
+- `schedule.list` -- list all active schedules.
+- `schedule.delete` -- remove a schedule by ID.
 
 ---
 
@@ -441,22 +398,16 @@ cortex/
   src/
     main.ts              # Entry point, health server (GET /health), SIGTERM handler
     config.ts            # Load config from file + env, validate, export typed config
-    telegram.ts          # Telegram API client: poll(cursor), send(chatId, text)
     synapse.ts           # Synapse client: chat(messages, tools, model?) with SSE streaming
     engram.ts            # Engram client: remember(), recall(), forget(), upsert()
     db.ts                # SQLite: schema creation, turn/cursor/job queries
-    loop.ts              # Main event loop: poll Telegram + scheduler tick -> dispatch
+    loop.ts              # Main event loop: process inbox + scheduler tick -> dispatch
     agent.ts             # Tool-calling loop: build prompt -> synapse.chat -> execute tools -> repeat
     prompt.ts            # System prompt builder: persona + memories + summary + turns + tools
     history.ts           # Conversation history: load/save turns, window management, extraction trigger
     extraction.ts        # Async extraction: extract facts + update topic summary via cheap model
     topics.ts            # TopicQueue + TopicQueueMap for concurrent topic processing
     scheduler.ts         # Cron ticker: check due jobs, synthesize trigger messages, dispatch
-
-    skills/
-      index.ts           # Skill registry: register, allToolDefs, execute
-      calendar.ts        # Apple Calendar skill (osascript)
-      schedule.ts        # Schedule CRUD skill (SQLite)
 
   test/                  # Unit + integration tests
   docs/
@@ -477,149 +428,43 @@ cortex/
   .gitignore
 ```
 
-**16 source files. ~1500-2000 lines estimated.** Flat `src/` directory, no `packages/`, no `adapters/`, no `ports/`.
+External skill packages are loaded from trusted `skillDirs` and are not required to live under `cortex/src/`.
+
+**Core runtime stays flat in `src/`** (no `packages/`, no `adapters/`, no `ports/`).
 
 ---
 
 ## Build Order
 
-### Phase 2: Cortex (10 vertical slices)
+### Phase 2: Cortex (canonical)
 
-Each slice is a vertical cut through all layers. Build, test, validate before moving to the next.
+Phase 2 build slices are maintained in `docs/phase2-implementation-spec.md` and are the source of truth.
 
-#### Slice 0: Scaffold + Health
+Current slice order:
 
-**What it proves:** Wilson can manage Cortex as a service.
-
-**Scope:**
-- `main.ts` -- HTTP server on `:7751`, `GET /health` returns `{ status: "healthy", version }`, SIGTERM handler
-- `config.ts` -- load and validate config
-- `package.json`, `tsconfig.json`, `biome.json`, `.gitignore`
-
-**Acceptance criteria:** `bun run src/main.ts` starts, `curl localhost:7751/health` returns healthy.
-
-#### Slice 1: Telegram Echo
-
-**What it proves:** Telegram polling and sending works. TopicQueue concurrency works.
-
-**Scope:**
-- `telegram.ts` -- `poll(cursor)` and `send(chatId, text)`
-- `loop.ts` -- main loop polling Telegram, dispatching to topic queues
-- `topics.ts` -- `TopicQueue` + `TopicQueueMap`
-- Auth check: reject messages from users not in `allowedUserIds`
-
-**Acceptance criteria:** Send a message on Telegram, bot echoes it back. Messages in different chats process in parallel. Unauthorized users are silently ignored.
-
-#### Slice 2: Synapse Reply (Tracer Bullet)
-
-**What it proves:** Full end-to-end path works. This is the tracer bullet -- if this works, the architecture is proven.
-
-**Scope:**
-- `synapse.ts` -- chat completions client (tool-call aware, SSE streaming)
-- `agent.ts` -- tool-calling loop (no tools yet, just pass-through)
-- `prompt.ts` -- basic system prompt (persona, no memories/history yet)
-
-**Acceptance criteria:** Send "Hello" on Telegram, get an LLM-generated response back via Synapse.
-
-#### Slice 3: Engram Recall
-
-**What it proves:** Memory-augmented responses. The model sees relevant context from past sessions.
-
-**Scope:**
-- `engram.ts` -- `recall(query)` and `remember(content, category)`
-- Update `prompt.ts` to inject recalled memories into the system prompt
-
-**Acceptance criteria:** Ask something that Engram has stored memories about. The response demonstrates awareness of stored context.
-
-#### Slice 4: Turn History
-
-**What it proves:** Conversational continuity. The model sees recent turns.
-
-**Scope:**
-- `db.ts` -- SQLite schema (turns table), turn queries
-- `history.ts` -- load recent turns for a topic, save new turns, window management
-
-**Acceptance criteria:** Multi-turn conversation works. Bot remembers what you said 5 messages ago in the same topic.
-
-#### Slice 5: Fact Extraction
-
-**What it proves:** Durable knowledge is automatically extracted from conversations.
-
-**Scope:**
-- `extraction.ts` -- async extraction pipeline (fact extraction via cheap model)
-- Update `db.ts` with `extraction_cursors` table
-- Update `history.ts` to trigger extraction every N turns
-
-**Acceptance criteria:** Have a conversation mentioning a preference. After extraction runs, that preference appears in Engram. Start a new conversation on a different topic -- the preference surfaces via recall.
-
-#### Slice 6: Topic Summaries
-
-**What it proves:** Per-topic orientation survives across sessions.
-
-**Pre-requisite:** Add `upsert` support to Engram (`POST /remember` with `{ upsert: true, idempotency_key: "..." }` overwrites instead of rejecting).
-
-**Scope:**
-- Update `extraction.ts` to generate and upsert topic summaries
-- Update `prompt.ts` to include topic summary in the prompt
-
-**Acceptance criteria:** Have a long conversation. Close Telegram, wait, come back. The bot's response shows awareness of what the conversation was about (via the topic summary), not just the last few turns.
-
-#### Slice 7: Skill Framework
-
-**What it proves:** Tool calling works end-to-end. The LLM can call tools and Cortex executes them.
-
-**Scope:**
-- `skills/index.ts` -- skill registry, `allToolDefs()`, `execute()`
-- Wire tool definitions into `prompt.ts`
-- Wire tool execution into `agent.ts` loop
-
-**Acceptance criteria:** Register a trivial test skill (e.g., `get_current_time`). Ask "what time is it?" -- the LLM calls the tool and reports the result.
-
-#### Slice 8: Schedule Skill
-
-**What it proves:** Users can create persistent schedules via natural language. The scheduler fires them.
-
-**Scope:**
-- `skills/schedule.ts` -- `create_schedule`, `list_schedules`, `delete_schedule` tools
-- `scheduler.ts` -- cron evaluation on 60s tick, dispatch synthetic messages through agent pipeline
-- Update `db.ts` with `scheduler_jobs` table
-
-**Acceptance criteria:** Say "remind me every day at 9am to drink water." Verify the job is created. Wait for 9am (or adjust cron for testing). Bot proactively sends a message.
-
-#### Slice 9: Calendar Skill
-
-**What it proves:** Cortex can read real-world data and reason about it.
-
-**Scope:**
-- `skills/calendar.ts` -- `read_calendar` tool using `osascript` to query Apple Calendar
-
-**Acceptance criteria:** Ask "what's on my calendar today?" Bot returns actual calendar events from the Mac Mini's Calendar.app.
-
-#### Slice 10: Deploy
-
-**What it proves:** Cortex runs in production, managed by Wilson, auto-updates.
-
-**Scope:**
-- `scripts/install.sh` -- curl|bash installer
-- `scripts/version-bump.ts` -- release helper
-- `.github/workflows/ci.yml` + `release.yml`
-- Update Wilson: add Cortex to service registry (`src/services.ts`) and `wilson-update.sh`
-
-**Acceptance criteria:** `wilson status` shows Cortex healthy. `wilson update` can pull and deploy a new Cortex release. Bot survives a `kill` (LaunchAgent restarts it).
+0. Core service + CLI
+1. Ingest + inbox
+2. Loop + tracer to Synapse
+3. Outbox poll/ack + retries
+4. Runtime skill loader
+5. Tool loop + approval gate
+6. Scheduler + schedule skill
+7. Memory integration
+8. External skills
 
 ---
 
 ### Phase 3: First Skills
 
-Phase 3 is pure accretion -- the architecture doesn't change. Each skill is a new file in `src/skills/` registered in the skill registry.
+Phase 3 is pure accretion -- the architecture doesn't change. Each skill is a new package in a trusted `skillDirs` location with `skill.json` + `main.ts`.
 
 #### Preferences
 
 Read/write user preferences stored in Engram. Examples: quiet hours, preferred name, notification preferences.
 
 **Tools:**
-- `get_preference` -- read a preference by key
-- `set_preference` -- write a preference
+- `preferences.get` -- read a preference by key
+- `preferences.set` -- write a preference
 
 **Engram storage pattern:** `category: "preference"`, content is `"key: value"` format.
 
@@ -629,17 +474,17 @@ A scheduled skill that composes calendar + reminders + any relevant context into
 
 This is not a separate "skill" per se -- it's a scheduled job whose `action` prompt is something like: "Give me a morning briefing. Check my calendar for today, list any upcoming reminders, and surface anything important from recent conversations."
 
-The agent uses the existing `read_calendar` and `list_schedules` tools plus Engram recall to compose the briefing. No new skill code needed -- just a well-crafted scheduled prompt.
+The agent uses existing namespaced tools (for example `calendar.read` and `schedule.list`) plus Engram recall to compose the briefing. No new skill code needed -- just a well-crafted scheduled prompt.
 
 #### Task Coaching
 
 Help with task breakdown, deadline tracking, and accountability. Examples: trip preparation checklists, project milestone tracking, gentle nudges.
 
 **Tools:**
-- `create_task` -- create a task with optional deadline
-- `list_tasks` -- list tasks by status
-- `complete_task` -- mark a task done
-- `breakdown_task` -- break a task into subtasks
+- `tasks.create` -- create a task with optional deadline
+- `tasks.list` -- list tasks by status
+- `tasks.complete` -- mark a task done
+- `tasks.breakdown` -- break a task into subtasks
 
 **Storage:** SQLite table (tasks) or Engram-backed, TBD.
 
