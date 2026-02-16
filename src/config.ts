@@ -28,7 +28,7 @@ export interface CortexConfig {
   engramUrl: string;
 
   // Models
-  model?: string;
+  model: string;
   extractionModel?: string;
 
   // History
@@ -253,8 +253,12 @@ interface LoadConfigOptions {
 }
 
 /** Config with relaxed required fields — returned when skipRequiredChecks is true. */
-export type PartialCortexConfig = Omit<CortexConfig, "ingestApiKey"> & {
+export type PartialCortexConfig = Omit<
+  CortexConfig,
+  "ingestApiKey" | "model"
+> & {
   ingestApiKey?: string;
+  model?: string;
 };
 
 export function loadConfig(
@@ -293,7 +297,10 @@ export function loadConfig(
 
   // Merge: defaults <- file config <- env overrides
   // Use a partial type until required fields are validated below.
-  const config: typeof DEFAULTS & Partial<CortexConfig> = {
+  const config: Omit<CortexConfig, "ingestApiKey" | "model"> &
+    Partial<Pick<CortexConfig, "ingestApiKey" | "model">> & {
+      extractionModel?: string;
+    } = {
     ...DEFAULTS,
     ...fileConfig,
   };
@@ -314,6 +321,11 @@ export function loadConfig(
     if (!config.ingestApiKey) {
       throw new Error(
         "ingestApiKey is required. Set it in config.json or via CORTEX_INGEST_API_KEY env var.",
+      );
+    }
+    if (!config.model) {
+      throw new Error(
+        'model is required. Set it in config.json (e.g. "model": "gpt-oss:20b").',
       );
     }
   }

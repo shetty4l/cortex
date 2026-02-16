@@ -91,6 +91,25 @@ function createSchema(database: Database): void {
       ON inbox_messages(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_inbox_topic_status
       ON inbox_messages(topic_key, status);
+
+    CREATE TABLE IF NOT EXISTS outbox_messages (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      topic_key TEXT NOT NULL,
+      text TEXT NOT NULL,
+      payload_json TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER NOT NULL,
+      lease_token TEXT,
+      lease_expires_at INTEGER,
+      last_error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_outbox_source_status_next
+      ON outbox_messages(source, status, next_attempt_at);
   `);
 }
 
@@ -205,4 +224,122 @@ export function getInboxMessage(id: string): InboxMessage | null {
   const database = getDatabase();
   const stmt = database.prepare("SELECT * FROM inbox_messages WHERE id = $id");
   return (stmt.get({ $id: id }) as InboxMessage) ?? null;
+}
+
+// --- Inbox processing operations ---
+
+/**
+ * Atomically claim the oldest pending inbox message.
+ * Sets status to 'processing' and increments attempts.
+ * Returns null if no pending messages exist.
+ */
+export function claimNextInboxMessage(): InboxMessage | null {
+  const database = getDatabase();
+  const now = Date.now();
+
+  // SQLite RETURNING requires 3.35+; Bun's bundled SQLite supports it.
+  const stmt = database.prepare(`
+    UPDATE inbox_messages
+    SET status = 'processing', attempts = attempts + 1, updated_at = $now
+    WHERE id = (
+      SELECT id FROM inbox_messages
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT 1
+    )
+    RETURNING *
+  `);
+
+  return (stmt.get({ $now: now }) as InboxMessage) ?? null;
+}
+
+/**
+ * Mark an inbox message as done (or failed with an error reason).
+ */
+export function completeInboxMessage(id: string, error?: string): void {
+  const database = getDatabase();
+  const now = Date.now();
+  const status = error ? "failed" : "done";
+
+  const stmt = database.prepare(`
+    UPDATE inbox_messages
+    SET status = $status, error = $error, updated_at = $now
+    WHERE id = $id
+  `);
+  stmt.run({ $id: id, $status: status, $error: error ?? null, $now: now });
+}
+
+// --- Outbox operations ---
+
+export interface OutboxInsertInput {
+  source: string;
+  topicKey: string;
+  text: string;
+  payload?: Record<string, unknown>;
+}
+
+export interface OutboxMessage {
+  id: string;
+  source: string;
+  topic_key: string;
+  text: string;
+  payload_json: string | null;
+  status: string;
+  attempts: number;
+  next_attempt_at: number;
+  lease_token: string | null;
+  lease_expires_at: number | null;
+  last_error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * Insert a new outbox message, ready for connector delivery.
+ */
+export function enqueueOutboxMessage(input: OutboxInsertInput): string {
+  const database = getDatabase();
+  const id = `out_${crypto.randomUUID()}`;
+  const now = Date.now();
+
+  const stmt = database.prepare(`
+    INSERT INTO outbox_messages (
+      id, source, topic_key, text, payload_json,
+      status, attempts, next_attempt_at, created_at, updated_at
+    ) VALUES (
+      $id, $source, $topicKey, $text, $payloadJson,
+      'pending', 0, $now, $now, $now
+    )
+  `);
+
+  stmt.run({
+    $id: id,
+    $source: input.source,
+    $topicKey: input.topicKey,
+    $text: input.text,
+    $payloadJson: input.payload ? JSON.stringify(input.payload) : null,
+    $now: now,
+  });
+
+  return id;
+}
+
+/**
+ * Get an outbox message by ID.
+ */
+export function getOutboxMessage(id: string): OutboxMessage | null {
+  const database = getDatabase();
+  const stmt = database.prepare("SELECT * FROM outbox_messages WHERE id = $id");
+  return (stmt.get({ $id: id }) as OutboxMessage) ?? null;
+}
+
+/**
+ * List all outbox messages for a given topic key, ordered by creation time.
+ */
+export function listOutboxMessagesByTopic(topicKey: string): OutboxMessage[] {
+  const database = getDatabase();
+  const stmt = database.prepare(
+    "SELECT * FROM outbox_messages WHERE topic_key = $topicKey ORDER BY created_at ASC",
+  );
+  return stmt.all({ $topicKey: topicKey }) as OutboxMessage[];
 }
