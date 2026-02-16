@@ -1,0 +1,52 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { loadConfig } from "../src/config";
+import { createServer } from "../src/server";
+
+describe("health endpoint", () => {
+  let server: ReturnType<typeof Bun.serve>;
+  let baseUrl: string;
+
+  beforeAll(() => {
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    const config = loadConfig({ quiet: true });
+    // Use port 0 for random available port in tests
+    const cortexServer = createServer({ ...config, port: 0 });
+    server = cortexServer.start();
+    baseUrl = `http://${server.hostname}:${server.port}`;
+  });
+
+  afterAll(() => {
+    server.stop();
+  });
+
+  test("GET /health returns healthy status", async () => {
+    const response = await fetch(`${baseUrl}/health`);
+
+    expect(response.status).toBe(200);
+
+    const body = (await response.json()) as {
+      status: string;
+      version: string;
+      uptime: number;
+    };
+
+    expect(body.status).toBe("healthy");
+    expect(typeof body.version).toBe("string");
+    expect(typeof body.uptime).toBe("number");
+    expect(body.uptime).toBeGreaterThanOrEqual(0);
+  });
+
+  test("unknown routes return 404", async () => {
+    const response = await fetch(`${baseUrl}/nonexistent`);
+
+    expect(response.status).toBe(404);
+
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toBe("not_found");
+  });
+
+  test("POST /health returns 404", async () => {
+    const response = await fetch(`${baseUrl}/health`, { method: "POST" });
+    expect(response.status).toBe(404);
+  });
+});

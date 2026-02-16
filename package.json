@@ -1,0 +1,28 @@
+{
+  "name": "cortex",
+  "version": "0.1.0",
+  "description": "Channel-agnostic life assistant runtime with tool-calling agent loop",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "cortex": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src/",
+    "format": "biome check --write src/ test/",
+    "format:check": "biome check src/ test/",
+    "test": "bun test",
+    "validate": "bun run typecheck && bun run lint && bun run format:check && bun run test",
+    "version:bump": "bun run scripts/version-bump.ts",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.13",
+    "@types/bun": "latest",
+    "husky": "^9.0.0",
+    "oxlint": "^0.12.0",
+    "typescript": "^5.0.0"
+  }
+}
