@@ -39,12 +39,17 @@ function shutdown() {
   }, SHUTDOWN_TIMEOUT_MS);
   forceExit.unref(); // don't keep the process alive just for this timer
 
-  loop.stop().then(() => {
-    httpServer.stop(true);
-    clearTimeout(forceExit);
-    console.log("cortex: stopped");
-    process.exit(0);
-  });
+  loop
+    .stop()
+    .catch((err: unknown) => {
+      console.error("cortex: error during loop shutdown:", err);
+    })
+    .then(() => {
+      httpServer.stop(true);
+      clearTimeout(forceExit);
+      console.log("cortex: stopped");
+      process.exit(0);
+    });
 }
 
 process.on("SIGTERM", shutdown);
