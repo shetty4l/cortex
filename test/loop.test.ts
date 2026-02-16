@@ -121,6 +121,9 @@ async function waitFor(
   }
 }
 
+/** Fast poll intervals for tests — avoids 2s idle sleep. */
+const FAST_LOOP = { pollBusyMs: 10, pollIdleMs: 50 };
+
 // --- Tests ---
 
 describe("processing loop", () => {
@@ -138,7 +141,7 @@ describe("processing loop", () => {
 
     const { eventId } = ingestMessage({ text: "Hello assistant" });
     const config = testConfig();
-    const loop = startProcessingLoop(config);
+    const loop = startProcessingLoop(config, FAST_LOOP);
 
     await waitFor(() => {
       const msg = getInboxMessage(eventId);
@@ -170,7 +173,7 @@ describe("processing loop", () => {
     };
 
     ingestMessage({ text: "What is 2+2?" });
-    const loop = startProcessingLoop(testConfig());
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
 
     await waitFor(() => mockCallCount > 0);
     await loop.stop();
@@ -212,7 +215,7 @@ describe("processing loop", () => {
       topicKey: "topic-a",
     });
 
-    const loop = startProcessingLoop(testConfig());
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
 
     await waitFor(() => {
       const msg = getInboxMessage(id2);
@@ -252,7 +255,7 @@ describe("processing loop", () => {
       topicKey: "topic-b",
     });
 
-    const loop = startProcessingLoop(testConfig());
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
 
     await waitFor(() => {
       const a = getInboxMessage(id1);
@@ -280,7 +283,7 @@ describe("processing loop", () => {
       );
 
     const { eventId } = ingestMessage({ text: "Will fail" });
-    const loop = startProcessingLoop(testConfig());
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
 
     await waitFor(() => {
       const msg = getInboxMessage(eventId);
@@ -301,7 +304,7 @@ describe("processing loop", () => {
   test("loop stops gracefully without errors when inbox is empty", async () => {
     mockHandler = () => Response.json(openaiResponse("should not be called"));
 
-    const loop = startProcessingLoop(testConfig());
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
 
     // Let it tick a couple of times on empty inbox
     await Bun.sleep(200);
@@ -332,7 +335,7 @@ describe("processing loop", () => {
       externalMessageId: "msg-success",
     });
 
-    const loop = startProcessingLoop(testConfig());
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
 
     await waitFor(() => {
       const msg = getInboxMessage(successId);

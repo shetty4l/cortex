@@ -12,10 +12,15 @@
  *   cortex health         Check health of running instance
  *   cortex config         Print resolved configuration
  *   cortex logs [n]       Show last n log lines (default: 20)
+ *   cortex send "msg"     Send a message and wait for response
+ *   cortex inbox          Show recent inbox messages
+ *   cortex outbox         Show recent outbox messages
+ *   cortex purge          Purge all inbox and outbox messages
  *   cortex version        Show version
  *
  * Options:
  *   --json                Machine-readable JSON output
+ *   --confirm             Required for destructive operations (purge)
  *   --help, -h            Show help
  */
 
@@ -29,8 +34,15 @@ import {
   startDaemon,
   stopDaemon,
 } from "./daemon";
-import { initDatabase } from "./db";
+import {
+  closeDatabase,
+  initDatabase,
+  listInboxMessages,
+  listOutboxMessages,
+  purgeMessages,
+} from "./db";
 import { startProcessingLoop } from "./loop";
+import { sendMessage } from "./send";
 import { createServer } from "./server";
 import { VERSION } from "./version";
 
@@ -46,10 +58,15 @@ Usage:
   cortex health         Check health of running instance
   cortex config         Print resolved configuration
   cortex logs [n]       Show last n log lines (default: 20)
+  cortex send "msg"     Send a message and wait for response
+  cortex inbox          Show recent inbox messages
+  cortex outbox         Show recent outbox messages
+  cortex purge          Purge all inbox and outbox messages
   cortex version        Show version
 
 Options:
   --json                Machine-readable JSON output
+  --confirm             Required for destructive operations (purge)
   --version, -v         Show version
   --help, -h            Show help
 `;
@@ -62,11 +79,13 @@ function parseArgs(args: string[]): {
   command: string;
   args: string[];
   json: boolean;
+  confirm: boolean;
 } {
-  const filtered = args.filter((a) => a !== "--json");
+  const filtered = args.filter((a) => a !== "--json" && a !== "--confirm");
   const json = args.includes("--json");
+  const confirm = args.includes("--confirm");
   const [command = "help", ...rest] = filtered;
-  return { command, args: rest, json };
+  return { command, args: rest, json, confirm };
 }
 
 // --- Commands ---
@@ -266,6 +285,160 @@ function cmdLogs(countStr: string | undefined, json: boolean): void {
   console.log(`\nShowing ${tail.length} of ${lines.length} lines`);
 }
 
+// --- Inbox/outbox/purge/send commands ---
+
+function cmdInbox(json: boolean): void {
+  loadConfig({ quiet: true, skipRequiredChecks: true });
+  initDatabase();
+
+  try {
+    const messages = listInboxMessages(20);
+
+    if (json) {
+      console.log(JSON.stringify(messages, null, 2));
+      return;
+    }
+
+    if (messages.length === 0) {
+      console.log("No inbox messages.");
+      return;
+    }
+
+    console.log(
+      `\n${"STATUS".padEnd(12)}${"SOURCE".padEnd(14)}${"TOPIC".padEnd(28)}${"TEXT".padEnd(32)}TIMESTAMP`,
+    );
+    console.log("-".repeat(100));
+
+    for (const msg of messages) {
+      const text =
+        msg.text.length > 28 ? `${msg.text.slice(0, 25)}...` : msg.text;
+      const topic =
+        msg.topic_key.length > 24
+          ? `${msg.topic_key.slice(0, 21)}...`
+          : msg.topic_key;
+      const time = new Date(msg.created_at).toISOString().slice(0, 19);
+      console.log(
+        `${msg.status.padEnd(12)}${msg.source.padEnd(14)}${topic.padEnd(28)}${text.padEnd(32)}${time}`,
+      );
+    }
+
+    console.log(`\n${messages.length} messages\n`);
+  } finally {
+    closeDatabase();
+  }
+}
+
+function cmdOutbox(json: boolean): void {
+  loadConfig({ quiet: true, skipRequiredChecks: true });
+  initDatabase();
+
+  try {
+    const messages = listOutboxMessages(20);
+
+    if (json) {
+      console.log(JSON.stringify(messages, null, 2));
+      return;
+    }
+
+    if (messages.length === 0) {
+      console.log("No outbox messages.");
+      return;
+    }
+
+    console.log(
+      `\n${"STATUS".padEnd(12)}${"SOURCE".padEnd(14)}${"TOPIC".padEnd(28)}${"TEXT".padEnd(32)}${"ATT".padEnd(5)}ERROR`,
+    );
+    console.log("-".repeat(110));
+
+    for (const msg of messages) {
+      const text =
+        msg.text.length > 28 ? `${msg.text.slice(0, 25)}...` : msg.text;
+      const topic =
+        msg.topic_key.length > 24
+          ? `${msg.topic_key.slice(0, 21)}...`
+          : msg.topic_key;
+      const error = msg.last_error
+        ? msg.last_error.length > 20
+          ? `${msg.last_error.slice(0, 17)}...`
+          : msg.last_error
+        : "-";
+      console.log(
+        `${msg.status.padEnd(12)}${msg.source.padEnd(14)}${topic.padEnd(28)}${text.padEnd(32)}${String(msg.attempts).padEnd(5)}${error}`,
+      );
+    }
+
+    console.log(`\n${messages.length} messages\n`);
+  } finally {
+    closeDatabase();
+  }
+}
+
+function cmdPurge(json: boolean, confirm: boolean): void {
+  if (!confirm) {
+    console.error(
+      "Error: --confirm flag is required to purge data.\n\nUsage: cortex purge --confirm",
+    );
+    process.exit(1);
+  }
+
+  loadConfig({ quiet: true, skipRequiredChecks: true });
+  initDatabase();
+
+  try {
+    const counts = purgeMessages();
+
+    if (json) {
+      console.log(JSON.stringify(counts, null, 2));
+    } else {
+      console.log(
+        `Purged ${counts.inbox} inbox and ${counts.outbox} outbox messages.`,
+      );
+    }
+  } finally {
+    closeDatabase();
+  }
+}
+
+async function cmdSend(text: string | undefined, json: boolean): Promise<void> {
+  if (!text || text.length === 0) {
+    console.error(
+      'Error: message text is required.\n\nUsage: cortex send "your message"',
+    );
+    process.exit(1);
+  }
+
+  let config: { port: number; ingestApiKey: string };
+  try {
+    const full = loadConfig({ quiet: true });
+    config = { port: full.port, ingestApiKey: full.ingestApiKey };
+  } catch {
+    console.error("Error: could not load config (is ingestApiKey set?)");
+    process.exit(1);
+    return;
+  }
+
+  const baseUrl = `http://localhost:${config.port}`;
+  const apiKey = config.ingestApiKey;
+
+  try {
+    const response = await sendMessage(text, { baseUrl, apiKey });
+
+    if (json) {
+      console.log(JSON.stringify({ text: response }));
+    } else {
+      console.log(response);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (json) {
+      console.log(JSON.stringify({ error: message }));
+    } else {
+      console.error(`Error: ${message}`);
+    }
+    process.exit(1);
+  }
+}
+
 // --- Main ---
 
 async function main(): Promise<void> {
@@ -285,7 +458,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const { command, args, json } = parseArgs(rawArgs);
+  const { command, args, json, confirm } = parseArgs(rawArgs);
 
   switch (command) {
     case "start":
@@ -311,6 +484,18 @@ async function main(): Promise<void> {
       return;
     case "logs":
       cmdLogs(args[0], json);
+      return;
+    case "send":
+      await cmdSend(args[0], json);
+      return;
+    case "inbox":
+      cmdInbox(json);
+      return;
+    case "outbox":
+      cmdOutbox(json);
+      return;
+    case "purge":
+      cmdPurge(json, confirm);
       return;
     case "version":
       console.log(VERSION);
