@@ -23,10 +23,25 @@ const loop = startProcessingLoop(config);
 console.log("cortex: processing loop started");
 
 // Graceful shutdown
+const SHUTDOWN_TIMEOUT_MS = 35_000;
+let shuttingDown = false;
+
 function shutdown() {
+  if (shuttingDown) return; // ignore double SIGINT/SIGTERM
+  shuttingDown = true;
+
   console.log("cortex: shutting down...");
+
+  // Hard exit if graceful shutdown stalls
+  const forceExit = setTimeout(() => {
+    console.error("cortex: shutdown timed out, forcing exit");
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS);
+  forceExit.unref(); // don't keep the process alive just for this timer
+
   loop.stop().then(() => {
     httpServer.stop(true);
+    clearTimeout(forceExit);
     console.log("cortex: stopped");
     process.exit(0);
   });

@@ -4,7 +4,7 @@
  * Load order:
  *   1. Defaults (hardcoded)
  *   2. Config file (~/.config/cortex/config.json)
- *   3. Environment variables (CORTEX_PORT, CORTEX_HOST, CORTEX_CONFIG_PATH, CORTEX_INGEST_API_KEY)
+ *   3. Environment variables (CORTEX_PORT, CORTEX_HOST, CORTEX_MODEL, CORTEX_CONFIG_PATH, CORTEX_INGEST_API_KEY)
  *
  * String values in the config file support ${ENV_VAR} interpolation.
  */
@@ -178,8 +178,8 @@ function validateConfig(raw: unknown): Partial<CortexConfig> {
   }
 
   if (obj.model !== undefined) {
-    if (typeof obj.model !== "string") {
-      throw new Error("model: must be a string");
+    if (typeof obj.model !== "string" || obj.model.length === 0) {
+      throw new Error("model: must be a non-empty string");
     }
     result.model = obj.model;
   }
@@ -315,6 +315,9 @@ export function loadConfig(
   if (process.env.CORTEX_INGEST_API_KEY) {
     config.ingestApiKey = process.env.CORTEX_INGEST_API_KEY;
   }
+  if (process.env.CORTEX_MODEL) {
+    config.model = process.env.CORTEX_MODEL;
+  }
 
   // Required field validation
   if (!options?.skipRequiredChecks) {
@@ -325,7 +328,7 @@ export function loadConfig(
     }
     if (!config.model) {
       throw new Error(
-        'model is required. Set it in config.json (e.g. "model": "gpt-oss:20b").',
+        "model is required. Set it in config.json or via CORTEX_MODEL env var.",
       );
     }
   }

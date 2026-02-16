@@ -73,7 +73,15 @@ export async function chat(
     );
   }
 
-  const body = await response.text();
+  let body: string;
+  try {
+    body = await response.text();
+  } catch (err) {
+    throw new SynapseError(
+      `Synapse response body read failed: ${err instanceof Error ? err.message : String(err)}`,
+      response.status,
+    );
+  }
 
   if (!response.ok) {
     throw new SynapseError(
