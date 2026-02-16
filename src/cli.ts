@@ -29,6 +29,8 @@ import {
   startDaemon,
   stopDaemon,
 } from "./daemon";
+import { initDatabase } from "./db";
+import { startProcessingLoop } from "./loop";
 import { createServer } from "./server";
 import { VERSION } from "./version";
 
@@ -71,13 +73,38 @@ function parseArgs(args: string[]): {
 
 function cmdServe(): void {
   const config = loadConfig();
+  initDatabase();
   const server = createServer(config);
   const instance = server.start();
+  const loop = startProcessingLoop(config);
+  console.log("cortex: processing loop started");
+
+  const SHUTDOWN_TIMEOUT_MS = 35_000;
+  let shuttingDown = false;
 
   const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
     console.log("\ncortex: shutting down...");
-    instance.stop();
-    process.exit(0);
+
+    const forceExit = setTimeout(() => {
+      console.error("cortex: shutdown timed out, forcing exit");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS);
+    forceExit.unref();
+
+    loop
+      .stop()
+      .catch((err: unknown) => {
+        console.error("cortex: error during loop shutdown:", err);
+      })
+      .then(() => {
+        instance.stop(true);
+        clearTimeout(forceExit);
+        console.log("cortex: stopped");
+        process.exit(0);
+      });
   };
 
   process.on("SIGINT", shutdown);
