@@ -32,7 +32,7 @@ describe("config", () => {
 
   test("returns defaults when no config file exists", () => {
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
-    const config = loadConfig({ quiet: true });
+    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
 
     expect(config.host).toBe("127.0.0.1");
     expect(config.port).toBe(7751);
@@ -68,7 +68,7 @@ describe("config", () => {
     );
 
     process.env.CORTEX_CONFIG_PATH = configPath;
-    const config = loadConfig({ quiet: true });
+    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
 
     expect(config.port).toBe(9999);
     expect(config.host).toBe("0.0.0.0");
@@ -111,7 +111,7 @@ describe("config", () => {
     );
 
     process.env.CORTEX_CONFIG_PATH = configPath;
-    const config = loadConfig({ quiet: true });
+    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
 
     expect(config.synapseUrl).toBe("http://remote:7750");
 
@@ -123,7 +123,7 @@ describe("config", () => {
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
     process.env.CORTEX_PORT = "99999";
 
-    expect(() => loadConfig({ quiet: true })).toThrow(
+    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
       "not a valid port number",
     );
   });
@@ -135,7 +135,7 @@ describe("config", () => {
     writeFileSync(configPath, JSON.stringify({ port: -1 }));
     process.env.CORTEX_CONFIG_PATH = configPath;
 
-    expect(() => loadConfig({ quiet: true })).toThrow(
+    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
       "not a valid port number",
     );
 
@@ -149,7 +149,9 @@ describe("config", () => {
     writeFileSync(configPath, "not json");
     process.env.CORTEX_CONFIG_PATH = configPath;
 
-    expect(() => loadConfig({ quiet: true })).toThrow("invalid JSON");
+    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
+      "invalid JSON",
+    );
 
     rmSync(tmpDir, { recursive: true });
   });
@@ -161,8 +163,18 @@ describe("config", () => {
     writeFileSync(configPath, JSON.stringify({ outboxLeaseSeconds: 5 }));
     process.env.CORTEX_CONFIG_PATH = configPath;
 
-    expect(() => loadConfig({ quiet: true })).toThrow("must be >= 10");
+    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
+      "must be >= 10",
+    );
 
     rmSync(tmpDir, { recursive: true });
+  });
+
+  test("throws when ingestApiKey is missing", () => {
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+
+    expect(() => loadConfig({ quiet: true })).toThrow(
+      "ingestApiKey is required",
+    );
   });
 });
