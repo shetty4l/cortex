@@ -11,6 +11,7 @@ describe("config", () => {
     "CORTEX_HOST",
     "CORTEX_CONFIG_PATH",
     "CORTEX_INGEST_API_KEY",
+    "CORTEX_MODEL",
   ];
 
   beforeEach(() => {
@@ -86,19 +87,21 @@ describe("config", () => {
 
     writeFileSync(
       configPath,
-      JSON.stringify({ port: 9999, model: "test-model" }),
+      JSON.stringify({ port: 9999, model: "file-model" }),
     );
 
     process.env.CORTEX_CONFIG_PATH = configPath;
     process.env.CORTEX_PORT = "8888";
     process.env.CORTEX_HOST = "0.0.0.0";
     process.env.CORTEX_INGEST_API_KEY = "test-key";
+    process.env.CORTEX_MODEL = "env-model";
 
     const config = loadConfig({ quiet: true });
 
     expect(config.port).toBe(8888);
     expect(config.host).toBe("0.0.0.0");
     expect(config.ingestApiKey).toBe("test-key");
+    expect(config.model).toBe("env-model");
 
     rmSync(tmpDir, { recursive: true });
   });
@@ -186,5 +189,19 @@ describe("config", () => {
     process.env.CORTEX_INGEST_API_KEY = "test-key";
 
     expect(() => loadConfig({ quiet: true })).toThrow("model is required");
+  });
+
+  test("throws on empty model string in config file", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(configPath, JSON.stringify({ model: "" }));
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
+      "model: must be a non-empty string",
+    );
+
+    rmSync(tmpDir, { recursive: true });
   });
 });
