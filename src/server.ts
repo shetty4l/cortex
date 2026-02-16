@@ -4,13 +4,18 @@
  * Routes:
  *   GET  /health      — health check for Wilson integration
  *   POST /ingest      — channel-agnostic event ingress
- *   POST /outbox/poll — connector delivery claim (future)
- *   POST /outbox/ack  — connector delivery acknowledgement (future)
+ *   POST /outbox/poll — connector delivery claim
+ *   POST /outbox/ack  — connector delivery acknowledgement
  */
 
 import { timingSafeEqual } from "crypto";
 import type { CortexConfig } from "./config";
-import { enqueueInboxMessage, findInboxDuplicate } from "./db";
+import {
+  ackOutboxMessage,
+  enqueueInboxMessage,
+  findInboxDuplicate,
+  pollOutboxMessages,
+} from "./db";
 import { VERSION } from "./version";
 
 const startedAt = Date.now();
@@ -167,6 +172,173 @@ async function handleIngest(
   return jsonResponse({ eventId: result.eventId, status: "queued" }, 202);
 }
 
+// --- Outbox poll/ack handlers ---
+
+interface PollRequestBody {
+  source?: string;
+  topicKey?: string;
+  max?: number;
+  leaseSeconds?: number;
+}
+
+function validatePollBody(body: PollRequestBody): string[] {
+  const details: string[] = [];
+
+  if (body.source === undefined || body.source === null) {
+    details.push("source is required");
+  } else if (typeof body.source !== "string" || body.source.length === 0) {
+    details.push("source must be a non-empty string");
+  }
+
+  if (
+    body.topicKey !== undefined &&
+    body.topicKey !== null &&
+    (typeof body.topicKey !== "string" || body.topicKey.length === 0)
+  ) {
+    details.push("topicKey must be a non-empty string");
+  }
+
+  if (body.max !== undefined && body.max !== null) {
+    if (typeof body.max !== "number" || !Number.isInteger(body.max)) {
+      details.push("max must be an integer");
+    } else if (body.max < 1 || body.max > 100) {
+      details.push("max must be between 1 and 100");
+    }
+  }
+
+  if (body.leaseSeconds !== undefined && body.leaseSeconds !== null) {
+    if (
+      typeof body.leaseSeconds !== "number" ||
+      !Number.isInteger(body.leaseSeconds)
+    ) {
+      details.push("leaseSeconds must be an integer");
+    } else if (body.leaseSeconds < 10 || body.leaseSeconds > 300) {
+      details.push("leaseSeconds must be between 10 and 300");
+    }
+  }
+
+  return details;
+}
+
+async function handleOutboxPoll(
+  req: Request,
+  config: CortexConfig,
+): Promise<Response> {
+  const authError = requireAuth(req, config);
+  if (authError) return authError;
+
+  let body: PollRequestBody;
+  try {
+    body = (await req.json()) as PollRequestBody;
+  } catch {
+    return jsonResponse(
+      {
+        error: "invalid_request",
+        details: ["Request body must be valid JSON"],
+      },
+      400,
+    );
+  }
+
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return jsonResponse(
+      {
+        error: "invalid_request",
+        details: ["Request body must be a JSON object"],
+      },
+      400,
+    );
+  }
+
+  const details = validatePollBody(body);
+  if (details.length > 0) {
+    return jsonResponse({ error: "invalid_request", details }, 400);
+  }
+
+  const max = body.max ?? config.outboxPollDefaultBatch;
+  const leaseSeconds = body.leaseSeconds ?? config.outboxLeaseSeconds;
+
+  const messages = pollOutboxMessages(
+    body.source!,
+    max,
+    leaseSeconds,
+    config.outboxMaxAttempts,
+    body.topicKey ?? undefined,
+  );
+
+  return jsonResponse({ messages }, 200);
+}
+
+interface AckRequestBody {
+  messageId?: string;
+  leaseToken?: string;
+}
+
+async function handleOutboxAck(
+  req: Request,
+  config: CortexConfig,
+): Promise<Response> {
+  const authError = requireAuth(req, config);
+  if (authError) return authError;
+
+  let body: AckRequestBody;
+  try {
+    body = (await req.json()) as AckRequestBody;
+  } catch {
+    return jsonResponse(
+      {
+        error: "invalid_request",
+        details: ["Request body must be valid JSON"],
+      },
+      400,
+    );
+  }
+
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return jsonResponse(
+      {
+        error: "invalid_request",
+        details: ["Request body must be a JSON object"],
+      },
+      400,
+    );
+  }
+
+  const details: string[] = [];
+  if (
+    body.messageId === undefined ||
+    body.messageId === null ||
+    typeof body.messageId !== "string" ||
+    body.messageId.length === 0
+  ) {
+    details.push("messageId is required");
+  }
+  if (
+    body.leaseToken === undefined ||
+    body.leaseToken === null ||
+    typeof body.leaseToken !== "string" ||
+    body.leaseToken.length === 0
+  ) {
+    details.push("leaseToken is required");
+  }
+  if (details.length > 0) {
+    return jsonResponse({ error: "invalid_request", details }, 400);
+  }
+
+  const result = ackOutboxMessage(body.messageId!, body.leaseToken!);
+
+  switch (result) {
+    case "delivered":
+      return jsonResponse({ ok: true, status: "delivered" }, 200);
+    case "already_delivered":
+      return jsonResponse({ ok: true, status: "already_delivered" }, 200);
+    case "not_found":
+      return jsonResponse({ error: "not_found" }, 404);
+    case "lease_conflict":
+      return jsonResponse({ error: "lease_conflict" }, 409);
+  }
+}
+
 // --- Server ---
 
 export interface CortexServer {
@@ -185,6 +357,14 @@ export function createServer(config: CortexConfig): CortexServer {
 
       if (req.method === "POST" && url.pathname === "/ingest") {
         return handleIngest(req, config);
+      }
+
+      if (req.method === "POST" && url.pathname === "/outbox/poll") {
+        return handleOutboxPoll(req, config);
+      }
+
+      if (req.method === "POST" && url.pathname === "/outbox/ack") {
+        return handleOutboxAck(req, config);
       }
 
       return jsonResponse({ error: "not_found" }, 404);
