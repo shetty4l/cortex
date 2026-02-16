@@ -33,12 +33,15 @@ describe("POST /ingest", () => {
 
   beforeAll(() => {
     savedEnv.CORTEX_CONFIG_PATH = process.env.CORTEX_CONFIG_PATH;
-    savedEnv.CORTEX_INGEST_API_KEY = process.env.CORTEX_INGEST_API_KEY;
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
-    process.env.CORTEX_INGEST_API_KEY = API_KEY;
     initDatabase({ path: ":memory:", force: true });
-    const config = loadConfig({ quiet: true });
-    const cortexServer = createServer({ ...config, port: 0 });
+    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
+    const cortexServer = createServer({
+      ...config,
+      port: 0,
+      ingestApiKey: API_KEY,
+      model: "test-model",
+    });
     server = cortexServer.start();
     baseUrl = `http://${server.hostname}:${server.port}`;
   });

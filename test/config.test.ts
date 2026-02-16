@@ -84,7 +84,10 @@ describe("config", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
     const configPath = join(tmpDir, "config.json");
 
-    writeFileSync(configPath, JSON.stringify({ port: 9999 }));
+    writeFileSync(
+      configPath,
+      JSON.stringify({ port: 9999, model: "test-model" }),
+    );
 
     process.env.CORTEX_CONFIG_PATH = configPath;
     process.env.CORTEX_PORT = "8888";
@@ -176,5 +179,12 @@ describe("config", () => {
     expect(() => loadConfig({ quiet: true })).toThrow(
       "ingestApiKey is required",
     );
+  });
+
+  test("throws when model is missing", () => {
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    process.env.CORTEX_INGEST_API_KEY = "test-key";
+
+    expect(() => loadConfig({ quiet: true })).toThrow("model is required");
   });
 });

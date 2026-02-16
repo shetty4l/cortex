@@ -9,12 +9,15 @@ describe("health endpoint", () => {
 
   beforeAll(() => {
     savedEnv.CORTEX_CONFIG_PATH = process.env.CORTEX_CONFIG_PATH;
-    savedEnv.CORTEX_INGEST_API_KEY = process.env.CORTEX_INGEST_API_KEY;
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
-    process.env.CORTEX_INGEST_API_KEY = "test-key";
-    const config = loadConfig({ quiet: true });
+    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
     // Use port 0 for random available port in tests
-    const cortexServer = createServer({ ...config, port: 0 });
+    const cortexServer = createServer({
+      ...config,
+      port: 0,
+      ingestApiKey: "test-key",
+      model: "test-model",
+    });
     server = cortexServer.start();
     baseUrl = `http://${server.hostname}:${server.port}`;
   });
