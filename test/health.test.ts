@@ -5,9 +5,13 @@ import { createServer } from "../src/server";
 describe("health endpoint", () => {
   let server: ReturnType<typeof Bun.serve>;
   let baseUrl: string;
+  const savedEnv: Record<string, string | undefined> = {};
 
   beforeAll(() => {
+    savedEnv.CORTEX_CONFIG_PATH = process.env.CORTEX_CONFIG_PATH;
+    savedEnv.CORTEX_INGEST_API_KEY = process.env.CORTEX_INGEST_API_KEY;
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    process.env.CORTEX_INGEST_API_KEY = "test-key";
     const config = loadConfig({ quiet: true });
     // Use port 0 for random available port in tests
     const cortexServer = createServer({ ...config, port: 0 });
@@ -17,6 +21,10 @@ describe("health endpoint", () => {
 
   afterAll(() => {
     server.stop();
+    for (const [key, val] of Object.entries(savedEnv)) {
+      if (val === undefined) delete process.env[key];
+      else process.env[key] = val;
+    }
   });
 
   test("GET /health returns healthy status", async () => {

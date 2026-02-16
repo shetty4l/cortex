@@ -21,7 +21,7 @@ export interface CortexConfig {
   port: number;
 
   // Auth
-  ingestApiKey?: string;
+  ingestApiKey: string;
 
   // Services
   synapseUrl: string;
@@ -52,7 +52,10 @@ export interface CortexConfig {
 
 // --- Defaults ---
 
-const DEFAULTS: CortexConfig = {
+const DEFAULTS: Omit<
+  CortexConfig,
+  "ingestApiKey" | "model" | "extractionModel"
+> = {
   host: "127.0.0.1",
   port: 7751,
   synapseUrl: "http://localhost:7750",
@@ -243,10 +246,24 @@ function validateConfig(raw: unknown): Partial<CortexConfig> {
 
 // --- Load ---
 
-export function loadConfig(options?: {
+interface LoadConfigOptions {
   configPath?: string;
   quiet?: boolean;
-}): CortexConfig {
+  skipRequiredChecks?: boolean;
+}
+
+/** Config with relaxed required fields — returned when skipRequiredChecks is true. */
+export type PartialCortexConfig = Omit<CortexConfig, "ingestApiKey"> & {
+  ingestApiKey?: string;
+};
+
+export function loadConfig(
+  options: LoadConfigOptions & { skipRequiredChecks: true },
+): PartialCortexConfig;
+export function loadConfig(options?: LoadConfigOptions): CortexConfig;
+export function loadConfig(
+  options?: LoadConfigOptions,
+): CortexConfig | PartialCortexConfig {
   const filePath =
     options?.configPath ??
     process.env.CORTEX_CONFIG_PATH ??
@@ -275,7 +292,11 @@ export function loadConfig(options?: {
   }
 
   // Merge: defaults <- file config <- env overrides
-  const config: CortexConfig = { ...DEFAULTS, ...fileConfig };
+  // Use a partial type until required fields are validated below.
+  const config: typeof DEFAULTS & Partial<CortexConfig> = {
+    ...DEFAULTS,
+    ...fileConfig,
+  };
 
   // Env overrides
   if (process.env.CORTEX_PORT) {
@@ -288,5 +309,14 @@ export function loadConfig(options?: {
     config.ingestApiKey = process.env.CORTEX_INGEST_API_KEY;
   }
 
-  return config;
+  // Required field validation
+  if (!options?.skipRequiredChecks) {
+    if (!config.ingestApiKey) {
+      throw new Error(
+        "ingestApiKey is required. Set it in config.json or via CORTEX_INGEST_API_KEY env var.",
+      );
+    }
+  }
+
+  return config as CortexConfig;
 }
