@@ -343,3 +343,244 @@ export function listOutboxMessagesByTopic(topicKey: string): OutboxMessage[] {
   );
   return stmt.all({ $topicKey: topicKey }) as OutboxMessage[];
 }
+
+// --- Outbox poll/ack operations ---
+
+/**
+ * Compute exponential backoff delay for outbox retries.
+ * Formula: min(2^(attempts-1) * 5000ms, 15min) with ±20% jitter.
+ *
+ * Pure function — exported for testing.
+ */
+export function computeBackoffDelay(attempts: number): number {
+  const base = Math.min(2 ** (attempts - 1) * 5000, 900_000);
+  const jitter = 0.8 + Math.random() * 0.4; // [0.8, 1.2]
+  return Math.round(base * jitter);
+}
+
+export interface OutboxPollResult {
+  messageId: string;
+  leaseToken: string;
+  topicKey: string;
+  text: string;
+  payload: Record<string, unknown> | null;
+}
+
+/**
+ * Atomically claim outbox messages for a connector source.
+ *
+ * Eligible rows: matching source, next_attempt_at <= now, and either
+ * status='pending' OR (status='leased' AND lease_expires_at <= now).
+ *
+ * For each eligible row:
+ *   - Increment attempts
+ *   - If attempts > maxAttempts → transition to 'dead' (DLQ)
+ *   - Else → set status='leased', fresh lease_token + lease_expires_at,
+ *     and next_attempt_at = now + backoff(attempts) for retry if lease expires
+ *
+ * Returns only successfully leased messages (not dead-lettered ones).
+ */
+export function pollOutboxMessages(
+  source: string,
+  max: number,
+  leaseSeconds: number,
+  maxAttempts: number,
+  topicKey?: string,
+): OutboxPollResult[] {
+  const database = getDatabase();
+  const now = Date.now();
+
+  // Use a transaction for atomicity — no other poller can claim the same rows.
+  const results: OutboxPollResult[] = [];
+
+  database.transaction(() => {
+    // Find eligible rows
+    const topicFilter = topicKey ? " AND topic_key = $topicKey" : "";
+    const eligible = database
+      .prepare(
+        `SELECT id, attempts FROM outbox_messages
+         WHERE source = $source
+           AND next_attempt_at <= $now
+           AND (status = 'pending' OR (status = 'leased' AND lease_expires_at <= $now))${topicFilter}
+         ORDER BY next_attempt_at ASC, created_at ASC
+         LIMIT $max`,
+      )
+      .all({
+        $source: source,
+        $now: now,
+        $max: max,
+        ...(topicKey ? { $topicKey: topicKey } : {}),
+      }) as Array<{
+      id: string;
+      attempts: number;
+    }>;
+
+    const deadLetterStmt = database.prepare(`
+      UPDATE outbox_messages
+      SET status = 'dead', attempts = $attempts, last_error = 'max attempts exceeded', updated_at = $now
+      WHERE id = $id
+    `);
+
+    const leaseStmt = database.prepare(`
+      UPDATE outbox_messages
+      SET status = 'leased',
+          attempts = $attempts,
+          lease_token = $leaseToken,
+          lease_expires_at = $leaseExpiresAt,
+          next_attempt_at = $nextAttemptAt,
+          updated_at = $now
+      WHERE id = $id
+      RETURNING id, topic_key, text, payload_json, lease_token
+    `);
+
+    for (const row of eligible) {
+      const newAttempts = row.attempts + 1;
+
+      if (newAttempts > maxAttempts) {
+        deadLetterStmt.run({
+          $id: row.id,
+          $attempts: newAttempts,
+          $now: now,
+        });
+        continue;
+      }
+
+      const leaseToken = `lease_${crypto.randomUUID()}`;
+      const leaseExpiresAt = now + leaseSeconds * 1000;
+      const nextAttemptAt = now + computeBackoffDelay(newAttempts);
+
+      const leased = leaseStmt.get({
+        $id: row.id,
+        $attempts: newAttempts,
+        $leaseToken: leaseToken,
+        $leaseExpiresAt: leaseExpiresAt,
+        $nextAttemptAt: nextAttemptAt,
+        $now: now,
+      }) as {
+        id: string;
+        topic_key: string;
+        text: string;
+        payload_json: string | null;
+        lease_token: string;
+      } | null;
+
+      if (leased) {
+        results.push({
+          messageId: leased.id,
+          leaseToken: leased.lease_token,
+          topicKey: leased.topic_key,
+          text: leased.text,
+          payload: leased.payload_json
+            ? (JSON.parse(leased.payload_json) as Record<string, unknown>)
+            : null,
+        });
+      }
+    }
+  })();
+
+  return results;
+}
+
+export type AckResult =
+  | "delivered"
+  | "already_delivered"
+  | "lease_conflict"
+  | "not_found";
+
+/**
+ * Acknowledge successful delivery of an outbox message.
+ *
+ * Requires matching messageId + leaseToken with an active (non-expired) lease.
+ * Idempotent: re-acking an already-delivered message with the same token returns
+ * "already_delivered".
+ */
+export function ackOutboxMessage(
+  messageId: string,
+  leaseToken: string,
+): AckResult {
+  const database = getDatabase();
+  const now = Date.now();
+
+  return database.transaction(() => {
+    const row = database
+      .prepare(
+        "SELECT status, lease_token, lease_expires_at FROM outbox_messages WHERE id = $id",
+      )
+      .get({ $id: messageId }) as {
+      status: string;
+      lease_token: string | null;
+      lease_expires_at: number | null;
+    } | null;
+
+    if (!row) return "not_found" as const;
+
+    // Idempotent: already delivered with same token
+    if (row.status === "delivered" && row.lease_token === leaseToken) {
+      return "already_delivered" as const;
+    }
+
+    // Must be leased with matching token and active lease
+    if (
+      row.status !== "leased" ||
+      row.lease_token !== leaseToken ||
+      !row.lease_expires_at ||
+      row.lease_expires_at <= now
+    ) {
+      return "lease_conflict" as const;
+    }
+
+    const result = database
+      .prepare(
+        `UPDATE outbox_messages
+         SET status = 'delivered', updated_at = $now
+         WHERE id = $id AND status = 'leased' AND lease_token = $leaseToken`,
+      )
+      .run({ $id: messageId, $leaseToken: leaseToken, $now: now });
+
+    return result.changes === 1
+      ? ("delivered" as const)
+      : ("lease_conflict" as const);
+  })();
+}
+
+// --- List + purge operations ---
+
+/**
+ * List recent inbox messages, most recent first.
+ */
+export function listInboxMessages(limit = 20): InboxMessage[] {
+  const database = getDatabase();
+  return database
+    .prepare(
+      "SELECT * FROM inbox_messages ORDER BY created_at DESC LIMIT $limit",
+    )
+    .all({ $limit: limit }) as InboxMessage[];
+}
+
+/**
+ * List recent outbox messages, most recent first.
+ */
+export function listOutboxMessages(limit = 20): OutboxMessage[] {
+  const database = getDatabase();
+  return database
+    .prepare(
+      "SELECT * FROM outbox_messages ORDER BY created_at DESC LIMIT $limit",
+    )
+    .all({ $limit: limit }) as OutboxMessage[];
+}
+
+/**
+ * Purge all inbox and outbox messages. Returns deleted counts.
+ * Intended for dev/test cleanup only.
+ */
+export function purgeMessages(): { inbox: number; outbox: number } {
+  const database = getDatabase();
+  return database.transaction(() => {
+    const inboxResult = database.prepare("DELETE FROM inbox_messages").run();
+    const outboxResult = database.prepare("DELETE FROM outbox_messages").run();
+    return {
+      inbox: inboxResult.changes,
+      outbox: outboxResult.changes,
+    };
+  })();
+}

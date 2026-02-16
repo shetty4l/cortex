@@ -23,10 +23,10 @@ import { chat } from "./synapse";
 // --- Constants ---
 
 /** How often to check for new messages when the inbox has work. */
-const POLL_INTERVAL_BUSY_MS = 100;
+const DEFAULT_POLL_BUSY_MS = 100;
 
 /** How long to wait before re-checking when the inbox was empty. */
-const POLL_INTERVAL_IDLE_MS = 2_000;
+const DEFAULT_POLL_IDLE_MS = 2_000;
 
 const SYSTEM_PROMPT =
   "You are Cortex, a helpful life assistant. Be concise, direct, and actionable.";
@@ -38,23 +38,35 @@ export interface ProcessingLoop {
   stop(): Promise<void>;
 }
 
+export interface ProcessingLoopOptions {
+  /** Override busy poll interval (ms). Default: 100. */
+  pollBusyMs?: number;
+  /** Override idle poll interval (ms). Default: 2000. */
+  pollIdleMs?: number;
+}
+
 /**
  * Start the processing loop. Claims and processes inbox messages one at a time.
  *
  * Returns a handle with a `stop()` method for graceful shutdown.
  */
-export function startProcessingLoop(config: CortexConfig): ProcessingLoop {
+export function startProcessingLoop(
+  config: CortexConfig,
+  options?: ProcessingLoopOptions,
+): ProcessingLoop {
   let running = true;
+  const pollBusyMs = options?.pollBusyMs ?? DEFAULT_POLL_BUSY_MS;
+  const pollIdleMs = options?.pollIdleMs ?? DEFAULT_POLL_IDLE_MS;
 
   const done = (async () => {
     while (running) {
-      let delay = POLL_INTERVAL_IDLE_MS;
+      let delay = pollIdleMs;
 
       try {
         const message = claimNextInboxMessage();
 
         if (message) {
-          delay = POLL_INTERVAL_BUSY_MS;
+          delay = pollBusyMs;
 
           try {
             const response = await chat(
