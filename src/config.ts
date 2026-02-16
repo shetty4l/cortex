@@ -86,6 +86,18 @@ function parsePort(value: string, source: string): number {
   return port;
 }
 
+/**
+ * Validate an env var value is a non-empty, non-whitespace string.
+ * Throws with a clear error if blank.
+ */
+function requireNonEmptyEnv(envName: string, value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`${envName}: must be a non-empty string`);
+  }
+  return trimmed;
+}
+
 // --- Env var interpolation ---
 
 export function interpolateEnvVars(value: string): string {
@@ -157,8 +169,8 @@ function validateConfig(raw: unknown): Partial<CortexConfig> {
   }
 
   if (obj.ingestApiKey !== undefined) {
-    if (typeof obj.ingestApiKey !== "string") {
-      throw new Error("ingestApiKey: must be a string");
+    if (typeof obj.ingestApiKey !== "string" || obj.ingestApiKey.length === 0) {
+      throw new Error("ingestApiKey: must be a non-empty string");
     }
     result.ingestApiKey = obj.ingestApiKey;
   }
@@ -185,8 +197,11 @@ function validateConfig(raw: unknown): Partial<CortexConfig> {
   }
 
   if (obj.extractionModel !== undefined) {
-    if (typeof obj.extractionModel !== "string") {
-      throw new Error("extractionModel: must be a string");
+    if (
+      typeof obj.extractionModel !== "string" ||
+      obj.extractionModel.length === 0
+    ) {
+      throw new Error("extractionModel: must be a non-empty string");
     }
     result.extractionModel = obj.extractionModel;
   }
@@ -310,13 +325,16 @@ export function loadConfig(
     config.port = parsePort(process.env.CORTEX_PORT, "CORTEX_PORT");
   }
   if (process.env.CORTEX_HOST) {
-    config.host = process.env.CORTEX_HOST;
+    config.host = requireNonEmptyEnv("CORTEX_HOST", process.env.CORTEX_HOST);
   }
   if (process.env.CORTEX_INGEST_API_KEY) {
-    config.ingestApiKey = process.env.CORTEX_INGEST_API_KEY;
+    config.ingestApiKey = requireNonEmptyEnv(
+      "CORTEX_INGEST_API_KEY",
+      process.env.CORTEX_INGEST_API_KEY,
+    );
   }
   if (process.env.CORTEX_MODEL) {
-    config.model = process.env.CORTEX_MODEL;
+    config.model = requireNonEmptyEnv("CORTEX_MODEL", process.env.CORTEX_MODEL);
   }
 
   // Required field validation
