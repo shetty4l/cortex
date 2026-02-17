@@ -636,14 +636,15 @@ export function loadRecentTurns(topicKey: string, limit = 8): Turn[] {
   const maxRows = limit * 2;
 
   // Subquery grabs the most recent rows (DESC), outer query re-orders ASC.
+  // Use _rowid_ for deterministic ordering when created_at ties (same ms).
   return database
     .prepare(
-      `SELECT * FROM (
-        SELECT * FROM turns
+      `SELECT id, topic_key, role, content, created_at FROM (
+        SELECT *, _rowid_ AS rn FROM turns
         WHERE topic_key = $topicKey
-        ORDER BY created_at DESC
+        ORDER BY rn DESC
         LIMIT $maxRows
-      ) ORDER BY created_at ASC`,
+      ) ORDER BY rn ASC`,
     )
     .all({ $topicKey: topicKey, $maxRows: maxRows }) as Turn[];
 }
