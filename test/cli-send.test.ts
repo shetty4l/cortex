@@ -11,7 +11,7 @@ import type { CortexConfig } from "../src/config";
 import { closeDatabase, initDatabase } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
 import { sendMessage } from "../src/send";
-import { createServer } from "../src/server";
+import { startServer } from "../src/server";
 
 // --- Mock Synapse server ---
 
@@ -81,28 +81,27 @@ function openaiResponse(content: string) {
 // --- Tests ---
 
 describe("sendMessage (end-to-end)", () => {
-  let cortexServer: ReturnType<typeof Bun.serve>;
+  let cortexServer: { port: number; stop: () => void };
   let loop: { stop: () => Promise<void> };
   let baseUrl: string;
   let config: CortexConfig;
 
   beforeAll(() => {
-    initDatabase({ path: ":memory:", force: true });
+    initDatabase(":memory:");
     config = testConfig(0);
-    const server = createServer(config);
-    cortexServer = server.start();
-    baseUrl = `http://${cortexServer.hostname}:${cortexServer.port}`;
+    cortexServer = startServer(config);
+    baseUrl = `http://localhost:${cortexServer.port}`;
   });
 
   afterAll(() => {
-    cortexServer.stop(true);
+    cortexServer.stop();
     closeDatabase();
   });
 
   beforeEach(() => {
-    initDatabase({ path: ":memory:", force: true });
+    initDatabase(":memory:");
     loop = startProcessingLoop(
-      { ...config, port: cortexServer.port as number },
+      { ...config, port: cortexServer.port },
       { pollBusyMs: 10, pollIdleMs: 50 },
     );
   });
@@ -115,14 +114,16 @@ describe("sendMessage (end-to-end)", () => {
     mockHandler = () =>
       Response.json(openaiResponse("Hello from the assistant!"));
 
-    const response = await sendMessage("What is 2+2?", {
+    const result = await sendMessage("What is 2+2?", {
       baseUrl,
       apiKey: API_KEY,
       pollIntervalMs: 100,
       pollTimeoutMs: 10_000,
     });
 
-    expect(response).toBe("Hello from the assistant!");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toBe("Hello from the assistant!");
   });
 
   test("returns correct response for different messages", async () => {
@@ -134,17 +135,19 @@ describe("sendMessage (end-to-end)", () => {
       return Response.json(openaiResponse(`Echo: ${userMsg}`));
     };
 
-    const response = await sendMessage("ping", {
+    const result = await sendMessage("ping", {
       baseUrl,
       apiKey: API_KEY,
       pollIntervalMs: 100,
       pollTimeoutMs: 10_000,
     });
 
-    expect(response).toBe("Echo: ping");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toBe("Echo: ping");
   });
 
-  test("times out when no response is produced", async () => {
+  test("returns error when no response is produced (timeout)", async () => {
     // Synapse returns an error, so the loop marks inbox as failed
     // but no outbox message is written — sendMessage never finds a response
     mockHandler = () =>
@@ -153,25 +156,27 @@ describe("sendMessage (end-to-end)", () => {
         { status: 503 },
       );
 
-    const promise = sendMessage("Will timeout", {
+    const result = await sendMessage("Will timeout", {
       baseUrl,
       apiKey: API_KEY,
       pollIntervalMs: 50,
       pollTimeoutMs: 500,
     });
 
-    await expect(promise).rejects.toThrow("Timed out");
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("Timed out");
   });
 
-  test("throws on connection failure", async () => {
-    const promise = sendMessage("Hello", {
+  test("returns error on connection failure", async () => {
+    const result = await sendMessage("Hello", {
       baseUrl: "http://localhost:1",
       apiKey: API_KEY,
       pollIntervalMs: 100,
       pollTimeoutMs: 1_000,
     });
 
-    await expect(promise).rejects.toThrow();
+    expect(result.ok).toBe(false);
   });
 
   test("handles multiple sequential sends", async () => {
@@ -191,7 +196,10 @@ describe("sendMessage (end-to-end)", () => {
     const r1 = await sendMessage("First", opts);
     const r2 = await sendMessage("Second", opts);
 
-    expect(r1).toBe("Response 1");
-    expect(r2).toBe("Response 2");
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    if (!r1.ok || !r2.ok) return;
+    expect(r1.value).toBe("Response 1");
+    expect(r2.value).toBe("Response 2");
   });
 });

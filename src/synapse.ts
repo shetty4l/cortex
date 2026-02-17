@@ -8,6 +8,9 @@
  * Cortex just sends `{ model, messages }` and gets back a chat completion.
  */
 
+import type { Result } from "@shetty4l/core/result";
+import { err, ok } from "@shetty4l/core/result";
+
 // --- Types ---
 
 export interface ChatMessage {
@@ -21,17 +24,6 @@ export interface ChatResponse {
   finishReason: string;
 }
 
-export class SynapseError extends Error {
-  constructor(
-    message: string,
-    public readonly status: number,
-    public readonly body?: string,
-  ) {
-    super(message);
-    this.name = "SynapseError";
-  }
-}
-
 // --- Client ---
 
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -39,14 +31,14 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /**
  * Send a chat completion request to Synapse.
  *
- * Returns the assistant's text response. Throws SynapseError on
+ * Returns Ok with the assistant's text response, or Err on
  * non-2xx responses, timeouts, or malformed responses.
  */
 export async function chat(
   messages: ChatMessage[],
   model: string,
   synapseUrl: string,
-): Promise<ChatResponse> {
+): Promise<Result<ChatResponse>> {
   const url = `${synapseUrl}/v1/chat/completions`;
 
   let response: Response;
@@ -57,49 +49,36 @@ export async function chat(
       body: JSON.stringify({ model, messages, stream: false }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-  } catch (err) {
-    if (err instanceof DOMException && err.name === "TimeoutError") {
-      throw new SynapseError(
-        `Synapse request timed out after ${REQUEST_TIMEOUT_MS}ms`,
-        0,
-      );
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "TimeoutError") {
+      return err(`Synapse request timed out after ${REQUEST_TIMEOUT_MS}ms`);
     }
-    if (err instanceof DOMException && err.name === "AbortError") {
-      throw new SynapseError("Synapse request was aborted", 0);
+    if (e instanceof DOMException && e.name === "AbortError") {
+      return err("Synapse request was aborted");
     }
-    throw new SynapseError(
-      `Synapse connection failed: ${err instanceof Error ? err.message : String(err)}`,
-      0,
+    return err(
+      `Synapse connection failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 
   let body: string;
   try {
     body = await response.text();
-  } catch (err) {
-    throw new SynapseError(
-      `Synapse response body read failed: ${err instanceof Error ? err.message : String(err)}`,
-      response.status,
+  } catch (e) {
+    return err(
+      `Synapse response body read failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 
   if (!response.ok) {
-    throw new SynapseError(
-      `Synapse returned ${response.status}: ${body.slice(0, 500)}`,
-      response.status,
-      body,
-    );
+    return err(`Synapse returned ${response.status}: ${body.slice(0, 500)}`);
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
   } catch {
-    throw new SynapseError(
-      "Synapse returned invalid JSON",
-      response.status,
-      body,
-    );
+    return err("Synapse returned invalid JSON");
   }
 
   // Parse OpenAI chat completion response
@@ -115,26 +94,18 @@ export async function chat(
     !Array.isArray(completion.choices) ||
     completion.choices.length === 0
   ) {
-    throw new SynapseError(
-      "Synapse response missing choices array",
-      response.status,
-      body,
-    );
+    return err("Synapse response missing choices array");
   }
 
   const choice = completion.choices[0];
   const content = choice.message?.content;
 
   if (content === undefined || content === null) {
-    throw new SynapseError(
-      "Synapse response has no content in choices[0].message",
-      response.status,
-      body,
-    );
+    return err("Synapse response has no content in choices[0].message");
   }
 
-  return {
+  return ok({
     content,
     finishReason: choice.finish_reason ?? "stop",
-  };
+  });
 }

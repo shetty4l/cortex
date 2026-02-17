@@ -68,36 +68,35 @@ export function startProcessingLoop(
         if (message) {
           delay = pollBusyMs;
 
-          try {
-            const response = await chat(
-              [
-                { role: "system", content: SYSTEM_PROMPT },
-                { role: "user", content: message.text },
-              ],
-              config.model,
-              config.synapseUrl,
-            );
+          const result = await chat(
+            [
+              { role: "system", content: SYSTEM_PROMPT },
+              { role: "user", content: message.text },
+            ],
+            config.model,
+            config.synapseUrl,
+          );
 
+          if (result.ok) {
             enqueueOutboxMessage({
               source: message.source,
               topicKey: message.topic_key,
-              text: response.content,
+              text: result.value.content,
             });
 
             completeInboxMessage(message.id);
-          } catch (err) {
-            const reason = err instanceof Error ? err.message : String(err);
+          } else {
             console.error(
-              `Failed to process inbox message ${message.id}:`,
-              reason,
+              `cortex: failed to process inbox message ${message.id}:`,
+              result.error,
             );
-            completeInboxMessage(message.id, reason);
+            completeInboxMessage(message.id, result.error);
           }
         }
       } catch (err) {
         // Unexpected error in the loop itself (e.g. DB failure on claim).
         // Log and continue — don't crash the loop.
-        console.error("Processing loop error:", err);
+        console.error("cortex: processing loop error:", err);
       }
 
       if (running) {

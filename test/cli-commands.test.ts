@@ -11,7 +11,7 @@ import {
 
 describe("list and purge operations", () => {
   beforeEach(() => {
-    initDatabase({ path: ":memory:", force: true });
+    initDatabase(":memory:");
   });
 
   afterEach(() => {

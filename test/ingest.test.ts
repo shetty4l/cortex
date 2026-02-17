@@ -7,11 +7,32 @@ import {
   expect,
   test,
 } from "bun:test";
-import { loadConfig } from "../src/config";
+import type { CortexConfig } from "../src/config";
 import { closeDatabase, getDatabase, initDatabase } from "../src/db";
-import { createServer } from "../src/server";
+import { startServer } from "../src/server";
 
 const API_KEY = "test-ingest-key";
+
+function makeConfig(): CortexConfig {
+  return {
+    host: "127.0.0.1",
+    port: 0,
+    ingestApiKey: API_KEY,
+    model: "test-model",
+    synapseUrl: "http://localhost:7750",
+    engramUrl: "http://localhost:7749",
+    activeWindowSize: 10,
+    extractionInterval: 3,
+    turnTtlDays: 30,
+    schedulerTickSeconds: 30,
+    schedulerTimezone: "UTC",
+    outboxPollDefaultBatch: 20,
+    outboxLeaseSeconds: 60,
+    outboxMaxAttempts: 10,
+    skillDirs: [],
+    toolTimeoutMs: 20000,
+  };
+}
 
 function validEvent(overrides?: Record<string, unknown>) {
   return {
@@ -27,23 +48,16 @@ function validEvent(overrides?: Record<string, unknown>) {
 }
 
 describe("POST /ingest", () => {
-  let server: ReturnType<typeof Bun.serve>;
+  let server: { port: number; stop: () => void };
   let baseUrl: string;
   const savedEnv: Record<string, string | undefined> = {};
 
   beforeAll(() => {
     savedEnv.CORTEX_CONFIG_PATH = process.env.CORTEX_CONFIG_PATH;
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
-    initDatabase({ path: ":memory:", force: true });
-    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
-    const cortexServer = createServer({
-      ...config,
-      port: 0,
-      ingestApiKey: API_KEY,
-      model: "test-model",
-    });
-    server = cortexServer.start();
-    baseUrl = `http://${server.hostname}:${server.port}`;
+    initDatabase(":memory:");
+    server = startServer(makeConfig());
+    baseUrl = `http://localhost:${server.port}`;
   });
 
   afterAll(() => {
