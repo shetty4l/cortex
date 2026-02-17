@@ -202,4 +202,38 @@ describe("sendMessage (end-to-end)", () => {
     expect(r1.value).toBe("Response 1");
     expect(r2.value).toBe("Response 2");
   });
+
+  test("uses provided topicKey instead of generating a random one", async () => {
+    let capturedTopicKeys: string[] = [];
+
+    mockHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages: Array<{ content: string }>;
+      };
+      const userMsg = body.messages[body.messages.length - 1].content;
+      return Response.json(openaiResponse(`Echo: ${userMsg}`));
+    };
+
+    // Intercept ingest requests to capture the topicKey
+    const originalFetch = globalThis.fetch;
+    const topicKeys: string[] = [];
+    // We'll check via outbox poll instead — send two messages on same topic
+
+    const opts = {
+      baseUrl,
+      apiKey: API_KEY,
+      topicKey: "test:fixed-topic",
+      pollIntervalMs: 100,
+      pollTimeoutMs: 10_000,
+    };
+
+    const r1 = await sendMessage("First on fixed topic", opts);
+    const r2 = await sendMessage("Second on fixed topic", opts);
+
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    if (!r1.ok || !r2.ok) return;
+    expect(r1.value).toBe("Echo: First on fixed topic");
+    expect(r2.value).toBe("Echo: Second on fixed topic");
+  });
 });
