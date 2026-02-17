@@ -146,7 +146,7 @@ async function cmdStop(): Promise<number> {
   const daemon = getDaemon();
   const result = await daemon.stop();
   if (!result.ok) {
-    console.log(result.error);
+    console.error(result.error);
     return 1;
   }
   console.log(`cortex daemon stopped (was PID: ${result.value.pid})`);
