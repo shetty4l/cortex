@@ -51,7 +51,7 @@
 
     "@oxlint/win32-x64": ["@oxlint/win32-x64@0.12.0", "", { "os": "win32", "cpu": "x64" }, "sha512-NHLJolo4sZk3nu/bPNuaJ+6p5DdHoRuZAjyuSO6CnLgpmZcYqx7LgngA/x2oB/bLgi4Hv9twjHjODc5Ce5o14g=="],
 
-    "@shetty4l/core": ["@shetty4l/core@0.1.16", "", { "bin": { "version-bump": "bin/version-bump.js" } }, "sha512-tiHDhTwYEXxliB89amQd+sJTtzyLmgIwJrT73IhR92gTRWTPkTO6OL1vVedpB+eL+2cd6+Zs5a2a2e/vE+UkYQ=="],
+    "@shetty4l/core": ["@shetty4l/core@0.1.17", "", { "bin": { "version-bump": "bin/version-bump.js" } }, "sha512-OkgMYxF5273YTMqNMiE+LDix33ESrP9MI8XeNbTDEHBPc+0Gf5CrUgV/dmPIggjiAUT+zLLO/Asdb2o262lrgQ=="],
 
     "@types/bun": ["@types/bun@1.3.9", "", { "dependencies": { "bun-types": "1.3.9" } }, "sha512-KQ571yULOdWJiMH+RIWIOZ7B2RXQGpL1YQrBtLIV3FqDcCu6FsbFUBwhdKUlCKUpS3PJDsHlJ1QKlpxoVR+xtw=="],
 
