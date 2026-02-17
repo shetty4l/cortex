@@ -13,6 +13,7 @@
  *   cortex config         Print resolved configuration
  *   cortex logs [n]       Show last n log lines (default: 20)
  *   cortex send "msg"     Send a message and wait for response
+ *   cortex send "msg" --topic ID  Send on a fixed topic (multi-turn)
  *   cortex inbox          Show recent inbox messages
  *   cortex outbox         Show recent outbox messages
  *   cortex purge          Purge all inbox and outbox messages
@@ -64,6 +65,7 @@ Usage:
 
 Options:
   --json                Machine-readable JSON output
+  --topic ID            Use a fixed topic key for send (enables multi-turn)
   --confirm             Required for destructive operations (purge)
   --version, -v         Show version
   --help, -h            Show help
@@ -397,10 +399,26 @@ function cmdPurge(_args: string[], json: boolean): number {
 }
 
 async function cmdSend(args: string[], json: boolean): Promise<number> {
-  const text = args[0];
+  // Extract --topic <value> from args
+  let topicKey: string | undefined;
+  const filtered: string[] = [];
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--topic") {
+      topicKey = args[++i];
+      if (!topicKey) {
+        console.error("Error: --topic requires a value.");
+        return 1;
+      }
+    } else {
+      filtered.push(args[i]);
+    }
+  }
+
+  const text = filtered[0];
   if (!text || text.length === 0) {
     console.error(
-      'Error: message text is required.\n\nUsage: cortex send "your message"',
+      'Error: message text is required.\n\nUsage: cortex send "your message" [--topic ID]',
     );
     return 1;
   }
@@ -415,7 +433,7 @@ async function cmdSend(args: string[], json: boolean): Promise<number> {
   const baseUrl = `http://localhost:${config.port}`;
   const apiKey = config.ingestApiKey;
 
-  const result = await sendMessage(text, { baseUrl, apiKey });
+  const result = await sendMessage(text, { baseUrl, apiKey, topicKey });
 
   if (!result.ok) {
     if (json) {

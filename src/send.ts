@@ -15,6 +15,8 @@ const SEND_SOURCE = "cli";
 export interface SendOptions {
   baseUrl: string;
   apiKey: string;
+  /** Fixed topic key. If omitted, a random cli:{uuid} key is generated per call. */
+  topicKey?: string;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;
 }
@@ -37,7 +39,7 @@ export async function sendMessage(
   const pollInterval = options.pollIntervalMs ?? POLL_INTERVAL_MS;
   const pollTimeout = options.pollTimeoutMs ?? POLL_TIMEOUT_MS;
 
-  const topicKey = `cli:${crypto.randomUUID()}`;
+  const topicKey = options.topicKey ?? `cli:${crypto.randomUUID()}`;
   const externalMessageId = `cli-${crypto.randomUUID()}`;
 
   // 1. Ingest
