@@ -3,13 +3,13 @@
  *
  * Polls the inbox for pending messages and processes them sequentially:
  *   1. Claim the oldest pending inbox message
- *   2. Build a minimal prompt (system + user message)
- *   3. Call Synapse for a chat completion
- *   4. Write the assistant response to the outbox
- *   5. Mark the inbox message as done (or failed on error)
- *
- * Slice 2 is the tracer bullet — no history, no Engram recall, no tools.
- * Those are layered on in Slices 3-7.
+ *   2. Recall relevant memories from Engram (topic-scoped + global)
+ *   3. Load recent turn history from SQLite
+ *   4. Build prompt (system + memories + history + user message)
+ *   5. Call Synapse for a chat completion
+ *   6. Save the turn pair (user + assistant) to history
+ *   7. Write the assistant response to the outbox
+ *   8. Mark the inbox message as done (or failed on error)
  */
 
 import type { CortexConfig } from "./config";
@@ -18,6 +18,9 @@ import {
   completeInboxMessage,
   enqueueOutboxMessage,
 } from "./db";
+import { recallDual } from "./engram";
+import { loadHistory, saveTurnPair } from "./history";
+import { buildPrompt } from "./prompt";
 import { chat } from "./synapse";
 
 // --- Constants ---
@@ -27,9 +30,6 @@ const DEFAULT_POLL_BUSY_MS = 100;
 
 /** How long to wait before re-checking when the inbox was empty. */
 const DEFAULT_POLL_IDLE_MS = 2_000;
-
-const SYSTEM_PROMPT =
-  "You are Cortex, a helpful life assistant. Be concise, direct, and actionable.";
 
 // --- Loop ---
 
@@ -68,16 +68,31 @@ export function startProcessingLoop(
         if (message) {
           delay = pollBusyMs;
 
-          const result = await chat(
-            [
-              { role: "system", content: SYSTEM_PROMPT },
-              { role: "user", content: message.text },
-            ],
-            config.model,
-            config.synapseUrl,
+          // 1. Recall memories from Engram (graceful on failure)
+          const memories = await recallDual(
+            message.text,
+            message.topic_key,
+            config.engramUrl,
           );
 
+          // 2. Load recent turn history
+          const turns = loadHistory(message.topic_key);
+
+          // 3. Build prompt
+          const messages = buildPrompt({
+            memories,
+            turns,
+            userText: message.text,
+          });
+
+          // 4. Call Synapse
+          const result = await chat(messages, config.model, config.synapseUrl);
+
           if (result.ok) {
+            // 5. Save turn pair to history
+            saveTurnPair(message.topic_key, message.text, result.value.content);
+
+            // 6. Write to outbox
             enqueueOutboxMessage({
               source: message.source,
               topicKey: message.topic_key,
