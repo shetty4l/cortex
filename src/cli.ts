@@ -26,12 +26,11 @@
  */
 
 import type { CommandHandler } from "@shetty4l/core/cli";
-import { formatUptime, runCli } from "@shetty4l/core/cli";
+import { createLogsCommand, formatUptime, runCli } from "@shetty4l/core/cli";
 import { getConfigDir } from "@shetty4l/core/config";
 import { createDaemonManager } from "@shetty4l/core/daemon";
 import { onShutdown } from "@shetty4l/core/signals";
 import { readVersion } from "@shetty4l/core/version";
-import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { loadConfig } from "./config";
 import {
@@ -258,48 +257,10 @@ function cmdConfig(_args: string[], json: boolean): number {
   return 0;
 }
 
-function cmdLogs(args: string[], json: boolean): number {
-  const count = args[0] ? Number.parseInt(args[0], 10) : 20;
-
-  if (Number.isNaN(count) || count < 1) {
-    console.error("Error: count must be a positive number");
-    return 1;
-  }
-
-  if (!existsSync(LOG_FILE)) {
-    if (json) {
-      console.log(JSON.stringify({ lines: [], count: 0 }));
-    } else {
-      console.log("No logs found.");
-    }
-    return 0;
-  }
-
-  const content = readFileSync(LOG_FILE, "utf-8").trimEnd();
-  if (content.length === 0) {
-    if (json) {
-      console.log(JSON.stringify({ lines: [], count: 0 }));
-    } else {
-      console.log("No logs found.");
-    }
-    return 0;
-  }
-
-  const lines = content.split("\n");
-  const tail = lines.slice(-count);
-
-  if (json) {
-    console.log(JSON.stringify({ lines: tail, count: tail.length }, null, 2));
-    return 0;
-  }
-
-  for (const line of tail) {
-    console.log(line);
-  }
-
-  console.log(`\nShowing ${tail.length} of ${lines.length} lines`);
-  return 0;
-}
+const cmdLogs = createLogsCommand({
+  logFile: LOG_FILE,
+  emptyMessage: "No logs found.",
+});
 
 // --- Inbox/outbox/purge/send commands ---
 

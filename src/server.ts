@@ -339,19 +339,25 @@ export function startServer(config: CortexConfig): HttpServer {
     host: config.host,
     version: VERSION,
     onRequest: async (req: Request, url: URL) => {
+      const start = performance.now();
+      let response: Response | null = null;
+
       if (req.method === "POST" && url.pathname === "/ingest") {
-        return handleIngest(req, config);
+        response = await handleIngest(req, config);
+      } else if (req.method === "POST" && url.pathname === "/outbox/poll") {
+        response = await handleOutboxPoll(req, config);
+      } else if (req.method === "POST" && url.pathname === "/outbox/ack") {
+        response = await handleOutboxAck(req, config);
       }
 
-      if (req.method === "POST" && url.pathname === "/outbox/poll") {
-        return handleOutboxPoll(req, config);
+      if (response) {
+        const latency = (performance.now() - start).toFixed(0);
+        console.error(
+          `cortex: ${req.method} ${url.pathname} ${response.status} ${latency}ms`,
+        );
       }
 
-      if (req.method === "POST" && url.pathname === "/outbox/ack") {
-        return handleOutboxAck(req, config);
-      }
-
-      return null;
+      return response;
     },
   });
 }
