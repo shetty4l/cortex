@@ -67,6 +67,13 @@ export function startProcessingLoop(
 
         if (message) {
           delay = pollBusyMs;
+          const startMs = performance.now();
+
+          const preview =
+            message.text.length > 60
+              ? `${message.text.slice(0, 57)}...`
+              : message.text;
+          console.error(`cortex: [${message.topic_key}] claimed: ${preview}`);
 
           // 1. Recall memories from Engram (graceful on failure)
           const memories = await recallDual(
@@ -78,6 +85,10 @@ export function startProcessingLoop(
           // 2. Load recent turn history
           const turns = loadHistory(message.topic_key);
 
+          console.error(
+            `cortex: [${message.topic_key}] context: memories=${memories.length} turns=${turns.length}`,
+          );
+
           // 3. Build prompt
           const messages = buildPrompt({
             memories,
@@ -87,6 +98,8 @@ export function startProcessingLoop(
 
           // 4. Call Synapse
           const result = await chat(messages, config.model, config.synapseUrl);
+
+          const elapsed = ((performance.now() - startMs) / 1000).toFixed(1);
 
           if (result.ok) {
             // 5. Save turn pair to history
@@ -100,10 +113,11 @@ export function startProcessingLoop(
             });
 
             completeInboxMessage(message.id);
+
+            console.error(`cortex: [${message.topic_key}] done in ${elapsed}s`);
           } else {
             console.error(
-              `cortex: failed to process inbox message ${message.id}:`,
-              result.error,
+              `cortex: [${message.topic_key}] failed in ${elapsed}s: ${result.error}`,
             );
             completeInboxMessage(message.id, result.error);
           }

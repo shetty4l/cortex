@@ -30,6 +30,7 @@ if (!dbResult.ok) {
 }
 
 const server = startServer(config);
+console.error(`cortex: listening on http://${config.host}:${config.port}`);
 const loop = startProcessingLoop(config);
 console.error("cortex: processing loop started");
 
