@@ -1,6 +1,6 @@
 {
   "name": "cortex",
-  "version": "0.1.0",
+  "version": "0.0.0-dev",
   "description": "Channel-agnostic life assistant runtime with tool-calling agent loop",
   "type": "module",
   "main": "src/index.ts",
@@ -15,8 +15,11 @@
     "format:check": "biome check src/ test/",
     "test": "bun test",
     "validate": "bun run typecheck && bun run lint && bun run format:check && bun run test",
-    "version:bump": "bun run scripts/version-bump.ts",
+    "version:bump": "bunx version-bump",
     "prepare": "husky"
+  },
+  "dependencies": {
+    "@shetty4l/core": ">=0.1.0 <1.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.13",

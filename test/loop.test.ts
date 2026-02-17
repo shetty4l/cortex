@@ -128,7 +128,7 @@ const FAST_LOOP = { pollBusyMs: 10, pollIdleMs: 50 };
 
 describe("processing loop", () => {
   beforeEach(() => {
-    initDatabase({ path: ":memory:", force: true });
+    initDatabase(":memory:");
     mockCallCount = 0;
   });
 

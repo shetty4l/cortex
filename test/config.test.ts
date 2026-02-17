@@ -33,7 +33,11 @@ describe("config", () => {
 
   test("returns defaults when no config file exists", () => {
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
-    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const config = result.value;
 
     expect(config.host).toBe("127.0.0.1");
     expect(config.port).toBe(7751);
@@ -69,7 +73,11 @@ describe("config", () => {
     );
 
     process.env.CORTEX_CONFIG_PATH = configPath;
-    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const config = result.value;
 
     expect(config.port).toBe(9999);
     expect(config.host).toBe("0.0.0.0");
@@ -96,7 +104,11 @@ describe("config", () => {
     process.env.CORTEX_INGEST_API_KEY = "test-key";
     process.env.CORTEX_MODEL = "env-model";
 
-    const config = loadConfig({ quiet: true });
+    const result = loadConfig({ quiet: true });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const config = result.value;
 
     expect(config.port).toBe(8888);
     expect(config.host).toBe("0.0.0.0");
@@ -117,47 +129,52 @@ describe("config", () => {
     );
 
     process.env.CORTEX_CONFIG_PATH = configPath;
-    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
 
-    expect(config.synapseUrl).toBe("http://remote:7750");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.synapseUrl).toBe("http://remote:7750");
 
     delete process.env.MY_SYNAPSE_URL;
     rmSync(tmpDir, { recursive: true });
   });
 
-  test("throws on invalid port in env var", () => {
+  test("returns error on invalid port in env var", () => {
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
     process.env.CORTEX_PORT = "99999";
 
-    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
-      "not a valid port number",
-    );
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("not a valid port number");
   });
 
-  test("throws on invalid port in config file", () => {
+  test("returns error on invalid port in config file", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
     const configPath = join(tmpDir, "config.json");
 
     writeFileSync(configPath, JSON.stringify({ port: -1 }));
     process.env.CORTEX_CONFIG_PATH = configPath;
 
-    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
-      "not a valid port number",
-    );
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("not a valid port number");
 
     rmSync(tmpDir, { recursive: true });
   });
 
-  test("throws on invalid JSON in config file", () => {
+  test("returns error on invalid JSON in config file", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
     const configPath = join(tmpDir, "config.json");
 
     writeFileSync(configPath, "not json");
     process.env.CORTEX_CONFIG_PATH = configPath;
 
-    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
-      "invalid JSON",
-    );
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("invalid JSON");
 
     rmSync(tmpDir, { recursive: true });
   });
@@ -169,38 +186,44 @@ describe("config", () => {
     writeFileSync(configPath, JSON.stringify({ outboxLeaseSeconds: 5 }));
     process.env.CORTEX_CONFIG_PATH = configPath;
 
-    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
-      "must be >= 10",
-    );
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must be >= 10");
 
     rmSync(tmpDir, { recursive: true });
   });
 
-  test("throws when ingestApiKey is missing", () => {
+  test("returns error when ingestApiKey is missing", () => {
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
 
-    expect(() => loadConfig({ quiet: true })).toThrow(
-      "ingestApiKey is required",
-    );
+    const result = loadConfig({ quiet: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("ingestApiKey is required");
   });
 
-  test("throws when model is missing", () => {
+  test("returns error when model is missing", () => {
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
     process.env.CORTEX_INGEST_API_KEY = "test-key";
 
-    expect(() => loadConfig({ quiet: true })).toThrow("model is required");
+    const result = loadConfig({ quiet: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("model is required");
   });
 
-  test("throws on empty model string in config file", () => {
+  test("returns error on empty model string in config file", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
     const configPath = join(tmpDir, "config.json");
 
     writeFileSync(configPath, JSON.stringify({ model: "" }));
     process.env.CORTEX_CONFIG_PATH = configPath;
 
-    expect(() => loadConfig({ quiet: true, skipRequiredChecks: true })).toThrow(
-      "model: must be a non-empty string",
-    );
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("model: must be a non-empty string");
 
     rmSync(tmpDir, { recursive: true });
   });
