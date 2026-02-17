@@ -14,35 +14,59 @@ import {
   getInboxMessage,
   initDatabase,
   listOutboxMessagesByTopic,
+  loadRecentTurns,
 } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
+import { SYSTEM_PROMPT } from "../src/prompt";
 
 // --- Mock Synapse server ---
 
-let mockServer: ReturnType<typeof Bun.serve>;
-let mockUrl: string;
-let mockHandler: (req: Request) => Response | Promise<Response>;
-let mockCallCount: number;
+let mockSynapse: ReturnType<typeof Bun.serve>;
+let mockSynapseUrl: string;
+let mockSynapseHandler: (req: Request) => Response | Promise<Response>;
+let mockSynapseCallCount: number;
 
 beforeAll(() => {
-  mockCallCount = 0;
-  mockHandler = () =>
+  mockSynapseCallCount = 0;
+  mockSynapseHandler = () =>
     Response.json({ error: "no mock configured" }, { status: 500 });
 
-  mockServer = Bun.serve({
+  mockSynapse = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
     fetch(req) {
-      mockCallCount++;
-      return mockHandler(req);
+      mockSynapseCallCount++;
+      return mockSynapseHandler(req);
     },
   });
 
-  mockUrl = `http://127.0.0.1:${mockServer.port}`;
+  mockSynapseUrl = `http://127.0.0.1:${mockSynapse.port}`;
+});
+
+// --- Mock Engram server ---
+
+let mockEngram: ReturnType<typeof Bun.serve>;
+let mockEngramUrl: string;
+let mockEngramHandler: (req: Request) => Response | Promise<Response>;
+
+beforeAll(() => {
+  mockEngramHandler = () =>
+    Response.json({ memories: [], fallback_mode: false });
+
+  mockEngram = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch(req) {
+      return mockEngramHandler(req);
+    },
+  });
+
+  mockEngramUrl = `http://127.0.0.1:${mockEngram.port}`;
 });
 
 afterAll(() => {
-  mockServer.stop(true);
+  mockSynapse.stop(true);
+  mockEngram.stop(true);
 });
 
 // --- Test config ---
@@ -52,8 +76,8 @@ function testConfig(): CortexConfig {
     host: "127.0.0.1",
     port: 0,
     ingestApiKey: "test-key",
-    synapseUrl: mockUrl,
-    engramUrl: "http://localhost:7749",
+    synapseUrl: mockSynapseUrl,
+    engramUrl: mockEngramUrl,
     model: "test-model",
     activeWindowSize: 10,
     extractionInterval: 3,
@@ -129,7 +153,10 @@ const FAST_LOOP = { pollBusyMs: 10, pollIdleMs: 50 };
 describe("processing loop", () => {
   beforeEach(() => {
     initDatabase(":memory:");
-    mockCallCount = 0;
+    mockSynapseCallCount = 0;
+    // Default Engram mock: return empty memories
+    mockEngramHandler = () =>
+      Response.json({ memories: [], fallback_mode: false });
   });
 
   afterEach(() => {
@@ -137,7 +164,7 @@ describe("processing loop", () => {
   });
 
   test("processes an inbox message and writes to outbox", async () => {
-    mockHandler = () => Response.json(openaiResponse("Hi there!"));
+    mockSynapseHandler = () => Response.json(openaiResponse("Hi there!"));
 
     const { eventId } = ingestMessage({ text: "Hello assistant" });
     const config = testConfig();
@@ -163,11 +190,11 @@ describe("processing loop", () => {
     expect(outbox[0].status).toBe("pending");
   });
 
-  test("sends the user message text to Synapse", async () => {
+  test("sends system prompt with user message to Synapse", async () => {
     let capturedBody: { messages?: Array<{ role: string; content: string }> } =
       {};
 
-    mockHandler = async (req) => {
+    mockSynapseHandler = async (req) => {
       capturedBody = (await req.json()) as typeof capturedBody;
       return Response.json(openaiResponse("Got it"));
     };
@@ -175,13 +202,13 @@ describe("processing loop", () => {
     ingestMessage({ text: "What is 2+2?" });
     const loop = startProcessingLoop(testConfig(), FAST_LOOP);
 
-    await waitFor(() => mockCallCount > 0);
+    await waitFor(() => mockSynapseCallCount > 0);
     await loop.stop();
 
     expect(capturedBody.messages).toBeDefined();
     const messages = capturedBody.messages!;
 
-    // System prompt + user message
+    // System prompt + user message (no memories, no history)
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe("system");
     expect(messages[0].content).toContain("Cortex");
@@ -193,7 +220,7 @@ describe("processing loop", () => {
     const responses: string[] = [];
     let callIndex = 0;
 
-    mockHandler = async (req) => {
+    mockSynapseHandler = async (req) => {
       const body = (await req.json()) as {
         messages: Array<{ content: string }>;
       };
@@ -238,7 +265,7 @@ describe("processing loop", () => {
   });
 
   test("processes messages from different topics", async () => {
-    mockHandler = async (req) => {
+    mockSynapseHandler = async (req) => {
       const body = (await req.json()) as {
         messages: Array<{ content: string }>;
       };
@@ -276,7 +303,7 @@ describe("processing loop", () => {
   });
 
   test("marks inbox as failed when Synapse returns an error", async () => {
-    mockHandler = () =>
+    mockSynapseHandler = () =>
       Response.json(
         { error: { message: "All providers exhausted", type: "server_error" } },
         { status: 502 },
@@ -302,7 +329,8 @@ describe("processing loop", () => {
   });
 
   test("loop stops gracefully without errors when inbox is empty", async () => {
-    mockHandler = () => Response.json(openaiResponse("should not be called"));
+    mockSynapseHandler = () =>
+      Response.json(openaiResponse("should not be called"));
 
     const loop = startProcessingLoop(testConfig(), FAST_LOOP);
 
@@ -312,12 +340,12 @@ describe("processing loop", () => {
     await loop.stop();
 
     // No calls to Synapse
-    expect(mockCallCount).toBe(0);
+    expect(mockSynapseCallCount).toBe(0);
   });
 
   test("loop continues processing after a failure", async () => {
     let callNum = 0;
-    mockHandler = () => {
+    mockSynapseHandler = () => {
       callNum++;
       if (callNum === 1) {
         return Response.json(
@@ -346,5 +374,230 @@ describe("processing loop", () => {
 
     expect(getInboxMessage(failId)?.status).toBe("failed");
     expect(getInboxMessage(successId)?.status).toBe("done");
+  });
+
+  // --- Slice 4: Turn history tests ---
+
+  test("saves turn pairs to history after processing", async () => {
+    mockSynapseHandler = () =>
+      Response.json(openaiResponse("The answer is 4."));
+
+    const { eventId } = ingestMessage({
+      text: "What is 2+2?",
+      topicKey: "topic-turns",
+    });
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await loop.stop();
+
+    const turns = loadRecentTurns("topic-turns");
+    expect(turns).toHaveLength(2);
+    expect(turns[0].role).toBe("user");
+    expect(turns[0].content).toBe("What is 2+2?");
+    expect(turns[1].role).toBe("assistant");
+    expect(turns[1].content).toBe("The answer is 4.");
+  });
+
+  test("does not save turns when Synapse fails", async () => {
+    mockSynapseHandler = () =>
+      Response.json(
+        { error: { message: "boom", type: "server_error" } },
+        { status: 500 },
+      );
+
+    const { eventId } = ingestMessage({
+      text: "Will fail",
+      topicKey: "topic-fail",
+    });
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(eventId)?.status === "failed");
+    await loop.stop();
+
+    const turns = loadRecentTurns("topic-fail");
+    expect(turns).toHaveLength(0);
+  });
+
+  test("includes turn history in subsequent Synapse calls", async () => {
+    const capturedMessages: Array<Array<{ role: string; content: string }>> =
+      [];
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      capturedMessages.push(body.messages);
+      const userMsg = body.messages[body.messages.length - 1].content;
+      return Response.json(openaiResponse(`Reply to: ${userMsg}`));
+    };
+
+    // First message
+    const { eventId: id1 } = ingestMessage({
+      text: "My name is Shetty.",
+      topicKey: "topic-history",
+    });
+
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    await waitFor(() => getInboxMessage(id1)?.status === "done");
+
+    // Second message on same topic
+    await Bun.sleep(5);
+    const { eventId: id2 } = ingestMessage({
+      text: "What is my name?",
+      topicKey: "topic-history",
+      externalMessageId: "msg-second",
+    });
+
+    await waitFor(() => getInboxMessage(id2)?.status === "done");
+    await loop.stop();
+
+    // First call: system + user only (no history yet)
+    expect(capturedMessages[0]).toHaveLength(2);
+    expect(capturedMessages[0][0].role).toBe("system");
+    expect(capturedMessages[0][1].content).toBe("My name is Shetty.");
+
+    // Second call: system + 2 history turns + user
+    expect(capturedMessages[1]).toHaveLength(4);
+    expect(capturedMessages[1][0].role).toBe("system");
+    expect(capturedMessages[1][1].role).toBe("user");
+    expect(capturedMessages[1][1].content).toBe("My name is Shetty.");
+    expect(capturedMessages[1][2].role).toBe("assistant");
+    expect(capturedMessages[1][2].content).toBe("Reply to: My name is Shetty.");
+    expect(capturedMessages[1][3].role).toBe("user");
+    expect(capturedMessages[1][3].content).toBe("What is my name?");
+  });
+
+  test("turn history is isolated between topics", async () => {
+    const capturedMessages: Array<Array<{ role: string; content: string }>> =
+      [];
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      capturedMessages.push(body.messages);
+      return Response.json(openaiResponse("ok"));
+    };
+
+    // Message on topic-a
+    const { eventId: idA } = ingestMessage({
+      text: "Secret code is FALCON",
+      topicKey: "topic-a",
+    });
+
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    await waitFor(() => getInboxMessage(idA)?.status === "done");
+
+    // Message on topic-b
+    await Bun.sleep(5);
+    const { eventId: idB } = ingestMessage({
+      text: "What is the secret?",
+      topicKey: "topic-b",
+      externalMessageId: "msg-b",
+    });
+
+    await waitFor(() => getInboxMessage(idB)?.status === "done");
+    await loop.stop();
+
+    // topic-b call should NOT include topic-a's turns
+    expect(capturedMessages[1]).toHaveLength(2); // system + user only
+    expect(capturedMessages[1][1].content).toBe("What is the secret?");
+  });
+
+  // --- Slice 4: Engram recall tests ---
+
+  test("includes Engram memories in Synapse prompt", async () => {
+    let capturedBody: {
+      messages?: Array<{ role: string; content: string }>;
+    } = {};
+
+    mockEngramHandler = () =>
+      Response.json({
+        memories: [
+          {
+            id: "m1",
+            content: "User lives in Seattle",
+            category: "fact",
+            strength: 1.0,
+            relevance: 0.9,
+          },
+        ],
+        fallback_mode: false,
+      });
+
+    mockSynapseHandler = async (req) => {
+      capturedBody = (await req.json()) as typeof capturedBody;
+      return Response.json(openaiResponse("You live in Seattle!"));
+    };
+
+    const { eventId } = ingestMessage({
+      text: "Where do I live?",
+      topicKey: "topic-engram",
+    });
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await loop.stop();
+
+    const messages = capturedBody.messages!;
+    expect(messages[0].role).toBe("system");
+    expect(messages[0].content).toContain(SYSTEM_PROMPT);
+    expect(messages[0].content).toContain("facts and preferences");
+    expect(messages[0].content).toContain("User lives in Seattle");
+  });
+
+  test("processes normally when Engram is unreachable", async () => {
+    mockSynapseHandler = () => Response.json(openaiResponse("Still works!"));
+
+    // Point to a bad port — Engram connection will fail
+    const config = { ...testConfig(), engramUrl: "http://127.0.0.1:1" };
+
+    const { eventId } = ingestMessage({
+      text: "Hello",
+      topicKey: "topic-no-engram",
+    });
+    const loop = startProcessingLoop(config, FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await loop.stop();
+
+    const outbox = listOutboxMessagesByTopic("topic-no-engram");
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0].text).toBe("Still works!");
+  });
+
+  test("sends topic_key as scope_id to Engram", async () => {
+    const capturedBodies: Array<Record<string, unknown>> = [];
+
+    mockEngramHandler = async (req) => {
+      const body = (await req.json()) as Record<string, unknown>;
+      capturedBodies.push(body);
+      return Response.json({ memories: [], fallback_mode: false });
+    };
+
+    mockSynapseHandler = () => Response.json(openaiResponse("ok"));
+
+    const { eventId } = ingestMessage({
+      text: "Hello",
+      topicKey: "test:my-topic",
+    });
+    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await loop.stop();
+
+    // recallDual makes two calls: one with scope_id, one without
+    expect(capturedBodies.length).toBe(2);
+
+    const scopedCall = capturedBodies.find((b) => b.scope_id !== undefined);
+    const globalCall = capturedBodies.find((b) => b.scope_id === undefined);
+
+    expect(scopedCall).toBeDefined();
+    expect(scopedCall!.scope_id).toBe("test:my-topic");
+    expect(scopedCall!.query).toBe("Hello");
+
+    expect(globalCall).toBeDefined();
+    expect(globalCall!.query).toBe("Hello");
   });
 });
