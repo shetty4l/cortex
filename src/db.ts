@@ -61,6 +61,17 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_outbox_source_status_next
     ON outbox_messages(source, status, next_attempt_at);
+
+  CREATE TABLE IF NOT EXISTS turns (
+    id TEXT PRIMARY KEY,
+    topic_key TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_turns_topic_created
+    ON turns(topic_key, created_at);
 `;
 
 // --- Connection (via core DatabaseManager) ---
@@ -575,4 +586,64 @@ export function purgeMessages(): { inbox: number; outbox: number } {
       outbox: outboxResult.changes,
     };
   })();
+}
+
+// --- Turn operations ---
+
+export interface Turn {
+  id: string;
+  topic_key: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: number;
+}
+
+/**
+ * Save a single turn (user or assistant) for a topic.
+ */
+export function saveTurn(
+  topicKey: string,
+  role: "user" | "assistant",
+  content: string,
+): Turn {
+  const database = getDatabase();
+  const id = `turn_${crypto.randomUUID()}`;
+  const now = Date.now();
+
+  database
+    .prepare(
+      "INSERT INTO turns (id, topic_key, role, content, created_at) VALUES ($id, $topicKey, $role, $content, $now)",
+    )
+    .run({
+      $id: id,
+      $topicKey: topicKey,
+      $role: role,
+      $content: content,
+      $now: now,
+    });
+
+  return { id, topic_key: topicKey, role, content, created_at: now };
+}
+
+/**
+ * Load the most recent turns for a topic, ordered oldest-first.
+ *
+ * @param limit Maximum number of turn **pairs** to return (default 8).
+ *              Fetches limit * 2 rows to cover user + assistant per pair.
+ */
+export function loadRecentTurns(topicKey: string, limit = 8): Turn[] {
+  const database = getDatabase();
+  const maxRows = limit * 2;
+
+  // Subquery grabs the most recent rows (DESC), outer query re-orders ASC.
+  return database
+    .prepare(
+      `SELECT * FROM (
+        SELECT * FROM turns
+        WHERE topic_key = $topicKey
+        ORDER BY created_at DESC
+        LIMIT $maxRows
+      ) ORDER BY created_at ASC`,
+    )
+    .all({ $topicKey: topicKey, $maxRows: maxRows }) as Turn[];
 }
