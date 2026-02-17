@@ -9,9 +9,9 @@
  * String values in the config file support ${ENV_VAR} interpolation.
  */
 
-import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
-import { join } from "path";
+import { loadJsonConfig, parsePort } from "@shetty4l/core/config";
+import type { Result } from "@shetty4l/core/result";
+import { err, ok } from "@shetty4l/core/result";
 
 // --- Types ---
 
@@ -72,86 +72,45 @@ const DEFAULTS: Omit<
   toolTimeoutMs: 20000,
 };
 
-const DEFAULT_CONFIG_PATH = join(homedir(), ".config", "cortex", "config.json");
-
-// --- Port validation ---
-
-function parsePort(value: string, source: string): number {
-  const port = Number.parseInt(value, 10);
-  if (Number.isNaN(port) || port < 1 || port > 65535) {
-    throw new Error(
-      `${source}: "${value}" is not a valid port number (must be 1-65535)`,
-    );
-  }
-  return port;
-}
-
-/**
- * Validate an env var value is a non-empty, non-whitespace string.
- * Throws with a clear error if blank.
- */
-function requireNonEmptyEnv(envName: string, value: string): string {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    throw new Error(`${envName}: must be a non-empty string`);
-  }
-  return trimmed;
-}
-
-// --- Env var interpolation ---
-
-export function interpolateEnvVars(value: string): string {
-  return value.replace(/\$\{([^}]+)\}/g, (_match, varName: string) => {
-    const envValue = process.env[varName];
-    if (envValue === undefined) {
-      throw new Error(
-        `Config references \${${varName}} but it is not set in the environment`,
-      );
-    }
-    return envValue;
-  });
-}
-
-type JsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JsonValue[]
-  | { [key: string]: JsonValue };
-
-function interpolateDeep(value: JsonValue): JsonValue {
-  if (typeof value === "string") {
-    return interpolateEnvVars(value);
-  }
-  if (Array.isArray(value)) {
-    return value.map(interpolateDeep);
-  }
-  if (value !== null && typeof value === "object") {
-    const result: Record<string, JsonValue> = {};
-    for (const [k, v] of Object.entries(value)) {
-      result[k] = interpolateDeep(v);
-    }
-    return result;
-  }
-  return value;
-}
-
 // --- Validation ---
 
-function validateConfig(raw: unknown): Partial<CortexConfig> {
+function requireNonEmptyEnv(envName: string, value: string): Result<string> {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return err(`${envName}: must be a non-empty string`);
+  }
+  return ok(trimmed);
+}
+
+function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
   if (typeof raw !== "object" || raw === null) {
-    throw new Error("Config must be a JSON object");
+    return err("Config must be a JSON object");
   }
 
   const obj = raw as Record<string, unknown>;
   const result: Partial<CortexConfig> = {};
 
-  if (obj.host !== undefined) {
-    if (typeof obj.host !== "string" || obj.host.length === 0) {
-      throw new Error("host: must be a non-empty string");
+  // String fields
+  const stringFields: Array<{ key: keyof CortexConfig; label: string }> = [
+    { key: "host", label: "host" },
+    { key: "ingestApiKey", label: "ingestApiKey" },
+    { key: "synapseUrl", label: "synapseUrl" },
+    { key: "engramUrl", label: "engramUrl" },
+    { key: "model", label: "model" },
+    { key: "extractionModel", label: "extractionModel" },
+  ];
+
+  for (const field of stringFields) {
+    if (obj[field.key] !== undefined) {
+      if (
+        typeof obj[field.key] !== "string" ||
+        (obj[field.key] as string).length === 0
+      ) {
+        return err(`${field.label}: must be a non-empty string`);
+      }
+      // biome-ignore lint: dynamic field assignment
+      (result as Record<string, unknown>)[field.key] = obj[field.key];
     }
-    result.host = obj.host;
   }
 
   if (obj.port !== undefined) {
@@ -161,49 +120,11 @@ function validateConfig(raw: unknown): Partial<CortexConfig> {
       obj.port < 1 ||
       obj.port > 65535
     ) {
-      throw new Error(
+      return err(
         `port: ${obj.port} is not a valid port number (must be an integer 1-65535)`,
       );
     }
     result.port = obj.port;
-  }
-
-  if (obj.ingestApiKey !== undefined) {
-    if (typeof obj.ingestApiKey !== "string" || obj.ingestApiKey.length === 0) {
-      throw new Error("ingestApiKey: must be a non-empty string");
-    }
-    result.ingestApiKey = obj.ingestApiKey;
-  }
-
-  if (obj.synapseUrl !== undefined) {
-    if (typeof obj.synapseUrl !== "string" || obj.synapseUrl.length === 0) {
-      throw new Error("synapseUrl: must be a non-empty string");
-    }
-    result.synapseUrl = obj.synapseUrl;
-  }
-
-  if (obj.engramUrl !== undefined) {
-    if (typeof obj.engramUrl !== "string" || obj.engramUrl.length === 0) {
-      throw new Error("engramUrl: must be a non-empty string");
-    }
-    result.engramUrl = obj.engramUrl;
-  }
-
-  if (obj.model !== undefined) {
-    if (typeof obj.model !== "string" || obj.model.length === 0) {
-      throw new Error("model: must be a non-empty string");
-    }
-    result.model = obj.model;
-  }
-
-  if (obj.extractionModel !== undefined) {
-    if (
-      typeof obj.extractionModel !== "string" ||
-      obj.extractionModel.length === 0
-    ) {
-      throw new Error("extractionModel: must be a non-empty string");
-    }
-    result.extractionModel = obj.extractionModel;
   }
 
   // Numeric fields with positive-integer validation
@@ -226,13 +147,13 @@ function validateConfig(raw: unknown): Partial<CortexConfig> {
     if (obj[field.key] !== undefined) {
       const val = obj[field.key];
       if (typeof val !== "number" || !Number.isInteger(val)) {
-        throw new Error(`${field.key}: must be an integer`);
+        return err(`${field.key}: must be an integer`);
       }
       if (field.min !== undefined && val < field.min) {
-        throw new Error(`${field.key}: must be >= ${field.min}`);
+        return err(`${field.key}: must be >= ${field.min}`);
       }
       if (field.max !== undefined && val > field.max) {
-        throw new Error(`${field.key}: must be <= ${field.max}`);
+        return err(`${field.key}: must be <= ${field.max}`);
       }
       // biome-ignore lint: dynamic field assignment
       (result as Record<string, unknown>)[field.key] = val;
@@ -241,7 +162,7 @@ function validateConfig(raw: unknown): Partial<CortexConfig> {
 
   if (obj.schedulerTimezone !== undefined) {
     if (typeof obj.schedulerTimezone !== "string") {
-      throw new Error("schedulerTimezone: must be a string");
+      return err("schedulerTimezone: must be a string");
     }
     result.schedulerTimezone = obj.schedulerTimezone;
   }
@@ -251,12 +172,12 @@ function validateConfig(raw: unknown): Partial<CortexConfig> {
       !Array.isArray(obj.skillDirs) ||
       !obj.skillDirs.every((d) => typeof d === "string")
     ) {
-      throw new Error("skillDirs: must be an array of strings");
+      return err("skillDirs: must be an array of strings");
     }
     result.skillDirs = obj.skillDirs as string[];
   }
 
-  return result;
+  return ok(result);
 }
 
 // --- Load ---
@@ -278,78 +199,91 @@ export type PartialCortexConfig = Omit<
 
 export function loadConfig(
   options: LoadConfigOptions & { skipRequiredChecks: true },
-): PartialCortexConfig;
-export function loadConfig(options?: LoadConfigOptions): CortexConfig;
+): Result<PartialCortexConfig>;
+export function loadConfig(options?: LoadConfigOptions): Result<CortexConfig>;
 export function loadConfig(
   options?: LoadConfigOptions,
-): CortexConfig | PartialCortexConfig {
-  const filePath =
-    options?.configPath ??
-    process.env.CORTEX_CONFIG_PATH ??
-    DEFAULT_CONFIG_PATH;
+): Result<CortexConfig | PartialCortexConfig> {
+  const configPath =
+    options?.configPath ?? process.env.CORTEX_CONFIG_PATH ?? undefined;
   const quiet = options?.quiet ?? false;
 
-  let fileConfig: Partial<CortexConfig> = {};
+  // Load file config via core
+  const loaded = loadJsonConfig({
+    name: "cortex",
+    defaults: DEFAULTS as Record<string, unknown>,
+    configPath,
+  });
 
-  if (existsSync(filePath)) {
-    const rawText = readFileSync(filePath, "utf-8");
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(rawText);
-    } catch {
-      throw new Error(`Failed to parse config file ${filePath}: invalid JSON`);
+  if (!loaded.ok) return loaded;
+
+  // Validate the merged config (catches type/range errors from file values)
+  const validated = validateConfig(loaded.value.config);
+  if (!validated.ok) return validated as Result<never>;
+
+  if (!quiet) {
+    if (loaded.value.source === "file") {
+      console.error(`cortex: loaded config from ${loaded.value.path}`);
+    } else {
+      console.error(
+        `cortex: no config at ${loaded.value.path}, using defaults`,
+      );
     }
-
-    const interpolated = interpolateDeep(parsed as JsonValue);
-    fileConfig = validateConfig(interpolated);
-
-    if (!quiet) {
-      console.log(`cortex: loaded config from ${filePath}`);
-    }
-  } else if (!quiet) {
-    console.log(`cortex: no config at ${filePath}, using defaults`);
   }
 
-  // Merge: defaults <- file config <- env overrides
-  // Use a partial type until required fields are validated below.
+  // Merge: defaults <- validated file config <- env overrides
   const config: Omit<CortexConfig, "ingestApiKey" | "model"> &
     Partial<Pick<CortexConfig, "ingestApiKey" | "model">> & {
       extractionModel?: string;
     } = {
     ...DEFAULTS,
-    ...fileConfig,
+    ...validated.value,
   };
 
   // Env overrides
   if (process.env.CORTEX_PORT) {
-    config.port = parsePort(process.env.CORTEX_PORT, "CORTEX_PORT");
+    const portResult = parsePort(process.env.CORTEX_PORT, "CORTEX_PORT");
+    if (!portResult.ok) return portResult as Result<never>;
+    config.port = portResult.value;
   }
   if (process.env.CORTEX_HOST) {
-    config.host = requireNonEmptyEnv("CORTEX_HOST", process.env.CORTEX_HOST);
+    const hostResult = requireNonEmptyEnv(
+      "CORTEX_HOST",
+      process.env.CORTEX_HOST,
+    );
+    if (!hostResult.ok) return hostResult as Result<never>;
+    config.host = hostResult.value;
   }
   if (process.env.CORTEX_INGEST_API_KEY) {
-    config.ingestApiKey = requireNonEmptyEnv(
+    const keyResult = requireNonEmptyEnv(
       "CORTEX_INGEST_API_KEY",
       process.env.CORTEX_INGEST_API_KEY,
     );
+    if (!keyResult.ok) return keyResult as Result<never>;
+    config.ingestApiKey = keyResult.value;
   }
   if (process.env.CORTEX_MODEL) {
-    config.model = requireNonEmptyEnv("CORTEX_MODEL", process.env.CORTEX_MODEL);
+    const modelResult = requireNonEmptyEnv(
+      "CORTEX_MODEL",
+      process.env.CORTEX_MODEL,
+    );
+    if (!modelResult.ok) return modelResult as Result<never>;
+    config.model = modelResult.value;
   }
 
   // Required field validation
   if (!options?.skipRequiredChecks) {
     if (!config.ingestApiKey) {
-      throw new Error(
+      return err(
         "ingestApiKey is required. Set it in config.json or via CORTEX_INGEST_API_KEY env var.",
       );
     }
     if (!config.model) {
-      throw new Error(
+      return err(
         "model is required. Set it in config.json or via CORTEX_MODEL env var.",
       );
     }
   }
 
-  return config as CortexConfig;
+  return ok(config as CortexConfig);
 }

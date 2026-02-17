@@ -5,112 +5,104 @@
  * Tables are created incrementally as each slice adds its schema.
  *
  * Database location: ~/.local/share/cortex/cortex.db
- * Tests can override via initDatabase({ path: ":memory:", force: true }).
+ * Tests can override via initDatabase(":memory:").
  */
 
-import { Database } from "bun:sqlite";
-import { mkdirSync } from "fs";
-import { homedir } from "os";
-import { dirname, join } from "path";
-
-// --- Connection ---
-
-let db: Database | null = null;
-
-const DEFAULT_DB_PATH = join(
-  homedir(),
-  ".local",
-  "share",
-  "cortex",
-  "cortex.db",
-);
-
-export function initDatabase(options?: {
-  path?: string;
-  force?: boolean;
-}): Database {
-  if (db && !options?.force) return db;
-  if (db) {
-    db.close();
-    db = null;
-  }
-
-  const dbPath = options?.path ?? DEFAULT_DB_PATH;
-
-  if (dbPath !== ":memory:") {
-    mkdirSync(dirname(dbPath), { recursive: true });
-  }
-
-  db = new Database(dbPath);
-  db.exec("PRAGMA journal_mode = WAL");
-  db.exec("PRAGMA foreign_keys = ON");
-
-  createSchema(db);
-  return db;
-}
-
-export function getDatabase(): Database {
-  if (!db) {
-    throw new Error("Database not initialized. Call initDatabase() first.");
-  }
-  return db;
-}
-
-export function closeDatabase(): void {
-  if (db) {
-    db.close();
-    db = null;
-  }
-}
+import type { Database } from "bun:sqlite";
+import { getDataDir } from "@shetty4l/core/config";
+import { createDatabaseManager } from "@shetty4l/core/db";
+import type { Result } from "@shetty4l/core/result";
+import { err, ok } from "@shetty4l/core/result";
+import { join } from "path";
 
 // --- Schema ---
 
-function createSchema(database: Database): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS inbox_messages (
-      id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      external_message_id TEXT NOT NULL,
-      topic_key TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      text TEXT NOT NULL,
-      occurred_at INTEGER NOT NULL,
-      idempotency_key TEXT NOT NULL,
-      metadata_json TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',
-      attempts INTEGER NOT NULL DEFAULT 0,
-      error TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL,
-      -- Dedup is on (source, external_message_id), NOT idempotency_key.
-      -- idempotency_key is stored for connector-layer tracing/debugging.
-      UNIQUE(source, external_message_id)
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS inbox_messages (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    external_message_id TEXT NOT NULL,
+    topic_key TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    occurred_at INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    metadata_json TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    -- Dedup is on (source, external_message_id), NOT idempotency_key.
+    -- idempotency_key is stored for connector-layer tracing/debugging.
+    UNIQUE(source, external_message_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_inbox_status_created
+    ON inbox_messages(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_inbox_topic_status
+    ON inbox_messages(topic_key, status);
+
+  CREATE TABLE IF NOT EXISTS outbox_messages (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    topic_key TEXT NOT NULL,
+    text TEXT NOT NULL,
+    payload_json TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL,
+    lease_token TEXT,
+    lease_expires_at INTEGER,
+    last_error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_outbox_source_status_next
+    ON outbox_messages(source, status, next_attempt_at);
+`;
+
+// --- Connection (via core DatabaseManager) ---
+
+const dbManager = createDatabaseManager({
+  path: join(getDataDir("cortex"), "cortex.db"),
+  schema: SCHEMA,
+});
+
+/**
+ * Initialize the database. Returns the Database instance on success.
+ * Idempotent — returns existing instance if already open.
+ * Pass a pathOverride to force close + reopen (used by tests with ":memory:").
+ */
+export function initDatabase(pathOverride?: string): Result<Database> {
+  try {
+    // If a pathOverride is given, close existing and re-init
+    if (pathOverride !== undefined) {
+      dbManager.close();
+    }
+    const db = dbManager.init(pathOverride);
+    // Enable foreign keys (core sets WAL mode already)
+    db.exec("PRAGMA foreign_keys = ON");
+    return ok(db);
+  } catch (e) {
+    return err(
+      `Failed to initialize database: ${e instanceof Error ? e.message : String(e)}`,
     );
+  }
+}
 
-    CREATE INDEX IF NOT EXISTS idx_inbox_status_created
-      ON inbox_messages(status, created_at);
-    CREATE INDEX IF NOT EXISTS idx_inbox_topic_status
-      ON inbox_messages(topic_key, status);
+export function getDatabase(): Database {
+  return dbManager.db();
+}
 
-    CREATE TABLE IF NOT EXISTS outbox_messages (
-      id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      topic_key TEXT NOT NULL,
-      text TEXT NOT NULL,
-      payload_json TEXT,
-      status TEXT NOT NULL DEFAULT 'pending',
-      attempts INTEGER NOT NULL DEFAULT 0,
-      next_attempt_at INTEGER NOT NULL,
-      lease_token TEXT,
-      lease_expires_at INTEGER,
-      last_error TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
+export function closeDatabase(): void {
+  dbManager.close();
+}
 
-    CREATE INDEX IF NOT EXISTS idx_outbox_source_status_next
-      ON outbox_messages(source, status, next_attempt_at);
-  `);
+/** Reset the singleton for tests without closing. */
+export function resetDatabase(): void {
+  dbManager.reset();
 }
 
 // --- Inbox operations ---

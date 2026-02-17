@@ -2,13 +2,21 @@
  * HTTP server for Cortex.
  *
  * Routes:
- *   GET  /health      — health check for Wilson integration
+ *   GET  /health      — health check (handled by core)
  *   POST /ingest      — channel-agnostic event ingress
  *   POST /outbox/poll — connector delivery claim
  *   POST /outbox/ack  — connector delivery acknowledgement
  */
 
+import {
+  createServer,
+  type HttpServer,
+  jsonError,
+  jsonOk,
+} from "@shetty4l/core/http";
+import { readVersion } from "@shetty4l/core/version";
 import { timingSafeEqual } from "crypto";
+import { join } from "path";
 import type { CortexConfig } from "./config";
 import {
   ackOutboxMessage,
@@ -16,24 +24,15 @@ import {
   findInboxDuplicate,
   pollOutboxMessages,
 } from "./db";
-import { VERSION } from "./version";
 
-const startedAt = Date.now();
+const VERSION = readVersion(join(import.meta.dir, ".."));
 
 // --- Helpers ---
-
-function jsonResponse(
-  body: unknown,
-  status: number,
-  headers?: Record<string, string>,
-): Response {
-  return Response.json(body, { status, headers });
-}
 
 function requireAuth(req: Request, config: CortexConfig): Response | null {
   const authHeader = req.headers.get("authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return jsonResponse({ error: "unauthorized" }, 401);
+    return jsonError(401, "unauthorized");
   }
 
   const token = authHeader.slice("Bearer ".length);
@@ -44,18 +43,13 @@ function requireAuth(req: Request, config: CortexConfig): Response | null {
   const a = Buffer.from(token);
   const b = Buffer.from(expected);
   if (a.byteLength !== b.byteLength || !timingSafeEqual(a, b)) {
-    return jsonResponse({ error: "unauthorized" }, 401);
+    return jsonError(401, "unauthorized");
   }
 
   return null;
 }
 
 // --- Route handlers ---
-
-function handleHealth(): Response {
-  const uptime = Math.floor((Date.now() - startedAt) / 1000);
-  return jsonResponse({ status: "healthy", version: VERSION, uptime }, 200);
-}
 
 interface IngestRequestBody {
   source?: string;
@@ -117,7 +111,7 @@ async function handleIngest(
   try {
     body = (await req.json()) as IngestRequestBody;
   } catch {
-    return jsonResponse(
+    return jsonOk(
       {
         error: "invalid_request",
         details: ["Request body must be valid JSON"],
@@ -127,7 +121,7 @@ async function handleIngest(
   }
 
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return jsonResponse(
+    return jsonOk(
       {
         error: "invalid_request",
         details: ["Request body must be a JSON object"],
@@ -138,16 +132,13 @@ async function handleIngest(
 
   const details = validateIngestBody(body);
   if (details.length > 0) {
-    return jsonResponse({ error: "invalid_request", details }, 400);
+    return jsonOk({ error: "invalid_request", details }, 400);
   }
 
   // Dedup check (optimistic — avoids insert overhead in common case)
   const existingId = findInboxDuplicate(body.source!, body.externalMessageId!);
   if (existingId) {
-    return jsonResponse(
-      { eventId: existingId, status: "duplicate_ignored" },
-      200,
-    );
+    return jsonOk({ eventId: existingId, status: "duplicate_ignored" }, 200);
   }
 
   // Enqueue (catches UNIQUE constraint race if concurrent duplicate slips past)
@@ -163,13 +154,13 @@ async function handleIngest(
   });
 
   if (result.duplicate) {
-    return jsonResponse(
+    return jsonOk(
       { eventId: result.eventId, status: "duplicate_ignored" },
       200,
     );
   }
 
-  return jsonResponse({ eventId: result.eventId, status: "queued" }, 202);
+  return jsonOk({ eventId: result.eventId, status: "queued" }, 202);
 }
 
 // --- Outbox poll/ack handlers ---
@@ -231,7 +222,7 @@ async function handleOutboxPoll(
   try {
     body = (await req.json()) as PollRequestBody;
   } catch {
-    return jsonResponse(
+    return jsonOk(
       {
         error: "invalid_request",
         details: ["Request body must be valid JSON"],
@@ -241,7 +232,7 @@ async function handleOutboxPoll(
   }
 
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return jsonResponse(
+    return jsonOk(
       {
         error: "invalid_request",
         details: ["Request body must be a JSON object"],
@@ -252,7 +243,7 @@ async function handleOutboxPoll(
 
   const details = validatePollBody(body);
   if (details.length > 0) {
-    return jsonResponse({ error: "invalid_request", details }, 400);
+    return jsonOk({ error: "invalid_request", details }, 400);
   }
 
   const max = body.max ?? config.outboxPollDefaultBatch;
@@ -266,7 +257,7 @@ async function handleOutboxPoll(
     body.topicKey ?? undefined,
   );
 
-  return jsonResponse({ messages }, 200);
+  return jsonOk({ messages }, 200);
 }
 
 interface AckRequestBody {
@@ -285,7 +276,7 @@ async function handleOutboxAck(
   try {
     body = (await req.json()) as AckRequestBody;
   } catch {
-    return jsonResponse(
+    return jsonOk(
       {
         error: "invalid_request",
         details: ["Request body must be valid JSON"],
@@ -295,7 +286,7 @@ async function handleOutboxAck(
   }
 
   if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return jsonResponse(
+    return jsonOk(
       {
         error: "invalid_request",
         details: ["Request body must be a JSON object"],
@@ -322,39 +313,32 @@ async function handleOutboxAck(
     details.push("leaseToken is required");
   }
   if (details.length > 0) {
-    return jsonResponse({ error: "invalid_request", details }, 400);
+    return jsonOk({ error: "invalid_request", details }, 400);
   }
 
   const result = ackOutboxMessage(body.messageId!, body.leaseToken!);
 
   switch (result) {
     case "delivered":
-      return jsonResponse({ ok: true, status: "delivered" }, 200);
+      return jsonOk({ ok: true, status: "delivered" }, 200);
     case "already_delivered":
-      return jsonResponse({ ok: true, status: "already_delivered" }, 200);
+      return jsonOk({ ok: true, status: "already_delivered" }, 200);
     case "not_found":
-      return jsonResponse({ error: "not_found" }, 404);
+      return jsonOk({ error: "not_found" }, 404);
     case "lease_conflict":
-      return jsonResponse({ error: "lease_conflict" }, 409);
+      return jsonOk({ error: "lease_conflict" }, 409);
   }
 }
 
 // --- Server ---
 
-export interface CortexServer {
-  start(): ReturnType<typeof Bun.serve>;
-  readonly config: CortexConfig;
-}
-
-export function createServer(config: CortexConfig): CortexServer {
-  async function handleRequest(req: Request): Promise<Response> {
-    try {
-      const url = new URL(req.url);
-
-      if (req.method === "GET" && url.pathname === "/health") {
-        return handleHealth();
-      }
-
+export function startServer(config: CortexConfig): HttpServer {
+  return createServer({
+    name: "cortex",
+    port: config.port,
+    host: config.host,
+    version: VERSION,
+    onRequest: async (req: Request, url: URL) => {
       if (req.method === "POST" && url.pathname === "/ingest") {
         return handleIngest(req, config);
       }
@@ -367,25 +351,7 @@ export function createServer(config: CortexConfig): CortexServer {
         return handleOutboxAck(req, config);
       }
 
-      return jsonResponse({ error: "not_found" }, 404);
-    } catch (err) {
-      console.error("Unhandled error in request handler:", err);
-      return jsonResponse({ error: "internal_error" }, 500);
-    }
-  }
-
-  return {
-    config,
-    start() {
-      const server = Bun.serve({
-        hostname: config.host,
-        port: config.port,
-        fetch: handleRequest,
-      });
-
-      console.log(`Cortex listening on http://${config.host}:${server.port}`);
-
-      return server;
+      return null;
     },
-  };
+  });
 }

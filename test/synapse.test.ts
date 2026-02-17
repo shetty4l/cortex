@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chat, SynapseError } from "../src/synapse";
+import { chat } from "../src/synapse";
 
 // --- Mock Synapse server ---
 
@@ -55,8 +55,10 @@ describe("synapse client", () => {
       mockUrl,
     );
 
-    expect(result.content).toBe("Hello from the model!");
-    expect(result.finishReason).toBe("stop");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.content).toBe("Hello from the model!");
+    expect(result.value.finishReason).toBe("stop");
   });
 
   test("sends correct request shape to Synapse", async () => {
@@ -105,7 +107,9 @@ describe("synapse client", () => {
       mockUrl,
     );
 
-    expect(result.finishReason).toBe("tool_calls");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.finishReason).toBe("tool_calls");
   });
 
   test("defaults finish_reason to stop when missing", async () => {
@@ -120,32 +124,30 @@ describe("synapse client", () => {
       mockUrl,
     );
 
-    expect(result.finishReason).toBe("stop");
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.finishReason).toBe("stop");
   });
 
-  test("throws SynapseError on 502 (all providers exhausted)", async () => {
+  test("returns error on 502 (all providers exhausted)", async () => {
     mockHandler = () =>
       Response.json(
         { error: { message: "All providers exhausted", type: "server_error" } },
         { status: 502 },
       );
 
-    try {
-      await chat(
-        [{ role: "user", content: "Hi" }],
-        "nonexistent-model",
-        mockUrl,
-      );
-      expect(true).toBe(false); // should not reach
-    } catch (err) {
-      expect(err).toBeInstanceOf(SynapseError);
-      const se = err as SynapseError;
-      expect(se.status).toBe(502);
-      expect(se.message).toContain("502");
-    }
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      "nonexistent-model",
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("502");
   });
 
-  test("throws SynapseError on 400 (bad request)", async () => {
+  test("returns error on 400 (bad request)", async () => {
     mockHandler = () =>
       Response.json(
         {
@@ -157,41 +159,43 @@ describe("synapse client", () => {
         { status: 400 },
       );
 
-    try {
-      await chat([], "test-model", mockUrl);
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err).toBeInstanceOf(SynapseError);
-      expect((err as SynapseError).status).toBe(400);
-    }
+    const result = await chat([], "test-model", mockUrl);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("400");
   });
 
-  test("throws on missing choices array", async () => {
+  test("returns error on missing choices array", async () => {
     mockHandler = () =>
       Response.json({ id: "chat-1", object: "chat.completion" });
 
-    try {
-      await chat([{ role: "user", content: "Hi" }], "test-model", mockUrl);
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err).toBeInstanceOf(SynapseError);
-      expect((err as SynapseError).message).toContain("missing choices");
-    }
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      "test-model",
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("missing choices");
   });
 
-  test("throws on empty choices array", async () => {
+  test("returns error on empty choices array", async () => {
     mockHandler = () => Response.json({ choices: [] });
 
-    try {
-      await chat([{ role: "user", content: "Hi" }], "test-model", mockUrl);
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err).toBeInstanceOf(SynapseError);
-      expect((err as SynapseError).message).toContain("missing choices");
-    }
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      "test-model",
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("missing choices");
   });
 
-  test("throws on null content in response", async () => {
+  test("returns error on null content in response", async () => {
     mockHandler = () =>
       Response.json({
         choices: [
@@ -203,39 +207,40 @@ describe("synapse client", () => {
         ],
       });
 
-    try {
-      await chat([{ role: "user", content: "Hi" }], "test-model", mockUrl);
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err).toBeInstanceOf(SynapseError);
-      expect((err as SynapseError).message).toContain("no content");
-    }
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      "test-model",
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("no content");
   });
 
-  test("throws on invalid JSON response", async () => {
+  test("returns error on invalid JSON response", async () => {
     mockHandler = () => new Response("not json at all", { status: 200 });
 
-    try {
-      await chat([{ role: "user", content: "Hi" }], "test-model", mockUrl);
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err).toBeInstanceOf(SynapseError);
-      expect((err as SynapseError).message).toContain("invalid JSON");
-    }
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      "test-model",
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("invalid JSON");
   });
 
-  test("throws on connection failure", async () => {
-    try {
-      await chat(
-        [{ role: "user", content: "Hi" }],
-        "test-model",
-        "http://127.0.0.1:1", // port 1 — nothing listening
-      );
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err).toBeInstanceOf(SynapseError);
-      expect((err as SynapseError).status).toBe(0);
-      expect((err as SynapseError).message).toContain("connection failed");
-    }
+  test("returns error on connection failure", async () => {
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      "test-model",
+      "http://127.0.0.1:1", // port 1 — nothing listening
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("connection failed");
   });
 });

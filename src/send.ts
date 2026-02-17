@@ -5,6 +5,9 @@
  * Used by `cortex send` CLI command and tests.
  */
 
+import type { Result } from "@shetty4l/core/result";
+import { err, ok } from "@shetty4l/core/result";
+
 const POLL_INTERVAL_MS = 500;
 const POLL_TIMEOUT_MS = 30_000;
 const SEND_SOURCE = "cli";
@@ -24,12 +27,12 @@ export interface SendOptions {
  * 3. Ack via /outbox/ack
  * 4. Return response text
  *
- * Throws on timeout, connection failure, or unexpected errors.
+ * Returns Err on timeout, connection failure, or unexpected errors.
  */
 export async function sendMessage(
   text: string,
   options: SendOptions,
-): Promise<string> {
+): Promise<Result<string>> {
   const { baseUrl, apiKey } = options;
   const pollInterval = options.pollIntervalMs ?? POLL_INTERVAL_MS;
   const pollTimeout = options.pollTimeoutMs ?? POLL_TIMEOUT_MS;
@@ -38,26 +41,33 @@ export async function sendMessage(
   const externalMessageId = `cli-${crypto.randomUUID()}`;
 
   // 1. Ingest
-  const ingestResponse = await fetch(`${baseUrl}/ingest`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      source: SEND_SOURCE,
-      externalMessageId,
-      idempotencyKey: `cli:${externalMessageId}`,
-      topicKey,
-      userId: "cli:local",
-      text,
-      occurredAt: new Date().toISOString(),
-    }),
-  });
+  let ingestResponse: Response;
+  try {
+    ingestResponse = await fetch(`${baseUrl}/ingest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        source: SEND_SOURCE,
+        externalMessageId,
+        idempotencyKey: `cli:${externalMessageId}`,
+        topicKey,
+        userId: "cli:local",
+        text,
+        occurredAt: new Date().toISOString(),
+      }),
+    });
+  } catch (e) {
+    return err(
+      `Ingest connection failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
 
   if (!ingestResponse.ok) {
     const body = await ingestResponse.text();
-    throw new Error(`Ingest failed (${ingestResponse.status}): ${body}`);
+    return err(`Ingest failed (${ingestResponse.status}): ${body}`);
   }
 
   // 2. Poll outbox
@@ -66,23 +76,30 @@ export async function sendMessage(
   while (Date.now() - start < pollTimeout) {
     await Bun.sleep(pollInterval);
 
-    const pollResponse = await fetch(`${baseUrl}/outbox/poll`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        source: SEND_SOURCE,
-        topicKey,
-        max: 1,
-        leaseSeconds: 30,
-      }),
-    });
+    let pollResponse: Response;
+    try {
+      pollResponse = await fetch(`${baseUrl}/outbox/poll`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          source: SEND_SOURCE,
+          topicKey,
+          max: 1,
+          leaseSeconds: 30,
+        }),
+      });
+    } catch (e) {
+      return err(
+        `Poll connection failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
 
     if (!pollResponse.ok) {
       const body = await pollResponse.text();
-      throw new Error(`Poll failed (${pollResponse.status}): ${body}`);
+      return err(`Poll failed (${pollResponse.status}): ${body}`);
     }
 
     const pollBody = (await pollResponse.json()) as {
@@ -99,25 +116,32 @@ export async function sendMessage(
     const match = pollBody.messages[0];
 
     // 3. Ack
-    const ackResponse = await fetch(`${baseUrl}/outbox/ack`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        messageId: match.messageId,
-        leaseToken: match.leaseToken,
-      }),
-    });
+    let ackResponse: Response;
+    try {
+      ackResponse = await fetch(`${baseUrl}/outbox/ack`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          messageId: match.messageId,
+          leaseToken: match.leaseToken,
+        }),
+      });
+    } catch (e) {
+      return err(
+        `Ack connection failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
 
     if (!ackResponse.ok) {
       const body = await ackResponse.text();
-      throw new Error(`Ack failed (${ackResponse.status}): ${body}`);
+      return err(`Ack failed (${ackResponse.status}): ${body}`);
     }
 
-    return match.text;
+    return ok(match.text);
   }
 
-  throw new Error(`Timed out after ${pollTimeout}ms waiting for response`);
+  return err(`Timed out after ${pollTimeout}ms waiting for response`);
 }

@@ -1,25 +1,39 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { loadConfig } from "../src/config";
-import { createServer } from "../src/server";
+import type { CortexConfig } from "../src/config";
+import { initDatabase } from "../src/db";
+import { startServer } from "../src/server";
 
 describe("health endpoint", () => {
-  let server: ReturnType<typeof Bun.serve>;
+  let server: { port: number; stop: () => void };
   let baseUrl: string;
   const savedEnv: Record<string, string | undefined> = {};
 
   beforeAll(() => {
     savedEnv.CORTEX_CONFIG_PATH = process.env.CORTEX_CONFIG_PATH;
     process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
-    const config = loadConfig({ quiet: true, skipRequiredChecks: true });
-    // Use port 0 for random available port in tests
-    const cortexServer = createServer({
-      ...config,
+
+    const config: CortexConfig = {
+      host: "127.0.0.1",
       port: 0,
       ingestApiKey: "test-key",
       model: "test-model",
-    });
-    server = cortexServer.start();
-    baseUrl = `http://${server.hostname}:${server.port}`;
+      synapseUrl: "http://localhost:7750",
+      engramUrl: "http://localhost:7749",
+      activeWindowSize: 10,
+      extractionInterval: 3,
+      turnTtlDays: 30,
+      schedulerTickSeconds: 30,
+      schedulerTimezone: "UTC",
+      outboxPollDefaultBatch: 20,
+      outboxLeaseSeconds: 60,
+      outboxMaxAttempts: 10,
+      skillDirs: [],
+      toolTimeoutMs: 20000,
+    };
+
+    initDatabase(":memory:");
+    server = startServer(config);
+    baseUrl = `http://localhost:${server.port}`;
   });
 
   afterAll(() => {
@@ -53,7 +67,7 @@ describe("health endpoint", () => {
     expect(response.status).toBe(404);
 
     const body = (await response.json()) as { error: string };
-    expect(body.error).toBe("not_found");
+    expect(body.error).toContain("Not found");
   });
 
   test("POST /health returns 404", async () => {
