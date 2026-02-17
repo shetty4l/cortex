@@ -1,0 +1,65 @@
+/**
+ * Prompt assembly for Cortex.
+ *
+ * Builds the messages array sent to Synapse from:
+ * 1. System prompt (identity + behavior)
+ * 2. Recalled memories (from Engram)
+ * 3. Recent turn history (from SQLite)
+ * 4. Current user message
+ */
+
+import type { Memory } from "./engram";
+import type { ChatMessage } from "./synapse";
+
+// --- Constants ---
+
+export const SYSTEM_PROMPT =
+  "You are Cortex, a helpful life assistant. Be concise, direct, and actionable.";
+
+const MEMORY_HEADER =
+  "These are facts and preferences you've learned about the user:";
+
+// --- Prompt builder ---
+
+export interface BuildPromptOpts {
+  /** Recalled memories from Engram (may be empty). */
+  memories: Memory[];
+  /** Recent turn history as ChatMessage[] (may be empty). */
+  turns: ChatMessage[];
+  /** The current user message text. */
+  userText: string;
+}
+
+/**
+ * Build the full messages array for a Synapse chat completion call.
+ *
+ * Layout:
+ * - System message (always present)
+ * - Memory block appended to system message (if memories present)
+ * - Turn history (alternating user/assistant messages)
+ * - Current user message (always present)
+ */
+export function buildPrompt(opts: BuildPromptOpts): ChatMessage[] {
+  const { memories, turns, userText } = opts;
+  const messages: ChatMessage[] = [];
+
+  // 1. System message (with optional memory block)
+  let systemContent = SYSTEM_PROMPT;
+
+  if (memories.length > 0) {
+    const memoryBlock = memories.map((m) => `- ${m.content}`).join("\n");
+    systemContent += `\n\n${MEMORY_HEADER}\n${memoryBlock}`;
+  }
+
+  messages.push({ role: "system", content: systemContent });
+
+  // 2. Turn history
+  for (const turn of turns) {
+    messages.push({ role: turn.role, content: turn.content });
+  }
+
+  // 3. Current user message
+  messages.push({ role: "user", content: userText });
+
+  return messages;
+}
