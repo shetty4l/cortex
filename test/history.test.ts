@@ -3,9 +3,10 @@ import {
   closeDatabase,
   initDatabase,
   loadRecentTurns,
+  saveAgentTurns,
   saveTurn,
 } from "../src/db";
-import { loadHistory, saveTurnPair } from "../src/history";
+import { loadHistory, saveAgentHistory, saveTurnPair } from "../src/history";
 
 // --- Setup ---
 
@@ -121,5 +122,116 @@ describe("saveTurnPair / loadHistory", () => {
   test("returns empty array for topic with no history", () => {
     const messages = loadHistory("empty-topic");
     expect(messages).toEqual([]);
+  });
+});
+
+// --- Agent history (tool calling) ---
+
+describe("saveAgentHistory / loadHistory with tool messages", () => {
+  test("saves and loads agent turns with tool_calls and tool results", () => {
+    saveAgentHistory("topic-1", [
+      { role: "user", content: "What is 2+2?" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "call_1",
+            type: "function" as const,
+            function: { name: "math.add", arguments: '{"a":2,"b":2}' },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "4",
+        tool_call_id: "call_1",
+        name: "math.add",
+      },
+      { role: "assistant", content: "2+2 equals 4." },
+    ]);
+
+    const messages = loadHistory("topic-1");
+    expect(messages).toHaveLength(4);
+
+    // User message
+    expect(messages[0].role).toBe("user");
+    expect(messages[0].content).toBe("What is 2+2?");
+
+    // Assistant with tool_calls
+    expect(messages[1].role).toBe("assistant");
+    expect(messages[1].content).toBe("");
+    expect(messages[1].tool_calls).toHaveLength(1);
+    expect(messages[1].tool_calls![0].id).toBe("call_1");
+    expect(messages[1].tool_calls![0].function.name).toBe("math.add");
+
+    // Tool result
+    expect(messages[2].role).toBe("tool");
+    expect(messages[2].content).toBe("4");
+    expect(messages[2].tool_call_id).toBe("call_1");
+    expect(messages[2].name).toBe("math.add");
+
+    // Final assistant
+    expect(messages[3].role).toBe("assistant");
+    expect(messages[3].content).toBe("2+2 equals 4.");
+  });
+
+  test("loadHistory limit counts user messages, not total messages", () => {
+    // Group 1: user + tool_call + tool_result + final (4 messages)
+    saveAgentHistory("topic-1", [
+      { role: "user", content: "Q1" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "c1",
+            type: "function" as const,
+            function: { name: "echo.say", arguments: '{"text":"1"}' },
+          },
+        ],
+      },
+      {
+        role: "tool",
+        content: "1",
+        tool_call_id: "c1",
+        name: "echo.say",
+      },
+      { role: "assistant", content: "A1" },
+    ]);
+
+    // Group 2: simple pair (2 messages)
+    saveAgentHistory("topic-1", [
+      { role: "user", content: "Q2" },
+      { role: "assistant", content: "A2" },
+    ]);
+
+    // Group 3: simple pair (2 messages)
+    saveAgentHistory("topic-1", [
+      { role: "user", content: "Q3" },
+      { role: "assistant", content: "A3" },
+    ]);
+
+    // Limit=2 should return last 2 user groups: Q2+A2 and Q3+A3
+    const messages = loadHistory("topic-1", 2);
+    expect(messages).toHaveLength(4);
+    expect(messages[0].content).toBe("Q2");
+    expect(messages[1].content).toBe("A2");
+    expect(messages[2].content).toBe("Q3");
+    expect(messages[3].content).toBe("A3");
+  });
+
+  test("saveAgentTurns stores in atomic transaction", () => {
+    saveAgentTurns("topic-1", [
+      { role: "user", content: "Hello" },
+      { role: "assistant", content: "Hi" },
+      { role: "user", content: "Bye" },
+      { role: "assistant", content: "Goodbye" },
+    ]);
+
+    const turns = loadRecentTurns("topic-1");
+    expect(turns).toHaveLength(4);
+    expect(turns[0].content).toBe("Hello");
+    expect(turns[3].content).toBe("Goodbye");
   });
 });
