@@ -20,6 +20,7 @@ import {
 } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
 import { SYSTEM_PROMPT } from "../src/prompt";
+import { createEmptyRegistry } from "../src/skills";
 
 // --- Mock Synapse server ---
 
@@ -188,7 +189,7 @@ describe("processing loop", () => {
 
     const { eventId } = ingestMessage({ text: "Hello assistant" });
     const config = testConfig();
-    const loop = startProcessingLoop(config, FAST_LOOP);
+    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
 
     await waitFor(() => {
       const msg = getInboxMessage(eventId);
@@ -220,7 +221,11 @@ describe("processing loop", () => {
     };
 
     ingestMessage({ text: "What is 2+2?" });
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     await waitFor(() => mockSynapseCallCount > 0);
     await loop.stop();
@@ -262,7 +267,11 @@ describe("processing loop", () => {
       topicKey: "topic-a",
     });
 
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     await waitFor(() => {
       const msg = getInboxMessage(id2);
@@ -302,7 +311,11 @@ describe("processing loop", () => {
       topicKey: "topic-b",
     });
 
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     await waitFor(() => {
       const a = getInboxMessage(id1);
@@ -330,7 +343,11 @@ describe("processing loop", () => {
       );
 
     const { eventId } = ingestMessage({ text: "Will fail" });
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     await waitFor(() => {
       const msg = getInboxMessage(eventId);
@@ -352,7 +369,11 @@ describe("processing loop", () => {
     mockSynapseHandler = () =>
       Response.json(openaiResponse("should not be called"));
 
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     // Let it tick a couple of times on empty inbox
     await Bun.sleep(200);
@@ -383,7 +404,11 @@ describe("processing loop", () => {
       externalMessageId: "msg-success",
     });
 
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     await waitFor(() => {
       const msg = getInboxMessage(successId);
@@ -406,7 +431,11 @@ describe("processing loop", () => {
       text: "What is 2+2?",
       topicKey: "topic-turns",
     });
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
     await loop.stop();
@@ -430,7 +459,11 @@ describe("processing loop", () => {
       text: "Will fail",
       topicKey: "topic-fail",
     });
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "failed");
     await loop.stop();
@@ -458,7 +491,11 @@ describe("processing loop", () => {
       topicKey: "topic-history",
     });
 
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
     await waitFor(() => getInboxMessage(id1)?.status === "done");
 
     // Second message on same topic
@@ -506,7 +543,11 @@ describe("processing loop", () => {
       topicKey: "topic-a",
     });
 
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
     await waitFor(() => getInboxMessage(idA)?.status === "done");
 
     // Message on topic-b
@@ -555,7 +596,11 @@ describe("processing loop", () => {
       text: "Where do I live?",
       topicKey: "topic-engram",
     });
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
     await loop.stop();
@@ -577,7 +622,7 @@ describe("processing loop", () => {
       text: "Hello",
       topicKey: "topic-no-engram",
     });
-    const loop = startProcessingLoop(config, FAST_LOOP);
+    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
     await loop.stop();
@@ -602,7 +647,11 @@ describe("processing loop", () => {
       text: "Hello",
       topicKey: "test:my-topic",
     });
-    const loop = startProcessingLoop(testConfig(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
     await loop.stop();
@@ -651,7 +700,7 @@ describe("processing loop", () => {
       text: "Hi there",
       topicKey: "topic-extract",
     });
-    const loop = startProcessingLoop(config, FAST_LOOP);
+    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
 
@@ -702,7 +751,7 @@ describe("processing loop", () => {
       text: "Message A",
       topicKey: "topic-inflight",
     });
-    const loop = startProcessingLoop(config, FAST_LOOP);
+    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
     await waitFor(() => getInboxMessage(idA)?.status === "done");
     // Wait for extraction to start (it will be blocked)
     await waitFor(() => extractionCallCount >= 1);
@@ -779,7 +828,7 @@ describe("processing loop", () => {
       text: "Message A",
       topicKey: "topic-catchup",
     });
-    const loop = startProcessingLoop(config, FAST_LOOP);
+    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
     await waitFor(() => getInboxMessage(idA)?.status === "done");
     await waitFor(() => extractionCallCount >= 1);
 
@@ -849,7 +898,7 @@ describe("processing loop", () => {
       externalMessageId: "msg-second-ext",
     });
 
-    const loop = startProcessingLoop(config, FAST_LOOP);
+    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
 
     await waitFor(() => getInboxMessage(id2)?.status === "done");
     await Bun.sleep(200);
@@ -899,7 +948,7 @@ describe("processing loop", () => {
       text: "I want to visit Tokyo",
       topicKey: "topic-summary-e2e",
     });
-    const loop = startProcessingLoop(config, FAST_LOOP);
+    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
     await waitFor(() => getInboxMessage(id1)?.status === "done");
     // Wait for fire-and-forget extraction + summary to complete
     await waitFor(() => getTopicSummary("topic-summary-e2e") !== null);

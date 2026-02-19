@@ -7,13 +7,14 @@
  *   3. Load recent turn history from SQLite
  *   4. Load topic summary from SQLite (if available)
  *   5. Build prompt (system + memories + summary + history + user message)
- *   6. Call Synapse for a chat completion
- *   7. Save the turn pair (user + assistant) to history
+ *   6. Call Synapse (plain chat or agent loop with tools)
+ *   7. Save turns to history
  *   8. Trigger async fact extraction + summary update (fire-and-forget)
  *   9. Write the assistant response to the outbox
  *  10. Mark the inbox message as done (or failed on error)
  */
 
+import { runAgentLoop } from "./agent";
 import type { CortexConfig } from "./config";
 import {
   claimNextInboxMessage,
@@ -24,8 +25,10 @@ import {
 } from "./db";
 import { recallDual } from "./engram";
 import { maybeExtract } from "./extraction";
-import { loadHistory, saveTurnPair } from "./history";
+import { loadHistory, saveAgentHistory, saveTurnPair } from "./history";
 import { buildPrompt } from "./prompt";
+import type { SkillRegistry } from "./skills";
+import type { OpenAITool } from "./synapse";
 import { chat } from "./synapse";
 
 // --- Constants ---
@@ -66,10 +69,14 @@ export interface ProcessingLoopOptions {
 /**
  * Start the processing loop. Claims and processes inbox messages one at a time.
  *
+ * When a skill registry with tools is provided, the loop uses the agent
+ * tool-calling loop (runAgentLoop). Otherwise falls back to plain chat.
+ *
  * Returns a handle with a `stop()` method for graceful shutdown.
  */
 export function startProcessingLoop(
   config: CortexConfig,
+  registry: SkillRegistry,
   options?: ProcessingLoopOptions,
 ): ProcessingLoop {
   let running = true;
@@ -81,6 +88,18 @@ export function startProcessingLoop(
       "cortex: extraction disabled — no extractionModel configured",
     );
   }
+
+  // Convert registry tools → OpenAI format once at loop start (cache-aware)
+  const openAITools: OpenAITool[] = registry.tools.map((t) => ({
+    type: "function" as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.inputSchema,
+    },
+  }));
+
+  const hasTools = openAITools.length > 0;
 
   const done = (async () => {
     while (running) {
@@ -124,15 +143,65 @@ export function startProcessingLoop(
             userText: message.text,
           });
 
-          // 5. Call Synapse
-          const result = await chat(messages, config.model, config.synapseUrl);
+          // 5. Call Synapse — agent loop with tools or plain chat
+          let responseText: string;
+          let ok: boolean;
+          let errorMsg: string | undefined;
+
+          if (hasTools) {
+            const agentResult = await runAgentLoop({
+              messages,
+              tools: openAITools,
+              registry,
+              config: {
+                model: config.model,
+                synapseUrl: config.synapseUrl,
+                toolTimeoutMs: config.toolTimeoutMs,
+                maxToolRounds: config.maxToolRounds,
+                skillConfig: config.skillConfig,
+              },
+            });
+
+            if (agentResult.ok) {
+              ok = true;
+              responseText = agentResult.value.response;
+
+              // Save full agent history (user message + all loop turns)
+              const userMessage = {
+                role: "user" as const,
+                content: message.text,
+              };
+              saveAgentHistory(message.topic_key, [
+                userMessage,
+                ...agentResult.value.turns,
+              ]);
+            } else {
+              ok = false;
+              responseText = "";
+              errorMsg = agentResult.error;
+            }
+          } else {
+            // Plain chat path (no tools loaded)
+            const result = await chat(
+              messages,
+              config.model,
+              config.synapseUrl,
+            );
+
+            if (result.ok) {
+              ok = true;
+              responseText = result.value.content;
+              saveTurnPair(message.topic_key, message.text, responseText);
+            } else {
+              ok = false;
+              responseText = "";
+              errorMsg = result.error;
+            }
+          }
 
           const elapsed = ((performance.now() - startMs) / 1000).toFixed(1);
 
-          if (result.ok) {
-            // 6. Save turn pair to history
-            saveTurnPair(message.topic_key, message.text, result.value.content);
-
+          if (ok) {
             // 7. Trigger async extraction (fire-and-forget, serialized per topic)
             //    Always increment the turn counter — even when extraction is
             //    already in-flight — so the cadence stays accurate.
@@ -155,7 +224,7 @@ export function startProcessingLoop(
             enqueueOutboxMessage({
               source: message.source,
               topicKey: message.topic_key,
-              text: result.value.content,
+              text: responseText,
             });
 
             completeInboxMessage(message.id);
@@ -163,9 +232,9 @@ export function startProcessingLoop(
             console.error(`cortex: [${message.topic_key}] done in ${elapsed}s`);
           } else {
             console.error(
-              `cortex: [${message.topic_key}] failed in ${elapsed}s: ${result.error}`,
+              `cortex: [${message.topic_key}] failed in ${elapsed}s: ${errorMsg}`,
             );
-            completeInboxMessage(message.id, result.error);
+            completeInboxMessage(message.id, errorMsg);
           }
         }
       } catch (err) {
