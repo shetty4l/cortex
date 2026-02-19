@@ -22,7 +22,9 @@ import type { CortexConfig } from "./config";
 import {
   advanceExtractionCursor,
   getExtractionCursor,
+  getTopicSummary,
   loadTurnsSinceCursor,
+  upsertTopicSummary,
 } from "./db";
 import { recall, remember } from "./engram";
 import type { ChatMessage } from "./synapse";
@@ -91,6 +93,8 @@ export async function maybeExtract(
   // MAX_EXTRACTION_CHARS. This ensures that a large backlog
   // (e.g. after downtime) is fully processed rather than orphaned,
   // and that oversized batches don't permanently block extraction.
+  let lastBatchTurns: Array<{ role: string; content: string }> = [];
+
   while (true) {
     const loaded = loadTurnsSinceCursor(
       topicKey,
@@ -114,6 +118,9 @@ export async function maybeExtract(
       break;
     }
 
+    // Track the last successful batch for topic summary generation
+    lastBatchTurns = turns;
+
     const lastRowid = turns[turns.length - 1].rowid;
     advanceExtractionCursor(topicKey, lastRowid);
     afterRowid = lastRowid;
@@ -127,6 +134,12 @@ export async function maybeExtract(
       loaded.length < MAX_TURNS_PER_EXTRACTION
     )
       break;
+  }
+
+  // After draining, generate/update the topic summary using the most
+  // recent batch of turns. Failures are logged but don't affect extraction.
+  if (lastBatchTurns.length > 0) {
+    await updateTopicSummary(topicKey, lastBatchTurns, config);
   }
 }
 
@@ -212,6 +225,93 @@ async function extractBatch(
   }
 
   return true;
+}
+
+// --- Topic summary ---
+
+/**
+ * Generate a rolling topic summary and store it in both SQLite (cache)
+ * and Engram (source of truth).
+ *
+ * Uses the extraction model to produce a 1-2 sentence summary of what
+ * the conversation is about and its current focus. The previous summary
+ * (if any) is included in the prompt so the model updates rather than
+ * recreates.
+ *
+ * Never throws — failures are logged and silently skipped.
+ */
+async function updateTopicSummary(
+  topicKey: string,
+  turns: Array<{ role: string; content: string }>,
+  config: CortexConfig,
+): Promise<void> {
+  const existingSummary = getTopicSummary(topicKey);
+  const messages = buildSummaryPrompt(turns, existingSummary);
+
+  const result = await chat(
+    messages,
+    config.extractionModel!,
+    config.synapseUrl,
+  );
+  if (!result.ok) {
+    console.error(
+      `cortex: [${topicKey}] summary model failed: ${result.error}`,
+    );
+    return;
+  }
+
+  const summary = result.value.content.trim();
+  if (summary.length === 0) return;
+
+  // Write to local SQLite cache (fast reads at prompt time)
+  upsertTopicSummary(topicKey, summary);
+
+  // Write to Engram (source of truth, upsert by topic key)
+  const rememberResult = await remember(
+    {
+      content: summary,
+      category: "summary",
+      scopeId: topicKey,
+      idempotencyKey: `topic-summary:${topicKey}`,
+      upsert: true,
+    },
+    config.engramUrl,
+  );
+
+  if (!rememberResult.ok) {
+    console.error(
+      `cortex: [${topicKey}] summary remember failed: ${rememberResult.error}`,
+    );
+  } else {
+    console.error(`cortex: [${topicKey}] topic summary updated`);
+  }
+}
+
+/**
+ * Build the prompt for topic summary generation.
+ */
+function buildSummaryPrompt(
+  turns: Array<{ role: string; content: string }>,
+  existingSummary: string | null,
+): ChatMessage[] {
+  let systemContent =
+    "In 1-2 sentences, summarize what this conversation is about and its current focus.\n" +
+    "Be specific and concrete. Do not use filler phrases.\n" +
+    "Respond with ONLY the summary text — no labels, no markdown, no explanation.";
+
+  if (existingSummary) {
+    systemContent += `\n\nPrevious summary:\n${existingSummary}`;
+  }
+
+  let userContent = "Recent conversation:\n";
+  for (const turn of turns) {
+    userContent += `${turn.role}: ${turn.content}\n`;
+  }
+
+  return [
+    { role: "system", content: systemContent },
+    { role: "user", content: userContent },
+  ];
 }
 
 // --- Prompt construction ---

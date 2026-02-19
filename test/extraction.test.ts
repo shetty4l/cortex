@@ -12,6 +12,7 @@ import {
   advanceExtractionCursor,
   closeDatabase,
   getExtractionCursor,
+  getTopicSummary,
   incrementTurnsSinceExtraction,
   initDatabase,
   loadTurnsSinceCursor,
@@ -46,18 +47,25 @@ let mockEngram: ReturnType<typeof Bun.serve>;
 let mockEngramUrl: string;
 let mockEngramHandler: (req: Request) => Response | Promise<Response>;
 let engramRememberCalls: Array<Record<string, unknown>>;
+let engramSummaryCalls: Array<Record<string, unknown>>;
 let engramRecallCalls: Array<Record<string, unknown>>;
+let defaultEngramHandler: (req: Request) => Response | Promise<Response>;
 
 beforeAll(() => {
   engramRememberCalls = [];
+  engramSummaryCalls = [];
   engramRecallCalls = [];
 
-  mockEngramHandler = async (req) => {
+  defaultEngramHandler = async (req) => {
     const path = new URL(req.url).pathname;
     const body = (await req.json()) as Record<string, unknown>;
 
     if (path === "/remember") {
-      engramRememberCalls.push(body);
+      if (body.category === "summary") {
+        engramSummaryCalls.push(body);
+      } else {
+        engramRememberCalls.push(body);
+      }
       return Response.json({
         id: `mem_${crypto.randomUUID().slice(0, 8)}`,
         status: "created",
@@ -71,6 +79,8 @@ beforeAll(() => {
 
     return Response.json({ error: "not found" }, { status: 404 });
   };
+
+  mockEngramHandler = defaultEngramHandler;
 
   mockEngram = Bun.serve({
     port: 0,
@@ -156,6 +166,25 @@ async function processAndExtract(
     incrementTurnsSinceExtraction(topicKey);
   }
   await maybeExtract(topicKey, config);
+}
+
+/**
+ * Create a mock Synapse handler that returns facts for extraction prompts
+ * and a generic summary for summary prompts.
+ */
+function mockSynapseWithFacts(
+  facts: Array<{ content: string; category: string }>,
+) {
+  return async (req: Request) => {
+    const body = (await req.json()) as {
+      messages?: Array<{ content: string }>;
+    };
+    const system = body.messages?.[0]?.content ?? "";
+    if (system.includes("summarize what this conversation")) {
+      return Response.json(openaiResponse("Test summary."));
+    }
+    return Response.json(extractionResponse(facts));
+  };
 }
 
 // --- Tests ---
@@ -244,9 +273,20 @@ describe("maybeExtract", () => {
   beforeEach(() => {
     initDatabase(":memory:");
     engramRememberCalls = [];
+    engramSummaryCalls = [];
     engramRecallCalls = [];
-    // Default: return empty extraction
-    mockSynapseHandler = () => Response.json(extractionResponse([]));
+    mockEngramHandler = defaultEngramHandler;
+    // Default: return empty extraction for fact prompts, summary for summary prompts
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        return Response.json(openaiResponse("Test summary."));
+      }
+      return Response.json(extractionResponse([]));
+    };
   });
 
   afterEach(() => {
@@ -280,12 +320,9 @@ describe("maybeExtract", () => {
     const config = testConfig({ extractionInterval: 3 });
     seedTurns("topic-1", 3);
 
-    mockSynapseHandler = () =>
-      Response.json(
-        extractionResponse([
-          { content: "User likes TypeScript", category: "preference" },
-        ]),
-      );
+    mockSynapseHandler = mockSynapseWithFacts([
+      { content: "User likes TypeScript", category: "preference" },
+    ]);
 
     // Simulate 3 turns processed
     await processAndExtract("topic-1", config);
@@ -301,13 +338,10 @@ describe("maybeExtract", () => {
     const config = testConfig({ extractionInterval: 1 });
     seedTurns("my-topic", 1);
 
-    mockSynapseHandler = () =>
-      Response.json(
-        extractionResponse([
-          { content: "User lives in Seattle", category: "fact" },
-          { content: "User prefers dark mode", category: "preference" },
-        ]),
-      );
+    mockSynapseHandler = mockSynapseWithFacts([
+      { content: "User lives in Seattle", category: "fact" },
+      { content: "User prefers dark mode", category: "preference" },
+    ]);
 
     await processAndExtract("my-topic", config);
 
@@ -331,12 +365,9 @@ describe("maybeExtract", () => {
     const config = testConfig({ extractionInterval: 1 });
     seedTurns("topic-1", 1);
 
-    mockSynapseHandler = () =>
-      Response.json(
-        extractionResponse([
-          { content: "User likes coffee", category: "preference" },
-        ]),
-      );
+    mockSynapseHandler = mockSynapseWithFacts([
+      { content: "User likes coffee", category: "preference" },
+    ]);
 
     await processAndExtract("topic-1", config);
     const firstKey = engramRememberCalls[0].idempotency_key;
@@ -358,10 +389,9 @@ describe("maybeExtract", () => {
     const config = testConfig({ extractionInterval: 1 });
     seedTurns("topic-1", 2);
 
-    mockSynapseHandler = () =>
-      Response.json(
-        extractionResponse([{ content: "Some fact", category: "fact" }]),
-      );
+    mockSynapseHandler = mockSynapseWithFacts([
+      { content: "Some fact", category: "fact" },
+    ]);
 
     await processAndExtract("topic-1", config);
 
@@ -408,10 +438,9 @@ describe("maybeExtract", () => {
     const config = testConfig({ extractionInterval: 1 });
     seedTurns("topic-1", 1);
 
-    mockSynapseHandler = () =>
-      Response.json(
-        extractionResponse([{ content: "A fact", category: "fact" }]),
-      );
+    mockSynapseHandler = mockSynapseWithFacts([
+      { content: "A fact", category: "fact" },
+    ]);
 
     // Make Engram remember fail
     const originalHandler = mockEngramHandler;
@@ -435,14 +464,15 @@ describe("maybeExtract", () => {
     const config = testConfig({ extractionInterval: 1 });
     seedTurns("topic-1", 1);
 
-    mockSynapseHandler = () => Response.json(extractionResponse([]));
-
+    // Default handler returns [] for extraction, "Test summary." for summary
     await processAndExtract("topic-1", config);
 
     const cursor = getExtractionCursor("topic-1");
     expect(cursor!.turns_since_extraction).toBe(0);
     expect(cursor!.last_extracted_rowid).toBeGreaterThan(0);
+    // No fact remember calls, but summary is stored
     expect(engramRememberCalls).toHaveLength(0);
+    expect(engramSummaryCalls).toHaveLength(1);
   });
 
   test("existing memories passed into extraction prompt for dedup", async () => {
@@ -475,7 +505,11 @@ describe("maybeExtract", () => {
       }
 
       if (path === "/remember") {
-        engramRememberCalls.push(body);
+        if (body.category === "summary") {
+          engramSummaryCalls.push(body);
+        } else {
+          engramRememberCalls.push(body);
+        }
         return Response.json({ id: "mem-1", status: "created" });
       }
 
@@ -483,7 +517,12 @@ describe("maybeExtract", () => {
     };
 
     mockSynapseHandler = async (req) => {
-      capturedSynapseBody = (await req.json()) as typeof capturedSynapseBody;
+      const body = (await req.json()) as typeof capturedSynapseBody;
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        return Response.json(openaiResponse("Test summary."));
+      }
+      capturedSynapseBody = body;
       return Response.json(extractionResponse([]));
     };
 
@@ -501,12 +540,9 @@ describe("maybeExtract", () => {
 
     // Cycle 1
     seedTurns("topic-1", 1);
-    mockSynapseHandler = () =>
-      Response.json(
-        extractionResponse([
-          { content: "Fact from cycle 1", category: "fact" },
-        ]),
-      );
+    mockSynapseHandler = mockSynapseWithFacts([
+      { content: "Fact from cycle 1", category: "fact" },
+    ]);
 
     await processAndExtract("topic-1", config);
     expect(engramRememberCalls).toHaveLength(1);
@@ -518,12 +554,9 @@ describe("maybeExtract", () => {
     // Cycle 2 — more turns
     engramRememberCalls = [];
     seedTurns("topic-1", 1);
-    mockSynapseHandler = () =>
-      Response.json(
-        extractionResponse([
-          { content: "Fact from cycle 2", category: "decision" },
-        ]),
-      );
+    mockSynapseHandler = mockSynapseWithFacts([
+      { content: "Fact from cycle 2", category: "decision" },
+    ]);
 
     await processAndExtract("topic-1", config);
     expect(engramRememberCalls).toHaveLength(1);
@@ -545,7 +578,16 @@ describe("maybeExtract", () => {
       category: "fact",
     }));
 
-    mockSynapseHandler = () => Response.json(extractionResponse(manyFacts));
+    mockSynapseHandler = async (req: Request) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        return Response.json(openaiResponse("Test summary."));
+      }
+      return Response.json(extractionResponse(manyFacts));
+    };
 
     await processAndExtract("topic-1", config);
 
@@ -557,14 +599,11 @@ describe("maybeExtract", () => {
     const config = testConfig({ extractionInterval: 1 });
     seedTurns("topic-1", 1);
 
-    mockSynapseHandler = () =>
-      Response.json(
-        extractionResponse([
-          { content: "Valid fact", category: "fact" },
-          { content: "Invalid category", category: "opinion" },
-          { content: "Valid preference", category: "preference" },
-        ]),
-      );
+    mockSynapseHandler = mockSynapseWithFacts([
+      { content: "Valid fact", category: "fact" },
+      { content: "Invalid category", category: "opinion" },
+      { content: "Valid preference", category: "preference" },
+    ]);
 
     await processAndExtract("topic-1", config);
 
@@ -583,7 +622,16 @@ describe("maybeExtract", () => {
       JSON.stringify([{ content: "User is a developer", category: "fact" }]) +
       "\n```";
 
-    mockSynapseHandler = () => Response.json(openaiResponse(wrappedResponse));
+    mockSynapseHandler = async (req: Request) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        return Response.json(openaiResponse("Test summary."));
+      }
+      return Response.json(openaiResponse(wrappedResponse));
+    };
 
     await processAndExtract("topic-1", config);
 
@@ -646,7 +694,9 @@ describe("maybeExtract with oversized batches", () => {
   beforeEach(() => {
     initDatabase(":memory:");
     engramRememberCalls = [];
+    engramSummaryCalls = [];
     engramRecallCalls = [];
+    mockEngramHandler = defaultEngramHandler;
   });
 
   afterEach(() => {
@@ -664,7 +714,14 @@ describe("maybeExtract with oversized batches", () => {
       saveTurn("topic-1", "assistant", `Reply ${i + 1}: ${"y".repeat(3000)}`);
     }
 
-    mockSynapseHandler = () => {
+    mockSynapseHandler = async (req: Request) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        return Response.json(openaiResponse("Test summary."));
+      }
       extractionCalls++;
       return Response.json(extractionResponse([]));
     };
@@ -685,5 +742,205 @@ describe("maybeExtract with oversized batches", () => {
       cursor!.last_extracted_rowid,
     );
     expect(remaining).toHaveLength(0);
+  });
+});
+
+describe("topic summary generation", () => {
+  beforeEach(() => {
+    initDatabase(":memory:");
+    engramRememberCalls = [];
+    engramSummaryCalls = [];
+    engramRecallCalls = [];
+    mockEngramHandler = defaultEngramHandler;
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        return Response.json(openaiResponse("Planning a trip to Japan."));
+      }
+      return Response.json(extractionResponse([]));
+    };
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  test("generates topic summary after extraction", async () => {
+    const config = testConfig({ extractionInterval: 1 });
+    seedTurns("topic-1", 1);
+
+    await processAndExtract("topic-1", config);
+
+    // Summary stored in local SQLite cache
+    const cached = getTopicSummary("topic-1");
+    expect(cached).toBe("Planning a trip to Japan.");
+
+    // Summary stored in Engram
+    expect(engramSummaryCalls).toHaveLength(1);
+    expect(engramSummaryCalls[0].content).toBe("Planning a trip to Japan.");
+    expect(engramSummaryCalls[0].category).toBe("summary");
+    expect(engramSummaryCalls[0].scope_id).toBe("topic-1");
+    expect(engramSummaryCalls[0].idempotency_key).toBe("topic-summary:topic-1");
+    expect(engramSummaryCalls[0].upsert).toBe(true);
+  });
+
+  test("passes previous summary into the summary prompt", async () => {
+    const config = testConfig({ extractionInterval: 1 });
+    let capturedSummaryPrompt = "";
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        capturedSummaryPrompt = system;
+        return Response.json(openaiResponse("Updated summary."));
+      }
+      return Response.json(extractionResponse([]));
+    };
+
+    // Cycle 1: seed initial summary
+    seedTurns("topic-1", 1);
+    await processAndExtract("topic-1", config);
+    expect(getTopicSummary("topic-1")).toBe("Updated summary.");
+
+    // Cycle 2: previous summary should appear in prompt
+    capturedSummaryPrompt = "";
+    seedTurns("topic-1", 1);
+    await processAndExtract("topic-1", config);
+
+    expect(capturedSummaryPrompt).toContain("Previous summary:");
+    expect(capturedSummaryPrompt).toContain("Updated summary.");
+  });
+
+  test("no summary for new conversation (no previous summary)", async () => {
+    const config = testConfig({ extractionInterval: 1 });
+    let capturedSummaryPrompt = "";
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        capturedSummaryPrompt = system;
+        return Response.json(openaiResponse("New conversation summary."));
+      }
+      return Response.json(extractionResponse([]));
+    };
+
+    seedTurns("topic-1", 1);
+    await processAndExtract("topic-1", config);
+
+    // No "Previous summary:" in prompt for first extraction
+    expect(capturedSummaryPrompt).not.toContain("Previous summary:");
+  });
+
+  test("summary failure does not block extraction", async () => {
+    const config = testConfig({ extractionInterval: 1 });
+    seedTurns("topic-1", 1);
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        return Response.json(
+          { error: { message: "summary boom", type: "server_error" } },
+          { status: 500 },
+        );
+      }
+      return Response.json(
+        extractionResponse([{ content: "A fact", category: "fact" }]),
+      );
+    };
+
+    await processAndExtract("topic-1", config);
+
+    // Fact was still extracted despite summary failure
+    expect(engramRememberCalls).toHaveLength(1);
+    expect(engramRememberCalls[0].content).toBe("A fact");
+
+    // No summary cached
+    expect(getTopicSummary("topic-1")).toBeNull();
+
+    // Cursor still advanced
+    const cursor = getExtractionCursor("topic-1");
+    expect(cursor!.turns_since_extraction).toBe(0);
+  });
+
+  test("summary not generated when extraction fails", async () => {
+    const config = testConfig({ extractionInterval: 1 });
+    seedTurns("topic-1", 1);
+
+    // All Synapse calls fail
+    mockSynapseHandler = () =>
+      Response.json(
+        { error: { message: "boom", type: "server_error" } },
+        { status: 500 },
+      );
+
+    await processAndExtract("topic-1", config);
+
+    // No summary generated (extraction failed, lastBatchTurns is empty)
+    expect(getTopicSummary("topic-1")).toBeNull();
+    expect(engramSummaryCalls).toHaveLength(0);
+  });
+
+  test("topic summary upserts on subsequent cycles", async () => {
+    const config = testConfig({ extractionInterval: 1 });
+    let callCount = 0;
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        callCount++;
+        return Response.json(openaiResponse(`Summary version ${callCount}.`));
+      }
+      return Response.json(extractionResponse([]));
+    };
+
+    // Cycle 1
+    seedTurns("topic-1", 1);
+    await processAndExtract("topic-1", config);
+    expect(getTopicSummary("topic-1")).toBe("Summary version 1.");
+
+    // Cycle 2 — summary should be overwritten
+    seedTurns("topic-1", 1);
+    await processAndExtract("topic-1", config);
+    expect(getTopicSummary("topic-1")).toBe("Summary version 2.");
+  });
+
+  test("summary includes recent turns in the prompt", async () => {
+    const config = testConfig({ extractionInterval: 1 });
+    let capturedUserContent = "";
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ role: string; content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        capturedUserContent = body.messages?.[1]?.content ?? "";
+        return Response.json(openaiResponse("Test summary."));
+      }
+      return Response.json(extractionResponse([]));
+    };
+
+    saveTurn("topic-1", "user", "I want to plan a trip to Japan");
+    saveTurn("topic-1", "assistant", "Great! When are you thinking of going?");
+
+    await processAndExtract("topic-1", config);
+
+    expect(capturedUserContent).toContain("plan a trip to Japan");
+    expect(capturedUserContent).toContain("When are you thinking");
   });
 });
