@@ -30,6 +30,7 @@ describe("health endpoint", () => {
       skillDirs: [],
       skillConfig: {},
       toolTimeoutMs: 20000,
+      maxToolRounds: 8,
     };
 
     initDatabase(":memory:");
