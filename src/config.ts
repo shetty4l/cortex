@@ -47,6 +47,7 @@ export interface CortexConfig {
 
   // Skills
   skillDirs: string[];
+  skillConfig: Record<string, Record<string, unknown>>;
   toolTimeoutMs: number;
 }
 
@@ -69,6 +70,7 @@ const DEFAULTS: Omit<
   outboxLeaseSeconds: 60,
   outboxMaxAttempts: 10,
   skillDirs: [],
+  skillConfig: {},
   toolTimeoutMs: 20000,
 };
 
@@ -175,6 +177,27 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
       return err("skillDirs: must be an array of strings");
     }
     result.skillDirs = obj.skillDirs as string[];
+  }
+
+  if (obj.skillConfig !== undefined) {
+    if (
+      typeof obj.skillConfig !== "object" ||
+      obj.skillConfig === null ||
+      Array.isArray(obj.skillConfig)
+    ) {
+      return err("skillConfig: must be an object");
+    }
+    for (const [key, val] of Object.entries(
+      obj.skillConfig as Record<string, unknown>,
+    )) {
+      if (typeof val !== "object" || val === null || Array.isArray(val)) {
+        return err(`skillConfig.${key}: must be an object`);
+      }
+    }
+    result.skillConfig = obj.skillConfig as Record<
+      string,
+      Record<string, unknown>
+    >;
   }
 
   return ok(result);

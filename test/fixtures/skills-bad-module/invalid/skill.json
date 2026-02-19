@@ -1,0 +1,7 @@
+{
+  "id": "bad-module",
+  "name": "Bad Module",
+  "version": "0.1.0",
+  "runtimeApiVersion": "1",
+  "main": "main.ts"
+}
