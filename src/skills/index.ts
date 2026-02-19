@@ -23,6 +23,9 @@ import { join } from "path";
 /** Current runtime API version. Skills must declare this to load. */
 export const CURRENT_RUNTIME_API_VERSION = "1";
 
+/** Valid identifier pattern for skill IDs and tool names. */
+const VALID_IDENTIFIER = /^[a-z][a-z0-9_-]*$/;
+
 // --- Types ---
 
 /** Skill manifest loaded from skill.json. */
@@ -161,6 +164,20 @@ function validateManifest(
   return ok(obj as unknown as SkillManifest);
 }
 
+/** Validate that a skill ID or tool name is a valid identifier. */
+function validateIdentifier(
+  value: string,
+  label: string,
+  context: string,
+): Result<void> {
+  if (!VALID_IDENTIFIER.test(value)) {
+    return err(
+      `${context}: ${label} "${value}" is invalid (must match ${VALID_IDENTIFIER})`,
+    );
+  }
+  return ok(undefined);
+}
+
 // --- Loader ---
 
 /**
@@ -181,6 +198,7 @@ export async function loadSkills(
   skillConfig: Record<string, Record<string, unknown>> = {},
 ): Promise<Result<SkillRegistry>> {
   const toolMap = new Map<string, ToolEntry>();
+  const seenSkillIds = new Set<string>();
 
   for (const dir of skillDirs) {
     if (!existsSync(dir)) {
@@ -193,7 +211,12 @@ export async function loadSkills(
       if (!entry.isDirectory()) continue;
 
       const skillPath = join(dir, entry.name);
-      const result = await loadSingleSkill(skillPath, skillConfig, toolMap);
+      const result = await loadSingleSkill(
+        skillPath,
+        skillConfig,
+        toolMap,
+        seenSkillIds,
+      );
       if (!result.ok) return result;
     }
   }
@@ -208,6 +231,7 @@ async function loadSingleSkill(
   skillPath: string,
   skillConfig: Record<string, Record<string, unknown>>,
   toolMap: Map<string, ToolEntry>,
+  seenSkillIds: Set<string>,
 ): Promise<Result<void>> {
   // Load manifest
   const manifestPath = join(skillPath, "skill.json");
@@ -229,6 +253,16 @@ async function loadSingleSkill(
   const validated = validateManifest(rawManifest, skillPath);
   if (!validated.ok) return validated as Result<never>;
   const manifest = validated.value;
+
+  // Validate skill ID format
+  const idCheck = validateIdentifier(manifest.id, "id", `skill ${manifest.id}`);
+  if (!idCheck.ok) return idCheck;
+
+  // Check for duplicate skill IDs
+  if (seenSkillIds.has(manifest.id)) {
+    return err(`duplicate skill id: "${manifest.id}" in ${skillPath}`);
+  }
+  seenSkillIds.add(manifest.id);
 
   // Check API version
   if (manifest.runtimeApiVersion !== CURRENT_RUNTIME_API_VERSION) {
@@ -270,9 +304,21 @@ async function loadSingleSkill(
     );
   }
 
+  if (!Array.isArray(rawTools)) {
+    return err(`skill ${manifest.id}: listTools() must return an array`);
+  }
+
   // Namespace and register tools
   const perSkillConfig = skillConfig[manifest.id] ?? {};
   for (const tool of rawTools) {
+    // Validate tool name format
+    const nameCheck = validateIdentifier(
+      tool.name,
+      "tool name",
+      `skill ${manifest.id}`,
+    );
+    if (!nameCheck.ok) return nameCheck;
+
     const qualifiedName = `${manifest.id}.${tool.name}`;
     if (toolMap.has(qualifiedName)) {
       return err(`duplicate tool name: ${qualifiedName}`);
