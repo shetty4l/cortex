@@ -12,6 +12,7 @@ import { closeDatabase, initDatabase } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
 import { sendMessage } from "../src/send";
 import { startServer } from "../src/server";
+import { createEmptyRegistry } from "../src/skills";
 
 // --- Mock Synapse server ---
 
@@ -104,6 +105,7 @@ describe("sendMessage (end-to-end)", () => {
     initDatabase(":memory:");
     loop = startProcessingLoop(
       { ...config, port: cortexServer.port },
+      createEmptyRegistry(),
       { pollBusyMs: 10, pollIdleMs: 50 },
     );
   });
