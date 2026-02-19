@@ -4,7 +4,7 @@
  * Load order:
  *   1. Defaults (hardcoded)
  *   2. Config file (~/.config/cortex/config.json)
- *   3. Environment variables (CORTEX_PORT, CORTEX_HOST, CORTEX_MODEL, CORTEX_CONFIG_PATH, CORTEX_INGEST_API_KEY)
+ *   3. Environment variables (CORTEX_PORT, CORTEX_HOST, CORTEX_MODEL, CORTEX_CONFIG_PATH, CORTEX_INGEST_API_KEY, CORTEX_MAX_TOOL_ROUNDS)
  *
  * String values in the config file support ${ENV_VAR} interpolation.
  */
@@ -49,6 +49,7 @@ export interface CortexConfig {
   skillDirs: string[];
   skillConfig: Record<string, Record<string, unknown>>;
   toolTimeoutMs: number;
+  maxToolRounds: number;
 }
 
 // --- Defaults ---
@@ -72,6 +73,7 @@ const DEFAULTS: Omit<
   skillDirs: [],
   skillConfig: {},
   toolTimeoutMs: 20000,
+  maxToolRounds: 8,
 };
 
 // --- Validation ---
@@ -143,6 +145,7 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "outboxLeaseSeconds", min: 10, max: 300 },
     { key: "outboxMaxAttempts", min: 1 },
     { key: "toolTimeoutMs", min: 1000 },
+    { key: "maxToolRounds", min: 1, max: 20 },
   ];
 
   for (const field of numericFields) {
@@ -292,6 +295,16 @@ export function loadConfig(
     );
     if (!modelResult.ok) return modelResult as Result<never>;
     config.model = modelResult.value;
+  }
+  if (process.env.CORTEX_MAX_TOOL_ROUNDS) {
+    const raw = process.env.CORTEX_MAX_TOOL_ROUNDS;
+    const val = Number(raw);
+    if (!Number.isInteger(val) || val < 1 || val > 20) {
+      return err(
+        `CORTEX_MAX_TOOL_ROUNDS: ${raw} is not valid (must be an integer 1-20)`,
+      );
+    }
+    config.maxToolRounds = val;
   }
 
   // Required field validation

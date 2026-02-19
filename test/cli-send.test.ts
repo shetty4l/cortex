@@ -61,6 +61,7 @@ function testConfig(port: number): CortexConfig {
     skillDirs: [],
     skillConfig: {},
     toolTimeoutMs: 20000,
+    maxToolRounds: 8,
   };
 }
 
