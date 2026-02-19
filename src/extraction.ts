@@ -209,36 +209,59 @@ function buildExtractionPrompt(
  * Caps at MAX_FACTS_PER_RUN.
  */
 function parseExtractionResponse(response: string): Result<ExtractedFact[]> {
-  // Two-stage parse:
-  // 1. Try JSON.parse directly (handles clean JSON-only responses)
-  // 2. Fall back to extracting [...] candidates last-first from the response
-  //    (JSON is typically at the end; trying each candidate with JSON.parse
-  //    handles prose-before-JSON, brackets-inside-strings, and markdown wrapping)
+  // Multi-stage parse (each stage validated by JSON.parse):
+  // 1. Try JSON.parse on the full response (clean JSON-only responses)
+  // 2. Try extracting from markdown code fences (```json [...] ```)
+  // 3. Try non-greedy [...] candidates last-first (handles most prose wrapping)
+  // 4. Try greedy [...] match as final fallback (catches brackets-in-strings)
   let parsed: unknown;
 
+  // Stage 1: Direct parse
   try {
     parsed = JSON.parse(response);
   } catch {
-    // Response isn't pure JSON — find all [...] candidates and try last-first
-    const candidates = [...response.matchAll(/\[[\s\S]*?\]/g)];
-    if (candidates.length === 0) {
-      return err("extraction response has no JSON array");
-    }
+    parsed = undefined;
+  }
 
-    let found = false;
+  // Stage 2: Code fence extraction
+  if (parsed === undefined) {
+    const fenceMatch = response.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+    if (fenceMatch) {
+      try {
+        parsed = JSON.parse(fenceMatch[1]);
+      } catch {
+        parsed = undefined;
+      }
+    }
+  }
+
+  // Stage 3: Non-greedy [...] candidates, last-first
+  if (parsed === undefined) {
+    const candidates = [...response.matchAll(/\[[\s\S]*?\]/g)];
     for (let i = candidates.length - 1; i >= 0; i--) {
       try {
         parsed = JSON.parse(candidates[i][0]);
-        found = true;
         break;
       } catch {
         // Try next candidate
       }
     }
+  }
 
-    if (!found) {
-      return err("extraction response has invalid JSON");
+  // Stage 4: Greedy [...] match as final fallback
+  if (parsed === undefined) {
+    const greedyMatch = response.match(/\[[\s\S]*\]/);
+    if (greedyMatch) {
+      try {
+        parsed = JSON.parse(greedyMatch[0]);
+      } catch {
+        parsed = undefined;
+      }
     }
+  }
+
+  if (parsed === undefined) {
+    return err("extraction response has no valid JSON array");
   }
 
   if (!Array.isArray(parsed)) {

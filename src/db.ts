@@ -699,6 +699,9 @@ export function incrementTurnsSinceExtraction(topicKey: string): void {
 /**
  * Advance the extraction cursor after a successful extraction run.
  * Resets turns_since_extraction to 0.
+ *
+ * Uses MAX() to ensure the cursor never moves backwards — safe against
+ * overlapping fire-and-forget extraction runs finishing out of order.
  */
 export function advanceExtractionCursor(
   topicKey: string,
@@ -710,7 +713,7 @@ export function advanceExtractionCursor(
       `INSERT INTO extraction_cursors (topic_key, last_extracted_rowid, turns_since_extraction)
        VALUES ($topicKey, $lastRowid, 0)
        ON CONFLICT(topic_key) DO UPDATE
-       SET last_extracted_rowid = $lastRowid, turns_since_extraction = 0`,
+       SET last_extracted_rowid = MAX(last_extracted_rowid, $lastRowid), turns_since_extraction = 0`,
     )
     .run({ $topicKey: topicKey, $lastRowid: lastRowid });
 }
