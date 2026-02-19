@@ -738,6 +738,11 @@ describe("processing loop", () => {
         messages?: Array<{ role: string; content: string }>;
       };
       if (body.model === "test-extraction-model") {
+        // Skip summary calls — only track extraction calls
+        const system = body.messages?.[0]?.content ?? "";
+        if (system.includes("summarize what this conversation")) {
+          return Response.json(openaiResponse("Test summary."));
+        }
         extractionCallCount++;
         // First extraction blocks until released
         if (extractionCallCount === 1) {
