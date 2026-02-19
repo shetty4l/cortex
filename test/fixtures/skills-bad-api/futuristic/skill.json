@@ -1,0 +1,7 @@
+{
+  "id": "futuristic",
+  "name": "Futuristic Skill",
+  "version": "0.1.0",
+  "runtimeApiVersion": "99",
+  "main": "main.ts"
+}
