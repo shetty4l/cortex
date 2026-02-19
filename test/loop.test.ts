@@ -11,6 +11,7 @@ import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
   enqueueInboxMessage,
+  getExtractionCursor,
   getInboxMessage,
   initDatabase,
   listOutboxMessagesByTopic,
@@ -50,8 +51,16 @@ let mockEngramUrl: string;
 let mockEngramHandler: (req: Request) => Response | Promise<Response>;
 
 beforeAll(() => {
-  mockEngramHandler = () =>
-    Response.json({ memories: [], fallback_mode: false });
+  mockEngramHandler = async (req) => {
+    const path = new URL(req.url).pathname;
+    if (path === "/remember") {
+      return Response.json({
+        id: `mem_${crypto.randomUUID().slice(0, 8)}`,
+        status: "created",
+      });
+    }
+    return Response.json({ memories: [], fallback_mode: false });
+  };
 
   mockEngram = Bun.serve({
     port: 0,
@@ -154,9 +163,17 @@ describe("processing loop", () => {
   beforeEach(() => {
     initDatabase(":memory:");
     mockSynapseCallCount = 0;
-    // Default Engram mock: return empty memories
-    mockEngramHandler = () =>
-      Response.json({ memories: [], fallback_mode: false });
+    // Default Engram mock: handle both recall and remember
+    mockEngramHandler = async (req) => {
+      const path = new URL(req.url).pathname;
+      if (path === "/remember") {
+        return Response.json({
+          id: `mem_${crypto.randomUUID().slice(0, 8)}`,
+          status: "created",
+        });
+      }
+      return Response.json({ memories: [], fallback_mode: false });
+    };
   });
 
   afterEach(() => {
@@ -599,5 +616,242 @@ describe("processing loop", () => {
 
     expect(globalCall).toBeDefined();
     expect(globalCall!.query).toBe("Hello");
+  });
+
+  // --- Slice 5: Extraction trigger tests ---
+
+  test("triggers extraction after processing messages", async () => {
+    let extractionModelCalls = 0;
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as { model: string };
+      if (body.model === "test-extraction-model") {
+        extractionModelCalls++;
+        return Response.json(
+          openaiResponse(
+            JSON.stringify([
+              { content: "User greeted the assistant", category: "fact" },
+            ]),
+          ),
+        );
+      }
+      return Response.json(openaiResponse("Hello!"));
+    };
+
+    const config = {
+      ...testConfig(),
+      extractionModel: "test-extraction-model",
+      extractionInterval: 1,
+    };
+
+    const { eventId } = ingestMessage({
+      text: "Hi there",
+      topicKey: "topic-extract",
+    });
+    const loop = startProcessingLoop(config, FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+
+    // Give extraction time to complete (fire-and-forget)
+    await Bun.sleep(500);
+    await loop.stop();
+
+    // Extraction model should have been called
+    expect(extractionModelCalls).toBeGreaterThanOrEqual(1);
+
+    // Cursor should be advanced
+    const cursor = getExtractionCursor("topic-extract");
+    expect(cursor).not.toBeNull();
+    expect(cursor!.turns_since_extraction).toBe(0);
+  });
+
+  test("counts turns for extraction even when extraction is in-flight", async () => {
+    let extractionCallCount = 0;
+    let resolveExtraction: (() => void) | null = null;
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as { model: string };
+      if (body.model === "test-extraction-model") {
+        extractionCallCount++;
+        // First extraction call blocks until we release it
+        if (extractionCallCount === 1) {
+          await new Promise<void>((resolve) => {
+            resolveExtraction = resolve;
+          });
+        }
+        return Response.json(
+          openaiResponse(
+            JSON.stringify([{ content: "Some fact", category: "fact" }]),
+          ),
+        );
+      }
+      return Response.json(openaiResponse("ok"));
+    };
+
+    const config = {
+      ...testConfig(),
+      extractionModel: "test-extraction-model",
+      extractionInterval: 1,
+    };
+
+    // Message A: triggers extraction (which blocks)
+    const { eventId: idA } = ingestMessage({
+      text: "Message A",
+      topicKey: "topic-inflight",
+    });
+    const loop = startProcessingLoop(config, FAST_LOOP);
+    await waitFor(() => getInboxMessage(idA)?.status === "done");
+    // Wait for extraction to start (it will be blocked)
+    await waitFor(() => extractionCallCount >= 1);
+
+    // Message B: processed while extraction from A is still in-flight
+    await Bun.sleep(5);
+    const { eventId: idB } = ingestMessage({
+      text: "Message B",
+      topicKey: "topic-inflight",
+      externalMessageId: "msg-b-inflight",
+    });
+    await waitFor(() => getInboxMessage(idB)?.status === "done");
+
+    // The cursor should have counted BOTH A's and B's turns even though
+    // extraction was in-flight when B was processed.
+    // Bug: without fix, counter is 1 (B's increment was skipped entirely).
+    // Fixed: counter should be 2 (A incremented to 1, B incremented to 2).
+    const cursorDuringFlight = getExtractionCursor("topic-inflight");
+    expect(cursorDuringFlight).not.toBeNull();
+    expect(cursorDuringFlight!.turns_since_extraction).toBe(2);
+
+    // Release the blocked extraction
+    resolveExtraction!();
+    await Bun.sleep(500);
+    await loop.stop();
+  });
+
+  test("extracts turns from skipped messages after next trigger", async () => {
+    let extractionCallCount = 0;
+    let resolveExtraction: (() => void) | null = null;
+    const extractedContents: string[][] = [];
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        model: string;
+        messages?: Array<{ role: string; content: string }>;
+      };
+      if (body.model === "test-extraction-model") {
+        extractionCallCount++;
+        // First extraction blocks until released
+        if (extractionCallCount === 1) {
+          await new Promise<void>((resolve) => {
+            resolveExtraction = resolve;
+          });
+        }
+        // Capture the user content sent to the extraction model
+        const userMsg = body.messages?.find((m) => m.role === "user");
+        if (userMsg) {
+          extractedContents.push(
+            userMsg.content
+              .split("\n")
+              .filter((l: string) => l.startsWith("user:"))
+              .map((l: string) => l.replace("user: ", "")),
+          );
+        }
+        return Response.json(openaiResponse(JSON.stringify([])));
+      }
+      return Response.json(openaiResponse("ok"));
+    };
+
+    const config = {
+      ...testConfig(),
+      extractionModel: "test-extraction-model",
+      extractionInterval: 1,
+    };
+
+    // Message A triggers extraction (blocks)
+    const { eventId: idA } = ingestMessage({
+      text: "Message A",
+      topicKey: "topic-catchup",
+    });
+    const loop = startProcessingLoop(config, FAST_LOOP);
+    await waitFor(() => getInboxMessage(idA)?.status === "done");
+    await waitFor(() => extractionCallCount >= 1);
+
+    // Message B processed while A's extraction is in-flight
+    await Bun.sleep(5);
+    const { eventId: idB } = ingestMessage({
+      text: "Message B",
+      topicKey: "topic-catchup",
+      externalMessageId: "msg-b-catchup",
+    });
+    await waitFor(() => getInboxMessage(idB)?.status === "done");
+
+    // Release A's extraction so it completes
+    resolveExtraction!();
+    await Bun.sleep(300);
+
+    // Message C arrives — should trigger extraction that picks up B+C
+    await Bun.sleep(5);
+    const { eventId: idC } = ingestMessage({
+      text: "Message C",
+      topicKey: "topic-catchup",
+      externalMessageId: "msg-c-catchup",
+    });
+    await waitFor(() => getInboxMessage(idC)?.status === "done");
+    await Bun.sleep(500);
+    await loop.stop();
+
+    // Second extraction should have been called and should include
+    // Message B's content (not just C's)
+    expect(extractionCallCount).toBeGreaterThanOrEqual(2);
+    // The second extraction batch should contain Message B
+    const secondBatch = extractedContents[1];
+    expect(secondBatch).toBeDefined();
+    expect(secondBatch).toContain("Message B");
+  });
+
+  test("loop continues normally when extraction model fails", async () => {
+    let callNum = 0;
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as { model: string };
+      if (body.model === "test-extraction-model") {
+        // Extraction model always fails
+        return Response.json(
+          { error: { message: "extraction boom", type: "server_error" } },
+          { status: 500 },
+        );
+      }
+      callNum++;
+      return Response.json(openaiResponse(`Reply ${callNum}`));
+    };
+
+    const config = {
+      ...testConfig(),
+      extractionModel: "test-extraction-model",
+      extractionInterval: 1,
+    };
+
+    const { eventId: id1 } = ingestMessage({
+      text: "First",
+      topicKey: "topic-ext-fail",
+    });
+    await Bun.sleep(5);
+    const { eventId: id2 } = ingestMessage({
+      text: "Second",
+      topicKey: "topic-ext-fail",
+      externalMessageId: "msg-second-ext",
+    });
+
+    const loop = startProcessingLoop(config, FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(id2)?.status === "done");
+    await Bun.sleep(200);
+    await loop.stop();
+
+    // Both messages processed successfully despite extraction failures
+    expect(getInboxMessage(id1)?.status).toBe("done");
+    expect(getInboxMessage(id2)?.status).toBe("done");
+
+    const outbox = listOutboxMessagesByTopic("topic-ext-fail");
+    expect(outbox).toHaveLength(2);
   });
 });
