@@ -93,6 +93,11 @@ export async function maybeExtract(
   // MAX_EXTRACTION_CHARS. This ensures that a large backlog
   // (e.g. after downtime) is fully processed rather than orphaned,
   // and that oversized batches don't permanently block extraction.
+  // Track the most recent successful batch for topic summary generation.
+  // The summary only sees this last batch, not the full backlog — this is
+  // acceptable because the previous summary (included in the summary prompt)
+  // provides continuity for earlier turns. The rolling nature of the summary
+  // handles large backlogs across multiple extraction cycles.
   let lastBatchTurns: Array<{ role: string; content: string }> = [];
 
   while (true) {
@@ -111,8 +116,8 @@ export async function maybeExtract(
     // context window. The drain loop handles the remainder naturally.
     const turns = trimToBudget(loaded);
 
-    const success = await extractBatch(topicKey, turns, config);
-    if (!success) {
+    const result = await extractBatch(topicKey, turns, config);
+    if (!result.ok) {
       // Model or parse failure — stop draining, don't advance cursor.
       // Turns will be re-processed next time.
       break;
@@ -137,7 +142,10 @@ export async function maybeExtract(
   }
 
   // After draining, generate/update the topic summary using the most
-  // recent batch of turns. Failures are logged but don't affect extraction.
+  // recent batch of turns. Summary generation is gated on extraction success —
+  // both use the same extractionModel, so if extraction failed (model down or
+  // bad response), the summary call would likely fail too. Unprocessed turns
+  // are retried on the next extraction cycle.
   if (lastBatchTurns.length > 0) {
     await updateTopicSummary(topicKey, lastBatchTurns, config);
   }
@@ -146,21 +154,21 @@ export async function maybeExtract(
 /**
  * Extract facts from a single batch of turns.
  *
- * Returns true if extraction succeeded (even if no facts found).
- * Returns false on model call or parse failure (caller should stop draining).
+ * Returns Ok on success (even if no facts found).
+ * Returns Err on model call or parse failure (caller should stop draining).
  */
 async function extractBatch(
   topicKey: string,
   turns: Array<{ role: string; content: string; rowid: number }>,
   config: CortexConfig,
-): Promise<boolean> {
+): Promise<Result<void>> {
   // Recall existing memories for dedup context (graceful on failure)
-  const topicSummary = turns
+  const recallQuery = turns
     .filter((t) => t.role === "user")
     .map((t) => t.content)
     .slice(0, 3)
     .join(" ");
-  const recallResult = await recall(topicSummary, config.engramUrl, {
+  const recallResult = await recall(recallQuery, config.engramUrl, {
     limit: DEDUP_CONTEXT_LIMIT,
     scopeId: topicKey,
   });
@@ -179,14 +187,14 @@ async function extractBatch(
     console.error(
       `cortex: [${topicKey}] extraction model failed: ${result.error}`,
     );
-    return false;
+    return err(`extraction model failed: ${result.error}`);
   }
 
   // Parse extracted facts
   const parseResult = parseExtractionResponse(result.value.content);
   if (!parseResult.ok) {
     console.error(`cortex: [${topicKey}] ${parseResult.error}`);
-    return false;
+    return err(parseResult.error);
   }
   const facts = parseResult.value;
 
@@ -224,7 +232,7 @@ async function extractBatch(
     );
   }
 
-  return true;
+  return ok(undefined);
 }
 
 // --- Topic summary ---
@@ -238,52 +246,63 @@ async function extractBatch(
  * (if any) is included in the prompt so the model updates rather than
  * recreates.
  *
- * Never throws — failures are logged and silently skipped.
+ * Returns Err on failure (model error, DB error, etc.).
+ * All errors are logged internally — caller can safely ignore the result.
  */
 async function updateTopicSummary(
   topicKey: string,
   turns: Array<{ role: string; content: string }>,
   config: CortexConfig,
-): Promise<void> {
-  const existingSummary = getTopicSummary(topicKey);
-  const messages = buildSummaryPrompt(turns, existingSummary);
+): Promise<Result<void>> {
+  try {
+    const existingSummary = getTopicSummary(topicKey);
+    const messages = buildSummaryPrompt(turns, existingSummary);
 
-  const result = await chat(
-    messages,
-    config.extractionModel!,
-    config.synapseUrl,
-  );
-  if (!result.ok) {
-    console.error(
-      `cortex: [${topicKey}] summary model failed: ${result.error}`,
+    const result = await chat(
+      messages,
+      config.extractionModel!,
+      config.synapseUrl,
     );
-    return;
-  }
+    if (!result.ok) {
+      console.error(
+        `cortex: [${topicKey}] summary model failed: ${result.error}`,
+      );
+      return err(`summary model failed: ${result.error}`);
+    }
 
-  const summary = result.value.content.trim();
-  if (summary.length === 0) return;
+    const summary = result.value.content.trim();
+    if (summary.length === 0) return ok(undefined);
 
-  // Write to local SQLite cache (fast reads at prompt time)
-  upsertTopicSummary(topicKey, summary);
+    // Write to local SQLite cache (fast reads at prompt time)
+    upsertTopicSummary(topicKey, summary);
 
-  // Write to Engram (source of truth, upsert by topic key)
-  const rememberResult = await remember(
-    {
-      content: summary,
-      category: "summary",
-      scopeId: topicKey,
-      idempotencyKey: `topic-summary:${topicKey}`,
-      upsert: true,
-    },
-    config.engramUrl,
-  );
-
-  if (!rememberResult.ok) {
-    console.error(
-      `cortex: [${topicKey}] summary remember failed: ${rememberResult.error}`,
+    // Write to Engram (source of truth, upsert by topic key).
+    // Category "summary" is intentionally outside VALID_CATEGORIES —
+    // summaries are a distinct memory type, not extracted facts.
+    const rememberResult = await remember(
+      {
+        content: summary,
+        category: "summary",
+        scopeId: topicKey,
+        idempotencyKey: `topic-summary:${topicKey}`,
+        upsert: true,
+      },
+      config.engramUrl,
     );
-  } else {
-    console.error(`cortex: [${topicKey}] topic summary updated`);
+
+    if (!rememberResult.ok) {
+      console.error(
+        `cortex: [${topicKey}] summary remember failed: ${rememberResult.error}`,
+      );
+    } else {
+      console.error(`cortex: [${topicKey}] topic summary updated`);
+    }
+
+    return ok(undefined);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`cortex: [${topicKey}] summary error: ${msg}`);
+    return err(`summary error: ${msg}`);
   }
 }
 
