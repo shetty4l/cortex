@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { OpenAITool } from "../src/synapse";
 import { chat } from "../src/synapse";
 
 // --- Mock Synapse server ---
@@ -37,6 +38,36 @@ function openaiResponse(content: string, finishReason = "stop") {
         index: 0,
         message: { role: "assistant", content },
         finish_reason: finishReason,
+      },
+    ],
+    usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+  };
+}
+
+function toolCallResponse(
+  toolCalls: Array<{
+    id: string;
+    name: string;
+    arguments: string;
+  }>,
+  content: string | null = null,
+) {
+  return {
+    id: "chat-test",
+    object: "chat.completion",
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content,
+          tool_calls: toolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function",
+            function: { name: tc.name, arguments: tc.arguments },
+          })),
+        },
+        finish_reason: "tool_calls",
       },
     ],
     usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
@@ -195,7 +226,7 @@ describe("synapse client", () => {
     expect(result.error).toContain("missing choices");
   });
 
-  test("returns error on null content in response", async () => {
+  test("returns error on null content without tool_calls", async () => {
     mockHandler = () =>
       Response.json({
         choices: [
@@ -242,5 +273,178 @@ describe("synapse client", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("connection failed");
+  });
+
+  // --- Tool calling tests ---
+
+  test("parses tool_calls with content: null", async () => {
+    mockHandler = () =>
+      Response.json(
+        toolCallResponse(
+          [
+            {
+              id: "call_1",
+              name: "echo.say",
+              arguments: '{"text":"hello"}',
+            },
+          ],
+          null,
+        ),
+      );
+
+    const result = await chat(
+      [{ role: "user", content: "Say hello" }],
+      "test-model",
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.content).toBe("");
+    expect(result.value.finishReason).toBe("tool_calls");
+    expect(result.value.toolCalls).toBeDefined();
+    expect(result.value.toolCalls).toHaveLength(1);
+    expect(result.value.toolCalls![0].id).toBe("call_1");
+    expect(result.value.toolCalls![0].type).toBe("function");
+    expect(result.value.toolCalls![0].function.name).toBe("echo.say");
+    expect(result.value.toolCalls![0].function.arguments).toBe(
+      '{"text":"hello"}',
+    );
+  });
+
+  test("parses tool_calls with content: empty string", async () => {
+    mockHandler = () =>
+      Response.json(
+        toolCallResponse(
+          [
+            {
+              id: "call_2",
+              name: "math.add",
+              arguments: '{"a":1,"b":2}',
+            },
+          ],
+          "",
+        ),
+      );
+
+    const result = await chat(
+      [{ role: "user", content: "Add 1+2" }],
+      "test-model",
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.content).toBe("");
+    expect(result.value.toolCalls).toHaveLength(1);
+  });
+
+  test("includes tools in request body when provided", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    mockHandler = async (req) => {
+      capturedBody = (await req.json()) as Record<string, unknown>;
+      return Response.json(openaiResponse("ok"));
+    };
+
+    const tools: OpenAITool[] = [
+      {
+        type: "function",
+        function: {
+          name: "echo.say",
+          description: "Echo back text",
+          parameters: {
+            type: "object",
+            properties: { text: { type: "string" } },
+          },
+        },
+      },
+    ];
+
+    await chat([{ role: "user", content: "Hi" }], "test-model", mockUrl, tools);
+
+    expect(capturedBody.tools).toBeDefined();
+    expect(capturedBody.tools).toEqual(tools);
+  });
+
+  test("does not include tools in request when undefined", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    mockHandler = async (req) => {
+      capturedBody = (await req.json()) as Record<string, unknown>;
+      return Response.json(openaiResponse("ok"));
+    };
+
+    await chat(
+      [{ role: "user", content: "Hi" }],
+      "test-model",
+      mockUrl,
+      undefined,
+    );
+
+    expect(capturedBody.tools).toBeUndefined();
+  });
+
+  test("does not include tools in request when empty array", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    mockHandler = async (req) => {
+      capturedBody = (await req.json()) as Record<string, unknown>;
+      return Response.json(openaiResponse("ok"));
+    };
+
+    await chat([{ role: "user", content: "Hi" }], "test-model", mockUrl, []);
+
+    expect(capturedBody.tools).toBeUndefined();
+  });
+
+  test("regular response without tool_calls still works", async () => {
+    mockHandler = () => Response.json(openaiResponse("Just text"));
+
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      "test-model",
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.content).toBe("Just text");
+    expect(result.value.toolCalls).toBeUndefined();
+  });
+
+  test("parses multiple tool calls in single response", async () => {
+    mockHandler = () =>
+      Response.json(
+        toolCallResponse(
+          [
+            {
+              id: "call_a",
+              name: "echo.say",
+              arguments: '{"text":"hi"}',
+            },
+            {
+              id: "call_b",
+              name: "math.add",
+              arguments: '{"a":2,"b":3}',
+            },
+          ],
+          null,
+        ),
+      );
+
+    const result = await chat(
+      [{ role: "user", content: "Do two things" }],
+      "test-model",
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.toolCalls).toHaveLength(2);
+    expect(result.value.toolCalls![0].id).toBe("call_a");
+    expect(result.value.toolCalls![0].function.name).toBe("echo.say");
+    expect(result.value.toolCalls![1].id).toBe("call_b");
+    expect(result.value.toolCalls![1].function.name).toBe("math.add");
   });
 });
