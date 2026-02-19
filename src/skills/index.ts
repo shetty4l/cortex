@@ -92,6 +92,7 @@ export interface SkillRegistry {
 interface ToolEntry {
   module: SkillModule;
   def: ToolDefinition;
+  localName: string;
   config: Record<string, unknown>;
 }
 
@@ -114,7 +115,7 @@ function createRegistry(toolMap: Map<string, ToolEntry>): SkillRegistry {
 
       try {
         const result = await entry.module.execute(
-          { name, argumentsJson },
+          { name: entry.localName, argumentsJson },
           skillCtx,
         );
         return ok(result);
@@ -285,6 +286,7 @@ async function loadSingleSkill(
         inputSchema: tool.inputSchema,
         mutatesState: tool.mutatesState ?? false,
       },
+      localName: tool.name,
       config: perSkillConfig,
     });
   }
