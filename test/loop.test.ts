@@ -13,6 +13,7 @@ import {
   enqueueInboxMessage,
   getExtractionCursor,
   getInboxMessage,
+  getTopicSummary,
   initDatabase,
   listOutboxMessagesByTopic,
   loadRecentTurns,
@@ -858,5 +859,69 @@ describe("processing loop", () => {
 
     const outbox = listOutboxMessagesByTopic("topic-ext-fail");
     expect(outbox).toHaveLength(2);
+  });
+
+  test("topic summary generated and injected into subsequent prompts", async () => {
+    let conversationPrompts: Array<{
+      messages: Array<{ role: string; content: string }>;
+    }> = [];
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        model: string;
+        messages: Array<{ role: string; content: string }>;
+      };
+      if (body.model === "test-extraction-model") {
+        const system = body.messages?.[0]?.content ?? "";
+        if (system.includes("summarize what this conversation")) {
+          return Response.json(
+            openaiResponse("Planning a vacation to Japan in spring."),
+          );
+        }
+        // Extraction: return empty
+        return Response.json(openaiResponse(JSON.stringify([])));
+      }
+      // Conversation model — capture the prompt
+      conversationPrompts.push({ messages: body.messages });
+      return Response.json(openaiResponse("Sounds great!"));
+    };
+
+    const config = {
+      ...testConfig(),
+      extractionModel: "test-extraction-model",
+      extractionInterval: 1,
+    };
+
+    // Message 1: triggers extraction + summary generation
+    const { eventId: id1 } = ingestMessage({
+      text: "I want to visit Tokyo",
+      topicKey: "topic-summary-e2e",
+    });
+    const loop = startProcessingLoop(config, FAST_LOOP);
+    await waitFor(() => getInboxMessage(id1)?.status === "done");
+    // Wait for fire-and-forget extraction + summary to complete
+    await waitFor(() => getTopicSummary("topic-summary-e2e") !== null);
+
+    const cachedSummary = getTopicSummary("topic-summary-e2e");
+    expect(cachedSummary).toBe("Planning a vacation to Japan in spring.");
+
+    // Message 2: should have the summary in its prompt
+    conversationPrompts = [];
+    const { eventId: id2 } = ingestMessage({
+      text: "What about hotels?",
+      topicKey: "topic-summary-e2e",
+      externalMessageId: "msg-2-summary",
+    });
+    await waitFor(() => getInboxMessage(id2)?.status === "done");
+    await loop.stop();
+
+    // The conversation prompt for message 2 should include the topic summary
+    expect(conversationPrompts).toHaveLength(1);
+    const systemMsg = conversationPrompts[0].messages[0];
+    expect(systemMsg.role).toBe("system");
+    expect(systemMsg.content).toContain("Current conversation context:");
+    expect(systemMsg.content).toContain(
+      "Planning a vacation to Japan in spring.",
+    );
   });
 });
