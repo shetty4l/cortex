@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { Memory } from "../src/engram";
-import { recall, recallDual } from "../src/engram";
+import { recall, recallDual, remember } from "../src/engram";
 
 // --- Mock Engram server ---
 
@@ -313,5 +313,99 @@ describe("recallDual", () => {
     const result = await recallDual("test", "my-topic", mockUrl);
 
     expect(result).toEqual([]);
+  });
+});
+
+// --- remember() tests ---
+
+describe("remember", () => {
+  test("sends correct request shape with upsert", async () => {
+    let capturedBody: Record<string, unknown> = {};
+    let capturedPath: string | undefined;
+
+    mockHandler = async (req) => {
+      capturedPath = new URL(req.url).pathname;
+      capturedBody = (await req.json()) as Record<string, unknown>;
+      return Response.json({ id: "mem-1", status: "created" });
+    };
+
+    await remember(
+      {
+        content: "User prefers dark roast coffee",
+        category: "preference",
+        scopeId: "topic:abc",
+        idempotencyKey: "cortex:extract:abc123",
+        upsert: true,
+      },
+      mockUrl,
+    );
+
+    expect(capturedPath).toBe("/remember");
+    expect(capturedBody.content).toBe("User prefers dark roast coffee");
+    expect(capturedBody.category).toBe("preference");
+    expect(capturedBody.scope_id).toBe("topic:abc");
+    expect(capturedBody.idempotency_key).toBe("cortex:extract:abc123");
+    expect(capturedBody.upsert).toBe(true);
+  });
+
+  test("returns ok with output on success", async () => {
+    mockHandler = () => Response.json({ id: "mem-42", status: "created" });
+
+    const result = await remember({ content: "A fact" }, mockUrl);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).not.toBeNull();
+    expect(result.value!.id).toBe("mem-42");
+    expect(result.value!.status).toBe("created");
+  });
+
+  test("returns ok(null) on connection failure (graceful)", async () => {
+    const result = await remember({ content: "A fact" }, "http://127.0.0.1:1");
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toBeNull();
+  });
+
+  test("returns ok(null) on 400 error (graceful)", async () => {
+    mockHandler = () =>
+      Response.json({ error: "content is required" }, { status: 400 });
+
+    const result = await remember({ content: "A fact" }, mockUrl);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toBeNull();
+  });
+
+  test("returns ok(null) on timeout (graceful)", async () => {
+    mockHandler = async () => {
+      await Bun.sleep(5_000);
+      return Response.json({ id: "mem-1", status: "created" });
+    };
+
+    const result = await remember({ content: "A fact" }, mockUrl);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value).toBeNull();
+  }, 10_000);
+
+  test("omits optional fields when not provided", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    mockHandler = async (req) => {
+      capturedBody = (await req.json()) as Record<string, unknown>;
+      return Response.json({ id: "mem-1", status: "created" });
+    };
+
+    await remember({ content: "Just a fact" }, mockUrl);
+
+    expect(capturedBody.content).toBe("Just a fact");
+    expect(capturedBody).not.toHaveProperty("category");
+    expect(capturedBody).not.toHaveProperty("scope_id");
+    expect(capturedBody).not.toHaveProperty("idempotency_key");
+    expect(capturedBody).not.toHaveProperty("upsert");
   });
 });

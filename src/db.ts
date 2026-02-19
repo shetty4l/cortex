@@ -72,6 +72,12 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_turns_topic_created
     ON turns(topic_key, created_at);
+
+  CREATE TABLE IF NOT EXISTS extraction_cursors (
+    topic_key TEXT PRIMARY KEY,
+    last_extracted_rowid INTEGER NOT NULL,
+    turns_since_extraction INTEGER NOT NULL DEFAULT 0
+  );
 `;
 
 // --- Connection (via core DatabaseManager) ---
@@ -647,4 +653,94 @@ export function loadRecentTurns(topicKey: string, limit = 8): Turn[] {
       ) ORDER BY rn ASC`,
     )
     .all({ $topicKey: topicKey, $maxRows: maxRows }) as Turn[];
+}
+
+// --- Extraction cursor operations ---
+
+export interface ExtractionCursor {
+  topic_key: string;
+  last_extracted_rowid: number;
+  turns_since_extraction: number;
+}
+
+/**
+ * Get the extraction cursor for a topic.
+ * Returns null if no extraction has ever run for this topic.
+ */
+export function getExtractionCursor(topicKey: string): ExtractionCursor | null {
+  const database = getDatabase();
+  return (
+    (database
+      .prepare(
+        "SELECT topic_key, last_extracted_rowid, turns_since_extraction FROM extraction_cursors WHERE topic_key = $topicKey",
+      )
+      .get({ $topicKey: topicKey }) as ExtractionCursor | null) ?? null
+  );
+}
+
+/**
+ * Increment the turns-since-extraction counter for a topic.
+ *
+ * If no cursor exists, creates one with last_extracted_rowid = 0
+ * and turns_since_extraction = 1 (first turn, no extraction yet).
+ */
+export function incrementTurnsSinceExtraction(topicKey: string): void {
+  const database = getDatabase();
+  database
+    .prepare(
+      `INSERT INTO extraction_cursors (topic_key, last_extracted_rowid, turns_since_extraction)
+       VALUES ($topicKey, 0, 1)
+       ON CONFLICT(topic_key) DO UPDATE
+       SET turns_since_extraction = turns_since_extraction + 1`,
+    )
+    .run({ $topicKey: topicKey });
+}
+
+/**
+ * Advance the extraction cursor after a successful extraction run.
+ * Resets turns_since_extraction to 0.
+ */
+export function advanceExtractionCursor(
+  topicKey: string,
+  lastRowid: number,
+): void {
+  const database = getDatabase();
+  database
+    .prepare(
+      `INSERT INTO extraction_cursors (topic_key, last_extracted_rowid, turns_since_extraction)
+       VALUES ($topicKey, $lastRowid, 0)
+       ON CONFLICT(topic_key) DO UPDATE
+       SET last_extracted_rowid = $lastRowid, turns_since_extraction = 0`,
+    )
+    .run({ $topicKey: topicKey, $lastRowid: lastRowid });
+}
+
+/**
+ * Load turns newer than the extraction cursor for a topic.
+ *
+ * Returns turns with _rowid_ > afterRowid, ordered oldest-first.
+ * Also returns each turn's _rowid_ for cursor advancement.
+ *
+ * @param limit Maximum number of turns to return (default: no limit).
+ */
+export function loadTurnsSinceCursor(
+  topicKey: string,
+  afterRowid: number,
+  limit?: number,
+): Array<Turn & { rowid: number }> {
+  const database = getDatabase();
+  const limitClause = limit !== undefined ? `LIMIT $limit` : "";
+  return database
+    .prepare(
+      `SELECT _rowid_ AS rowid, id, topic_key, role, content, created_at
+       FROM turns
+       WHERE topic_key = $topicKey AND _rowid_ > $afterRowid
+       ORDER BY _rowid_ ASC
+       ${limitClause}`,
+    )
+    .all(
+      limit !== undefined
+        ? { $topicKey: topicKey, $afterRowid: afterRowid, $limit: limit }
+        : { $topicKey: topicKey, $afterRowid: afterRowid },
+    ) as Array<Turn & { rowid: number }>;
 }

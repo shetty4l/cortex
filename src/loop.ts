@@ -8,8 +8,9 @@
  *   4. Build prompt (system + memories + history + user message)
  *   5. Call Synapse for a chat completion
  *   6. Save the turn pair (user + assistant) to history
- *   7. Write the assistant response to the outbox
- *   8. Mark the inbox message as done (or failed on error)
+ *   7. Trigger async fact extraction (fire-and-forget)
+ *   8. Write the assistant response to the outbox
+ *   9. Mark the inbox message as done (or failed on error)
  */
 
 import type { CortexConfig } from "./config";
@@ -19,6 +20,7 @@ import {
   enqueueOutboxMessage,
 } from "./db";
 import { recallDual } from "./engram";
+import { maybeExtract } from "./extraction";
 import { loadHistory, saveTurnPair } from "./history";
 import { buildPrompt } from "./prompt";
 import { chat } from "./synapse";
@@ -57,6 +59,12 @@ export function startProcessingLoop(
   let running = true;
   const pollBusyMs = options?.pollBusyMs ?? DEFAULT_POLL_BUSY_MS;
   const pollIdleMs = options?.pollIdleMs ?? DEFAULT_POLL_IDLE_MS;
+
+  if (!config.extractionModel) {
+    console.error(
+      "cortex: extraction disabled — no extractionModel configured",
+    );
+  }
 
   const done = (async () => {
     while (running) {
@@ -105,7 +113,15 @@ export function startProcessingLoop(
             // 5. Save turn pair to history
             saveTurnPair(message.topic_key, message.text, result.value.content);
 
-            // 6. Write to outbox
+            // 6. Trigger async extraction (fire-and-forget)
+            maybeExtract(message.topic_key, config).catch((e) =>
+              console.error(
+                `cortex: [${message.topic_key}] extraction error:`,
+                e,
+              ),
+            );
+
+            // 7. Write to outbox
             enqueueOutboxMessage({
               source: message.source,
               topicKey: message.topic_key,

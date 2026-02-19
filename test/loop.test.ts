@@ -11,6 +11,7 @@ import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
   enqueueInboxMessage,
+  getExtractionCursor,
   getInboxMessage,
   initDatabase,
   listOutboxMessagesByTopic,
@@ -50,8 +51,16 @@ let mockEngramUrl: string;
 let mockEngramHandler: (req: Request) => Response | Promise<Response>;
 
 beforeAll(() => {
-  mockEngramHandler = () =>
-    Response.json({ memories: [], fallback_mode: false });
+  mockEngramHandler = async (req) => {
+    const path = new URL(req.url).pathname;
+    if (path === "/remember") {
+      return Response.json({
+        id: `mem_${crypto.randomUUID().slice(0, 8)}`,
+        status: "created",
+      });
+    }
+    return Response.json({ memories: [], fallback_mode: false });
+  };
 
   mockEngram = Bun.serve({
     port: 0,
@@ -154,9 +163,17 @@ describe("processing loop", () => {
   beforeEach(() => {
     initDatabase(":memory:");
     mockSynapseCallCount = 0;
-    // Default Engram mock: return empty memories
-    mockEngramHandler = () =>
-      Response.json({ memories: [], fallback_mode: false });
+    // Default Engram mock: handle both recall and remember
+    mockEngramHandler = async (req) => {
+      const path = new URL(req.url).pathname;
+      if (path === "/remember") {
+        return Response.json({
+          id: `mem_${crypto.randomUUID().slice(0, 8)}`,
+          status: "created",
+        });
+      }
+      return Response.json({ memories: [], fallback_mode: false });
+    };
   });
 
   afterEach(() => {
@@ -599,5 +616,99 @@ describe("processing loop", () => {
 
     expect(globalCall).toBeDefined();
     expect(globalCall!.query).toBe("Hello");
+  });
+
+  // --- Slice 5: Extraction trigger tests ---
+
+  test("triggers extraction after processing messages", async () => {
+    let extractionModelCalls = 0;
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as { model: string };
+      if (body.model === "test-extraction-model") {
+        extractionModelCalls++;
+        return Response.json(
+          openaiResponse(
+            JSON.stringify([
+              { content: "User greeted the assistant", category: "fact" },
+            ]),
+          ),
+        );
+      }
+      return Response.json(openaiResponse("Hello!"));
+    };
+
+    const config = {
+      ...testConfig(),
+      extractionModel: "test-extraction-model",
+      extractionInterval: 1,
+    };
+
+    const { eventId } = ingestMessage({
+      text: "Hi there",
+      topicKey: "topic-extract",
+    });
+    const loop = startProcessingLoop(config, FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+
+    // Give extraction time to complete (fire-and-forget)
+    await Bun.sleep(500);
+    await loop.stop();
+
+    // Extraction model should have been called
+    expect(extractionModelCalls).toBeGreaterThanOrEqual(1);
+
+    // Cursor should be advanced
+    const cursor = getExtractionCursor("topic-extract");
+    expect(cursor).not.toBeNull();
+    expect(cursor!.turns_since_extraction).toBe(0);
+  });
+
+  test("loop continues normally when extraction model fails", async () => {
+    let callNum = 0;
+
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as { model: string };
+      if (body.model === "test-extraction-model") {
+        // Extraction model always fails
+        return Response.json(
+          { error: { message: "extraction boom", type: "server_error" } },
+          { status: 500 },
+        );
+      }
+      callNum++;
+      return Response.json(openaiResponse(`Reply ${callNum}`));
+    };
+
+    const config = {
+      ...testConfig(),
+      extractionModel: "test-extraction-model",
+      extractionInterval: 1,
+    };
+
+    const { eventId: id1 } = ingestMessage({
+      text: "First",
+      topicKey: "topic-ext-fail",
+    });
+    await Bun.sleep(5);
+    const { eventId: id2 } = ingestMessage({
+      text: "Second",
+      topicKey: "topic-ext-fail",
+      externalMessageId: "msg-second-ext",
+    });
+
+    const loop = startProcessingLoop(config, FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(id2)?.status === "done");
+    await Bun.sleep(200);
+    await loop.stop();
+
+    // Both messages processed successfully despite extraction failures
+    expect(getInboxMessage(id1)?.status).toBe("done");
+    expect(getInboxMessage(id2)?.status).toBe("done");
+
+    const outbox = listOutboxMessagesByTopic("topic-ext-fail");
+    expect(outbox).toHaveLength(2);
   });
 });
