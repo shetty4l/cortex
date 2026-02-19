@@ -12,6 +12,7 @@ const BAD_MANIFEST = join(FIXTURES, "skills-bad-manifest");
 const BAD_MODULE = join(FIXTURES, "skills-bad-module");
 const BAD_ID = join(FIXTURES, "skills-bad-id");
 const BAD_TOOL_NAME = join(FIXTURES, "skills-bad-tool-name");
+const BAD_TOOL_DEF = join(FIXTURES, "skills-bad-tool-def");
 const DUP = join(FIXTURES, "skills-dup");
 
 function stubContext(): SkillRuntimeContext {
@@ -254,6 +255,14 @@ describe("skill loader", () => {
     if (result.ok) return;
     expect(result.error).toContain("bad.tool");
     expect(result.error).toContain("invalid");
+  });
+
+  test("fails on invalid tool definition fields", async () => {
+    const result = await loadSkills([BAD_TOOL_DEF]);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("non-empty description");
   });
 
   test("fails on non-existent skill directory", async () => {
