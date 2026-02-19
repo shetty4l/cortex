@@ -10,6 +10,8 @@ const VALID = join(FIXTURES, "skills-valid");
 const BAD_API = join(FIXTURES, "skills-bad-api");
 const BAD_MANIFEST = join(FIXTURES, "skills-bad-manifest");
 const BAD_MODULE = join(FIXTURES, "skills-bad-module");
+const BAD_ID = join(FIXTURES, "skills-bad-id");
+const BAD_TOOL_NAME = join(FIXTURES, "skills-bad-tool-name");
 const DUP = join(FIXTURES, "skills-dup");
 
 function stubContext(): SkillRuntimeContext {
@@ -226,14 +228,32 @@ describe("skill loader", () => {
     expect(result.error).toContain("must default-export");
   });
 
-  test("fails on duplicate fully-qualified tool names", async () => {
-    // Load both VALID (has echo.say) and DUP (also has echo.say)
+  test("fails on duplicate skill id across directories", async () => {
+    // VALID has id: "echo", DUP also has id: "echo" — caught before tool names
     const result = await loadSkills([VALID, DUP]);
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("duplicate tool name");
-    expect(result.error).toContain("echo.say");
+    expect(result.error).toContain("duplicate skill id");
+    expect(result.error).toContain('"echo"');
+  });
+
+  test("fails on invalid skill id format", async () => {
+    const result = await loadSkills([BAD_ID]);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("bad.id");
+    expect(result.error).toContain("invalid");
+  });
+
+  test("fails on invalid tool name format", async () => {
+    const result = await loadSkills([BAD_TOOL_NAME]);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("bad.tool");
+    expect(result.error).toContain("invalid");
   });
 
   test("fails on non-existent skill directory", async () => {
