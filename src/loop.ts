@@ -8,8 +8,9 @@
  *   4. Build prompt (system + memories + history + user message)
  *   5. Call Synapse for a chat completion
  *   6. Save the turn pair (user + assistant) to history
- *   7. Write the assistant response to the outbox
- *   8. Mark the inbox message as done (or failed on error)
+ *   7. Trigger async fact extraction (fire-and-forget, serialized per topic)
+ *   8. Write the assistant response to the outbox
+ *   9. Mark the inbox message as done (or failed on error)
  */
 
 import type { CortexConfig } from "./config";
@@ -17,8 +18,10 @@ import {
   claimNextInboxMessage,
   completeInboxMessage,
   enqueueOutboxMessage,
+  incrementTurnsSinceExtraction,
 } from "./db";
 import { recallDual } from "./engram";
+import { maybeExtract } from "./extraction";
 import { loadHistory, saveTurnPair } from "./history";
 import { buildPrompt } from "./prompt";
 import { chat } from "./synapse";
@@ -30,6 +33,19 @@ const DEFAULT_POLL_BUSY_MS = 100;
 
 /** How long to wait before re-checking when the inbox was empty. */
 const DEFAULT_POLL_IDLE_MS = 2_000;
+
+// --- Extraction concurrency ---
+
+/**
+ * Per-topic in-flight guard for extraction.
+ *
+ * Prevents overlapping fire-and-forget extraction runs on the same topic,
+ * which would cause duplicate model/Engram calls and cursor race conditions.
+ * At most one extraction runs per topic at any time; subsequent triggers
+ * for an already-running topic are silently skipped (the next message will
+ * re-evaluate the cursor and trigger if still due).
+ */
+const extractionInFlight = new Map<string, Promise<void>>();
 
 // --- Loop ---
 
@@ -57,6 +73,12 @@ export function startProcessingLoop(
   let running = true;
   const pollBusyMs = options?.pollBusyMs ?? DEFAULT_POLL_BUSY_MS;
   const pollIdleMs = options?.pollIdleMs ?? DEFAULT_POLL_IDLE_MS;
+
+  if (!config.extractionModel) {
+    console.error(
+      "cortex: extraction disabled — no extractionModel configured",
+    );
+  }
 
   const done = (async () => {
     while (running) {
@@ -105,7 +127,25 @@ export function startProcessingLoop(
             // 5. Save turn pair to history
             saveTurnPair(message.topic_key, message.text, result.value.content);
 
-            // 6. Write to outbox
+            // 6. Trigger async extraction (fire-and-forget, serialized per topic)
+            //    Always increment the turn counter — even when extraction is
+            //    already in-flight — so the cadence stays accurate.
+            if (config.extractionModel) {
+              incrementTurnsSinceExtraction(message.topic_key);
+            }
+            if (!extractionInFlight.has(message.topic_key)) {
+              const p = maybeExtract(message.topic_key, config)
+                .catch((e) =>
+                  console.error(
+                    `cortex: [${message.topic_key}] extraction error:`,
+                    e,
+                  ),
+                )
+                .finally(() => extractionInFlight.delete(message.topic_key));
+              extractionInFlight.set(message.topic_key, p);
+            }
+
+            // 7. Write to outbox
             enqueueOutboxMessage({
               source: message.source,
               topicKey: message.topic_key,

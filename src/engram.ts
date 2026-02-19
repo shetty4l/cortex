@@ -2,11 +2,12 @@
  * Thin Engram client for Cortex.
  *
  * Recalls memories via Engram's POST /recall endpoint.
+ * Stores memories via Engram's POST /remember endpoint.
  * Supports dual recall: topic-scoped + global, deduplicated, with backfill.
  *
  * Design:
- * - 3s timeout per request (memory recall should not block message processing)
- * - On failure: returns empty array and logs a warning (graceful degradation)
+ * - 3s timeout per request (memory ops should not block message processing)
+ * - On failure: returns empty/null and logs a warning (graceful degradation)
  * - No auth required (Engram runs on localhost)
  */
 
@@ -37,11 +38,97 @@ export interface RecallOptions {
 
 const RECALL_TIMEOUT_MS = 3_000;
 
+/** Timeout for remember requests. */
+const REMEMBER_TIMEOUT_MS = 3_000;
+
 /** Maximum total memories from dual recall. */
 const DUAL_RECALL_MAX = 8;
 
 /** Per-call limit for dual recall (topic + global). */
 const DUAL_RECALL_PER_CALL = 4;
+
+// --- Remember ---
+
+export interface RememberInput {
+  content: string;
+  category?: string;
+  scopeId?: string;
+  idempotencyKey?: string;
+  upsert?: boolean;
+}
+
+export interface RememberOutput {
+  id: string;
+  status: "created" | "updated";
+}
+
+/**
+ * Store a memory in Engram via POST /remember.
+ *
+ * Returns Ok(output) on success, Ok(null) on timeout/connection/HTTP failure.
+ * Returns Err only on unexpected parse failures.
+ *
+ * Graceful: never throws, never blocks the caller on infrastructure failure.
+ */
+export async function remember(
+  input: RememberInput,
+  engramUrl: string,
+): Promise<Result<RememberOutput | null>> {
+  const body: Record<string, unknown> = { content: input.content };
+  if (input.category !== undefined) body.category = input.category;
+  if (input.scopeId !== undefined) body.scope_id = input.scopeId;
+  if (input.idempotencyKey !== undefined)
+    body.idempotency_key = input.idempotencyKey;
+  if (input.upsert !== undefined) body.upsert = input.upsert;
+
+  let response: Response;
+  try {
+    response = await fetch(`${engramUrl}/remember`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REMEMBER_TIMEOUT_MS),
+    });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "TimeoutError") {
+      console.error(
+        `cortex: Engram remember timed out after ${REMEMBER_TIMEOUT_MS}ms`,
+      );
+      return ok(null);
+    }
+    console.error(
+      `cortex: Engram connection failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return ok(null);
+  }
+
+  if (!response.ok) {
+    let text: string;
+    try {
+      text = await response.text();
+    } catch {
+      text = "(unreadable)";
+    }
+    console.error(
+      `cortex: Engram remember returned ${response.status}: ${text.slice(0, 500)}`,
+    );
+    return ok(null);
+  }
+
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    return err("Engram remember returned invalid JSON");
+  }
+
+  const output = data as { id?: string; status?: string };
+  if (!output.id || !output.status) {
+    return err("Engram remember response missing id or status");
+  }
+
+  return ok({ id: output.id, status: output.status as "created" | "updated" });
+}
 
 // --- Recall ---
 
