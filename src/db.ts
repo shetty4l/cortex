@@ -66,8 +66,11 @@ const SCHEMA = `
   CREATE TABLE IF NOT EXISTS turns (
     id TEXT PRIMARY KEY,
     topic_key TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-    content TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'tool')),
+    content TEXT,
+    tool_call_id TEXT,
+    tool_calls TEXT,
+    name TEXT,
     created_at INTEGER NOT NULL
   );
 
@@ -606,8 +609,11 @@ export function purgeMessages(): { inbox: number; outbox: number } {
 export interface Turn {
   id: string;
   topic_key: string;
-  role: "user" | "assistant";
-  content: string;
+  role: "user" | "assistant" | "tool";
+  content: string | null;
+  tool_call_id: string | null;
+  tool_calls: string | null;
+  name: string | null;
   created_at: number;
 }
 
@@ -635,7 +641,63 @@ export function saveTurn(
       $now: now,
     });
 
-  return { id, topic_key: topicKey, role, content, created_at: now };
+  return {
+    id,
+    topic_key: topicKey,
+    role,
+    content,
+    tool_call_id: null,
+    tool_calls: null,
+    name: null,
+    created_at: now,
+  };
+}
+
+/**
+ * Batch insert all turns from an agent loop for a topic.
+ *
+ * Each turn is a ChatMessage from the agent loop (user, assistant with
+ * tool_calls, tool results, final assistant response). Uses a transaction
+ * for atomicity.
+ */
+export function saveAgentTurns(
+  topicKey: string,
+  turns: Array<{
+    role: string;
+    content: string;
+    tool_call_id?: string;
+    tool_calls?: Array<{
+      id: string;
+      type: string;
+      function: { name: string; arguments: string };
+    }>;
+    name?: string;
+  }>,
+): void {
+  const database = getDatabase();
+
+  const stmt = database.prepare(
+    `INSERT INTO turns (id, topic_key, role, content, tool_call_id, tool_calls, name, created_at)
+     VALUES ($id, $topicKey, $role, $content, $toolCallId, $toolCalls, $name, $now)`,
+  );
+
+  database.transaction(() => {
+    const now = Date.now();
+    for (let i = 0; i < turns.length; i++) {
+      const turn = turns[i];
+      stmt.run({
+        $id: `turn_${crypto.randomUUID()}`,
+        $topicKey: topicKey,
+        $role: turn.role,
+        $content: turn.content || null,
+        $toolCallId: turn.tool_call_id ?? null,
+        $toolCalls: turn.tool_calls ? JSON.stringify(turn.tool_calls) : null,
+        $name: turn.name ?? null,
+        // Increment timestamp by index to ensure ordering within the batch
+        $now: now + i,
+      });
+    }
+  })();
 }
 
 /**
@@ -652,7 +714,7 @@ export function loadRecentTurns(topicKey: string, limit = 8): Turn[] {
   // Use _rowid_ for deterministic ordering when created_at ties (same ms).
   return database
     .prepare(
-      `SELECT id, topic_key, role, content, created_at FROM (
+      `SELECT id, topic_key, role, content, tool_call_id, tool_calls, name, created_at FROM (
         SELECT *, _rowid_ AS rn FROM turns
         WHERE topic_key = $topicKey
         ORDER BY rn DESC
@@ -744,7 +806,7 @@ export function loadTurnsSinceCursor(
   const limitClause = limit !== undefined ? `LIMIT $limit` : "";
   return database
     .prepare(
-      `SELECT _rowid_ AS rowid, id, topic_key, role, content, created_at
+      `SELECT _rowid_ AS rowid, id, topic_key, role, content, tool_call_id, tool_calls, name, created_at
        FROM turns
        WHERE topic_key = $topicKey AND _rowid_ > $afterRowid
        ORDER BY _rowid_ ASC

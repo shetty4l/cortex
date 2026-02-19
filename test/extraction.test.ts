@@ -16,6 +16,7 @@ import {
   incrementTurnsSinceExtraction,
   initDatabase,
   loadTurnsSinceCursor,
+  saveAgentTurns,
   saveTurn,
 } from "../src/db";
 import { maybeExtract, trimToBudget } from "../src/extraction";
@@ -639,6 +640,52 @@ describe("maybeExtract", () => {
 
     expect(engramRememberCalls).toHaveLength(1);
     expect(engramRememberCalls[0].content).toBe("User is a developer");
+  });
+
+  test("filters out tool and intermediate assistant messages from extraction", async () => {
+    const config = testConfig({ extractionInterval: 1 });
+
+    // Save an agent loop with tool calls (user → assistant+tool_calls → tool → final assistant)
+    saveAgentTurns("topic-tool", [
+      { role: "user", content: "What is 2+2?" },
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "math.add", arguments: '{"a":2,"b":2}' },
+          },
+        ],
+      },
+      { role: "tool", content: "4", tool_call_id: "c1", name: "math.add" },
+      { role: "assistant", content: "2+2 equals 4." },
+    ]);
+
+    let capturedUserContent = "";
+    mockSynapseHandler = async (req: Request) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ role: string; content: string }>;
+      };
+      const system = body.messages?.[0]?.content ?? "";
+      if (system.includes("summarize what this conversation")) {
+        return Response.json(openaiResponse("Math conversation."));
+      }
+      // Capture what turns were sent to the extraction model
+      capturedUserContent = body.messages?.[1]?.content ?? "";
+      return Response.json(extractionResponse([]));
+    };
+
+    await processAndExtract("topic-tool", config);
+
+    // Only user messages and final assistant responses (no tool_calls)
+    // should appear in the extraction prompt
+    expect(capturedUserContent).toContain("user: What is 2+2?");
+    expect(capturedUserContent).toContain("assistant: 2+2 equals 4.");
+    // Tool messages and intermediate assistant messages should NOT appear
+    expect(capturedUserContent).not.toContain("tool:");
+    expect(capturedUserContent).not.toContain("assistant: \n"); // empty content from tool-calling assistant
   });
 });
 
