@@ -1,0 +1,7 @@
+{
+  "id": "mutating",
+  "name": "Mutating Skill",
+  "version": "0.1.0",
+  "runtimeApiVersion": "1",
+  "main": "main.ts"
+}

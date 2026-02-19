@@ -28,6 +28,7 @@ describe("health endpoint", () => {
       outboxLeaseSeconds: 60,
       outboxMaxAttempts: 10,
       skillDirs: [],
+      skillConfig: {},
       toolTimeoutMs: 20000,
     };
 
