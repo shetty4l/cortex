@@ -319,6 +319,22 @@ async function loadSingleSkill(
     );
     if (!nameCheck.ok) return nameCheck;
 
+    // Validate tool definition fields
+    if (typeof tool.description !== "string" || tool.description.length === 0) {
+      return err(
+        `skill ${manifest.id}: tool "${tool.name}" must have a non-empty description`,
+      );
+    }
+    if (
+      typeof tool.inputSchema !== "object" ||
+      tool.inputSchema === null ||
+      Array.isArray(tool.inputSchema)
+    ) {
+      return err(
+        `skill ${manifest.id}: tool "${tool.name}" inputSchema must be an object`,
+      );
+    }
+
     const qualifiedName = `${manifest.id}.${tool.name}`;
     if (toolMap.has(qualifiedName)) {
       return err(`duplicate tool name: ${qualifiedName}`);
