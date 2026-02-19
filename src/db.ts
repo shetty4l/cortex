@@ -1,7 +1,8 @@
 /**
  * SQLite database for Cortex.
  *
- * Manages inbox/outbox queues, turns, extraction cursors, and scheduler jobs.
+ * Manages inbox/outbox queues, turns, extraction cursors, topic summaries,
+ * and scheduler jobs.
  * Tables are created incrementally as each slice adds its schema.
  *
  * Database location: ~/.local/share/cortex/cortex.db
@@ -77,6 +78,12 @@ const SCHEMA = `
     topic_key TEXT PRIMARY KEY,
     last_extracted_rowid INTEGER NOT NULL,
     turns_since_extraction INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS topic_summaries (
+    topic_key TEXT PRIMARY KEY,
+    summary TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
   );
 `;
 
@@ -748,4 +755,34 @@ export function loadTurnsSinceCursor(
         ? { $topicKey: topicKey, $afterRowid: afterRowid, $limit: limit }
         : { $topicKey: topicKey, $afterRowid: afterRowid },
     ) as Array<Turn & { rowid: number }>;
+}
+
+// --- Topic summary operations ---
+
+/**
+ * Get the cached topic summary for a topic.
+ * Returns null if no summary exists yet.
+ */
+export function getTopicSummary(topicKey: string): string | null {
+  const database = getDatabase();
+  const row = database
+    .prepare("SELECT summary FROM topic_summaries WHERE topic_key = $topicKey")
+    .get({ $topicKey: topicKey }) as { summary: string } | null;
+  return row?.summary ?? null;
+}
+
+/**
+ * Upsert the cached topic summary for a topic.
+ * Overwrites any existing summary (INSERT OR REPLACE on PK).
+ */
+export function upsertTopicSummary(topicKey: string, summary: string): void {
+  const database = getDatabase();
+  database
+    .prepare(
+      `INSERT INTO topic_summaries (topic_key, summary, updated_at)
+       VALUES ($topicKey, $summary, $now)
+       ON CONFLICT(topic_key) DO UPDATE
+       SET summary = $summary, updated_at = $now`,
+    )
+    .run({ $topicKey: topicKey, $summary: summary, $now: Date.now() });
 }
