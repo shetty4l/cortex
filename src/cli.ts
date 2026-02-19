@@ -42,6 +42,7 @@ import {
 import { startProcessingLoop } from "./loop";
 import { sendMessage } from "./send";
 import { startServer } from "./server";
+import { createEmptyRegistry } from "./skills";
 
 const VERSION = readVersion(join(import.meta.dir, ".."));
 
@@ -118,7 +119,7 @@ function cmdServe(): void {
   }
 
   const server = startServer(config);
-  const loop = startProcessingLoop(config);
+  const loop = startProcessingLoop(config, createEmptyRegistry());
   console.error("cortex: processing loop started");
 
   onShutdown(

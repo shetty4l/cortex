@@ -49,7 +49,7 @@ console.error(
 
 const server = startServer(config);
 console.error(`cortex: listening on http://${config.host}:${config.port}`);
-const loop = startProcessingLoop(config);
+const loop = startProcessingLoop(config, _registry);
 console.error("cortex: processing loop started");
 
 onShutdown(
