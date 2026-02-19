@@ -5,12 +5,13 @@
  *   1. Claim the oldest pending inbox message
  *   2. Recall relevant memories from Engram (topic-scoped + global)
  *   3. Load recent turn history from SQLite
- *   4. Build prompt (system + memories + history + user message)
- *   5. Call Synapse for a chat completion
- *   6. Save the turn pair (user + assistant) to history
- *   7. Trigger async fact extraction (fire-and-forget, serialized per topic)
- *   8. Write the assistant response to the outbox
- *   9. Mark the inbox message as done (or failed on error)
+ *   4. Load topic summary from SQLite (if available)
+ *   5. Build prompt (system + memories + summary + history + user message)
+ *   6. Call Synapse for a chat completion
+ *   7. Save the turn pair (user + assistant) to history
+ *   8. Trigger async fact extraction + summary update (fire-and-forget)
+ *   9. Write the assistant response to the outbox
+ *  10. Mark the inbox message as done (or failed on error)
  */
 
 import type { CortexConfig } from "./config";
@@ -18,6 +19,7 @@ import {
   claimNextInboxMessage,
   completeInboxMessage,
   enqueueOutboxMessage,
+  getTopicSummary,
   incrementTurnsSinceExtraction,
 } from "./db";
 import { recallDual } from "./engram";
@@ -107,27 +109,31 @@ export function startProcessingLoop(
           // 2. Load recent turn history
           const turns = loadHistory(message.topic_key);
 
+          // 3. Load topic summary (fast SQLite read)
+          const topicSummary = getTopicSummary(message.topic_key);
+
           console.error(
             `cortex: [${message.topic_key}] context: memories=${memories.length} turns=${turns.length}`,
           );
 
-          // 3. Build prompt
+          // 4. Build prompt
           const messages = buildPrompt({
             memories,
+            topicSummary,
             turns,
             userText: message.text,
           });
 
-          // 4. Call Synapse
+          // 5. Call Synapse
           const result = await chat(messages, config.model, config.synapseUrl);
 
           const elapsed = ((performance.now() - startMs) / 1000).toFixed(1);
 
           if (result.ok) {
-            // 5. Save turn pair to history
+            // 6. Save turn pair to history
             saveTurnPair(message.topic_key, message.text, result.value.content);
 
-            // 6. Trigger async extraction (fire-and-forget, serialized per topic)
+            // 7. Trigger async extraction (fire-and-forget, serialized per topic)
             //    Always increment the turn counter — even when extraction is
             //    already in-flight — so the cadence stays accurate.
             if (config.extractionModel) {
@@ -145,7 +151,7 @@ export function startProcessingLoop(
               extractionInFlight.set(message.topic_key, p);
             }
 
-            // 7. Write to outbox
+            // 8. Write to outbox
             enqueueOutboxMessage({
               source: message.source,
               topicKey: message.topic_key,
