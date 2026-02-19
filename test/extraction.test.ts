@@ -120,6 +120,7 @@ function testConfig(overrides?: Partial<CortexConfig>): CortexConfig {
     skillDirs: [],
     skillConfig: {},
     toolTimeoutMs: 20000,
+    maxToolRounds: 8,
     ...overrides,
   };
 }

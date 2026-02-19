@@ -12,6 +12,7 @@ describe("config", () => {
     "CORTEX_CONFIG_PATH",
     "CORTEX_INGEST_API_KEY",
     "CORTEX_MODEL",
+    "CORTEX_MAX_TOOL_ROUNDS",
   ];
 
   beforeEach(() => {
@@ -53,6 +54,7 @@ describe("config", () => {
     expect(config.outboxMaxAttempts).toBe(10);
     expect(config.skillDirs).toEqual([]);
     expect(config.toolTimeoutMs).toBe(20000);
+    expect(config.maxToolRounds).toBe(8);
     expect(config.ingestApiKey).toBeUndefined();
     expect(config.model).toBeUndefined();
     expect(config.extractionModel).toBeUndefined();
@@ -226,5 +228,93 @@ describe("config", () => {
     expect(result.error).toContain("model: must be a non-empty string");
 
     rmSync(tmpDir, { recursive: true });
+  });
+
+  // --- maxToolRounds tests ---
+
+  test("loads custom maxToolRounds from config file", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(configPath, JSON.stringify({ maxToolRounds: 12 }));
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.maxToolRounds).toBe(12);
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("CORTEX_MAX_TOOL_ROUNDS env var overrides config file", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(configPath, JSON.stringify({ maxToolRounds: 5 }));
+    process.env.CORTEX_CONFIG_PATH = configPath;
+    process.env.CORTEX_MAX_TOOL_ROUNDS = "15";
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.maxToolRounds).toBe(15);
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("returns error when maxToolRounds is below minimum (1)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(configPath, JSON.stringify({ maxToolRounds: 0 }));
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must be >= 1");
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("returns error when maxToolRounds exceeds maximum (20)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(configPath, JSON.stringify({ maxToolRounds: 25 }));
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must be <= 20");
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("returns error when maxToolRounds is not an integer", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(configPath, JSON.stringify({ maxToolRounds: 3.5 }));
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must be an integer");
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("returns error when CORTEX_MAX_TOOL_ROUNDS env var is invalid", () => {
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    process.env.CORTEX_MAX_TOOL_ROUNDS = "abc";
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("CORTEX_MAX_TOOL_ROUNDS");
   });
 });

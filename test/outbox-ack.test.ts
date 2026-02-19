@@ -38,6 +38,7 @@ function makeConfig(): CortexConfig {
     skillDirs: [],
     skillConfig: {},
     toolTimeoutMs: 20000,
+    maxToolRounds: 8,
   };
 }
 
