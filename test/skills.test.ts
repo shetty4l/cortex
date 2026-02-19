@@ -83,6 +83,24 @@ describe("skill loader", () => {
 
   // --- Tool execution ---
 
+  test("executeTool passes local (unqualified) name to skill module", async () => {
+    const result = await loadSkills([VALID]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // mutating skill's execute returns `executed ${call.name}`
+    const execResult = await result.value.executeTool(
+      "mutating.write",
+      "{}",
+      stubContext(),
+    );
+
+    expect(execResult.ok).toBe(true);
+    if (!execResult.ok) return;
+    // Should receive "write", not "mutating.write"
+    expect(execResult.value.content).toBe("executed write");
+  });
+
   test("executeTool calls skill module and returns result", async () => {
     const result = await loadSkills([VALID]);
     expect(result.ok).toBe(true);
