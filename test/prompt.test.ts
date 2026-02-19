@@ -149,4 +149,78 @@ describe("buildPrompt", () => {
     expect(messages[6].content).toBe("A3");
     expect(messages[7].content).toBe("Q4");
   });
+
+  test("includes topic summary in system message", () => {
+    const messages = buildPrompt({
+      memories: [],
+      topicSummary: "Planning a trip to Japan in March.",
+      turns: [],
+      userText: "What about hotels?",
+    });
+
+    expect(messages).toHaveLength(2);
+    expect(messages[0].content).toContain("Current conversation context:");
+    expect(messages[0].content).toContain("Planning a trip to Japan in March.");
+  });
+
+  test("topic summary appears after memories in system message", () => {
+    const messages = buildPrompt({
+      memories: [makeMemory("User lives in Seattle")],
+      topicSummary: "Discussing flight options to Tokyo.",
+      turns: [],
+      userText: "Any direct flights?",
+    });
+
+    const system = messages[0].content;
+    const memoryPos = system.indexOf("User lives in Seattle");
+    const summaryPos = system.indexOf("Discussing flight options");
+    expect(memoryPos).toBeGreaterThan(-1);
+    expect(summaryPos).toBeGreaterThan(memoryPos);
+  });
+
+  test("does not add summary header when topicSummary is null", () => {
+    const messages = buildPrompt({
+      memories: [],
+      topicSummary: null,
+      turns: [],
+      userText: "Hello",
+    });
+
+    expect(messages[0].content).toBe(SYSTEM_PROMPT);
+    expect(messages[0].content).not.toContain("Current conversation context");
+  });
+
+  test("does not add summary header when topicSummary is undefined", () => {
+    const messages = buildPrompt({
+      memories: [],
+      turns: [],
+      userText: "Hello",
+    });
+
+    expect(messages[0].content).toBe(SYSTEM_PROMPT);
+    expect(messages[0].content).not.toContain("Current conversation context");
+  });
+
+  test("includes memories, summary, and turns in correct order", () => {
+    const messages = buildPrompt({
+      memories: [makeMemory("User likes TypeScript")],
+      topicSummary: "Refactoring a Node.js service.",
+      turns: [
+        { role: "user", content: "Should I use classes?" },
+        { role: "assistant", content: "It depends on the use case." },
+      ],
+      userText: "What about interfaces?",
+    });
+
+    // system + 2 turns + current user = 4
+    expect(messages).toHaveLength(4);
+
+    const system = messages[0].content;
+    expect(system).toContain("User likes TypeScript");
+    expect(system).toContain("Refactoring a Node.js service.");
+
+    expect(messages[1].content).toBe("Should I use classes?");
+    expect(messages[2].content).toBe("It depends on the use case.");
+    expect(messages[3].content).toBe("What about interfaces?");
+  });
 });

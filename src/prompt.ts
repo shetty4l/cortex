@@ -4,8 +4,9 @@
  * Builds the messages array sent to Synapse from:
  * 1. System prompt (identity + behavior)
  * 2. Recalled memories (from Engram)
- * 3. Recent turn history (from SQLite)
- * 4. Current user message
+ * 3. Topic summary (rolling 1-2 sentence orientation)
+ * 4. Recent turn history (from SQLite)
+ * 5. Current user message
  */
 
 import type { Memory } from "./engram";
@@ -19,11 +20,15 @@ export const SYSTEM_PROMPT =
 const MEMORY_HEADER =
   "These are facts and preferences you've learned about the user:";
 
+const SUMMARY_HEADER = "Current conversation context:";
+
 // --- Prompt builder ---
 
 export interface BuildPromptOpts {
   /** Recalled memories from Engram (may be empty). */
   memories: Memory[];
+  /** Rolling topic summary (null if no summary exists yet). */
+  topicSummary?: string | null;
   /** Recent turn history as ChatMessage[] (may be empty). */
   turns: ChatMessage[];
   /** The current user message text. */
@@ -36,19 +41,24 @@ export interface BuildPromptOpts {
  * Layout:
  * - System message (always present)
  * - Memory block appended to system message (if memories present)
+ * - Topic summary appended to system message (if summary present)
  * - Turn history (alternating user/assistant messages)
  * - Current user message (always present)
  */
 export function buildPrompt(opts: BuildPromptOpts): ChatMessage[] {
-  const { memories, turns, userText } = opts;
+  const { memories, topicSummary, turns, userText } = opts;
   const messages: ChatMessage[] = [];
 
-  // 1. System message (with optional memory block)
+  // 1. System message (with optional memory block and topic summary)
   let systemContent = SYSTEM_PROMPT;
 
   if (memories.length > 0) {
     const memoryBlock = memories.map((m) => `- ${m.content}`).join("\n");
     systemContent += `\n\n${MEMORY_HEADER}\n${memoryBlock}`;
+  }
+
+  if (topicSummary) {
+    systemContent += `\n\n${SUMMARY_HEADER}\n${topicSummary}`;
   }
 
   messages.push({ role: "system", content: systemContent });
