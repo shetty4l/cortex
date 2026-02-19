@@ -98,7 +98,7 @@ export async function maybeExtract(
   // acceptable because the previous summary (included in the summary prompt)
   // provides continuity for earlier turns. The rolling nature of the summary
   // handles large backlogs across multiple extraction cycles.
-  let lastBatchTurns: Array<{ role: string; content: string }> = [];
+  let lastBatchTurns: Array<{ role: string; content: string | null }> = [];
 
   while (true) {
     const loaded = loadTurnsSinceCursor(
@@ -116,15 +116,29 @@ export async function maybeExtract(
     // context window. The drain loop handles the remainder naturally.
     const turns = trimToBudget(loaded);
 
-    const result = await extractBatch(topicKey, turns, config);
-    if (!result.ok) {
-      // Model or parse failure — stop draining, don't advance cursor.
-      // Turns will be re-processed next time.
-      break;
+    // Filter out tool messages and intermediate assistant messages with
+    // tool_calls — only extract facts from user messages and final
+    // assistant responses (those without tool_calls).
+    const extractableTurns = turns.filter(
+      (t) => t.role !== "tool" && !(t.role === "assistant" && t.tool_calls),
+    );
+
+    // Only call the extraction model if there are extractable turns.
+    // If all turns in this batch were tool messages, skip extraction
+    // but still advance the cursor.
+    if (extractableTurns.length > 0) {
+      const result = await extractBatch(topicKey, extractableTurns, config);
+      if (!result.ok) {
+        // Model or parse failure — stop draining, don't advance cursor.
+        // Turns will be re-processed next time.
+        break;
+      }
     }
 
-    // Track the last successful batch for topic summary generation
-    lastBatchTurns = turns;
+    // Track the last successful batch for topic summary generation.
+    // Use the extractable turns (filtered) — tool messages and intermediate
+    // assistant tool_calls are noise for summary generation.
+    lastBatchTurns = extractableTurns;
 
     const lastRowid = turns[turns.length - 1].rowid;
     advanceExtractionCursor(topicKey, lastRowid);
@@ -159,13 +173,13 @@ export async function maybeExtract(
  */
 async function extractBatch(
   topicKey: string,
-  turns: Array<{ role: string; content: string; rowid: number }>,
+  turns: Array<{ role: string; content: string | null; rowid: number }>,
   config: CortexConfig,
 ): Promise<Result<void>> {
   // Recall existing memories for dedup context (graceful on failure)
   const recallQuery = turns
     .filter((t) => t.role === "user")
-    .map((t) => t.content)
+    .map((t) => t.content ?? "")
     .slice(0, 3)
     .join(" ");
   const recallResult = await recall(recallQuery, config.engramUrl, {
@@ -251,7 +265,7 @@ async function extractBatch(
  */
 async function updateTopicSummary(
   topicKey: string,
-  turns: Array<{ role: string; content: string }>,
+  turns: Array<{ role: string; content: string | null }>,
   config: CortexConfig,
 ): Promise<Result<void>> {
   try {
@@ -310,7 +324,7 @@ async function updateTopicSummary(
  * Build the prompt for topic summary generation.
  */
 function buildSummaryPrompt(
-  turns: Array<{ role: string; content: string }>,
+  turns: Array<{ role: string; content: string | null }>,
   existingSummary: string | null,
 ): ChatMessage[] {
   let systemContent =
@@ -324,7 +338,7 @@ function buildSummaryPrompt(
 
   let userContent = "Recent conversation:\n";
   for (const turn of turns) {
-    userContent += `${turn.role}: ${turn.content}\n`;
+    userContent += `${turn.role}: ${turn.content ?? ""}\n`;
   }
 
   return [
@@ -336,7 +350,7 @@ function buildSummaryPrompt(
 // --- Prompt construction ---
 
 function buildExtractionPrompt(
-  turns: Array<{ role: string; content: string }>,
+  turns: Array<{ role: string; content: string | null }>,
   existingMemories: Array<{ content: string; category: string | null }>,
 ): ChatMessage[] {
   let systemContent =
@@ -357,7 +371,7 @@ function buildExtractionPrompt(
 
   let userContent = "New conversation turns:\n";
   for (const turn of turns) {
-    userContent += `${turn.role}: ${turn.content}\n`;
+    userContent += `${turn.role}: ${turn.content ?? ""}\n`;
   }
 
   return [
@@ -455,7 +469,7 @@ function parseExtractionResponse(response: string): Result<ExtractedFact[]> {
  *
  * Exported for testing.
  */
-export function trimToBudget<T extends { content: string }>(
+export function trimToBudget<T extends { content: string | null }>(
   turns: T[],
   budget: number = MAX_EXTRACTION_CHARS,
 ): T[] {
@@ -463,7 +477,7 @@ export function trimToBudget<T extends { content: string }>(
 
   let chars = 0;
   for (let i = 0; i < turns.length; i++) {
-    chars += turns[i].content.length;
+    chars += (turns[i].content ?? "").length;
     if (chars > budget && i > 0) {
       return turns.slice(0, i);
     }
