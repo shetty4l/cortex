@@ -52,6 +52,9 @@ export interface CortexConfig {
   outboxLeaseSeconds: number;
   outboxMaxAttempts: number;
 
+  // System prompt
+  systemPromptFile?: string;
+
   // Skills
   skillDirs: string[];
   skillConfig: Record<string, Record<string, unknown>>;
@@ -135,6 +138,7 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "model", label: "model" },
     { key: "extractionModel", label: "extractionModel" },
     { key: "telegramBotToken", label: "telegramBotToken" },
+    { key: "systemPromptFile", label: "systemPromptFile" },
   ];
 
   for (const field of stringFields) {

@@ -2,63 +2,100 @@
  * Prompt assembly for Cortex.
  *
  * Builds the messages array sent to Synapse from:
- * 1. System prompt (identity + behavior + capability grounding)
+ * 1. System prompt (loaded from template file or default, rendered once at startup)
  * 2. Recalled memories (from Engram)
  * 3. Topic summary (rolling 1-2 sentence orientation)
  * 4. Recent turn history (from SQLite)
  * 5. Current user message
+ *
+ * The system prompt is the static prefix of every request. Rendering it once
+ * and reusing the frozen string ensures byte-identical prefixes across messages,
+ * enabling KV-cache reuse on local models and automatic prefix caching on
+ * cloud providers.
  */
 
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { createLogger } from "@shetty4l/core/log";
 import type { Memory } from "./engram";
 import type { ChatMessage } from "./synapse";
+import { renderTemplate } from "./template";
+
+const log = createLogger("cortex");
 
 // --- Constants ---
 
-/** Wilson's core identity line. Exported for test assertions. */
-export const WILSON_IDENTITY =
-  "You are Wilson, a personal life assistant. You are direct, concise, and honest.";
+/**
+ * Default system prompt template. Used when no systemPromptFile is configured,
+ * or as the initial content written to the file path on first run.
+ *
+ * Minimal and unopinionated — no name, no personality. Users customize by
+ * editing their local copy at the configured systemPromptFile path.
+ */
+export const DEFAULT_SYSTEM_PROMPT_TEMPLATE = `You are a personal life assistant. You are direct, concise, and honest.
 
-const CAPABILITIES_NO_TOOLS =
-  "Right now you can only have conversations and recall what you know about the user. You cannot set reminders, access calendars, search the web, book travel, or perform any actions beyond conversation. If the user asks you to do something you cannot do, say so honestly.";
+{{#if toolNames}}
+You have access to these tools: {{toolNames}}. Only offer to do things you have tools for.
+{{else}}
+You can only have conversations right now. If asked to do something you cannot do, say so.
+{{/if}}
 
-const MEMORY_INSTRUCTIONS =
-  "Facts and preferences you know about the user are listed below. Use them naturally in conversation. If you don't have information about something, say so — do not guess or make things up.";
+Use any known facts about the user naturally. If you don't know something, say so — do not guess.
 
-const FORMATTING_RULES =
-  "Keep responses concise. Use short bullet lists when helpful. Do not use markdown tables.";
+Keep responses concise.`;
 
 const MEMORY_HEADER = "What you know about the user:";
 
 const SUMMARY_HEADER = "Current conversation context:";
 
-// --- System prompt builder ---
+// --- System prompt loader ---
 
 /**
- * Build the system prompt with dynamic capability grounding.
+ * Load and render the system prompt template.
  *
- * When tools are available, lists them explicitly so Wilson knows what
- * it can do. When no tools are loaded, states conversational-only limits.
+ * Called once at loop startup. The returned string is frozen and reused for
+ * every message to maintain a stable prefix for KV-cache.
+ *
+ * - If templatePath is set and the file exists, reads it.
+ * - If templatePath is set but the file doesn't exist, writes the default
+ *   template to that path (creating parent dirs) so the user has a starting
+ *   point to edit.
+ * - If templatePath is not set, uses the embedded default.
  */
-export function buildSystemPrompt(toolNames: string[]): string {
-  const sections = [WILSON_IDENTITY];
+export function loadAndRenderSystemPrompt(opts: {
+  templatePath?: string;
+  toolNames: string[];
+}): string {
+  let template: string;
 
-  if (toolNames.length === 0) {
-    sections.push(CAPABILITIES_NO_TOOLS);
+  if (opts.templatePath) {
+    if (existsSync(opts.templatePath)) {
+      template = readFileSync(opts.templatePath, "utf-8");
+      log(`loaded system prompt from ${opts.templatePath}`);
+    } else {
+      // Write default so user has a starting point to edit
+      const dir = dirname(opts.templatePath);
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      writeFileSync(opts.templatePath, DEFAULT_SYSTEM_PROMPT_TEMPLATE, "utf-8");
+      template = DEFAULT_SYSTEM_PROMPT_TEMPLATE;
+      log(`wrote default system prompt to ${opts.templatePath}`);
+    }
   } else {
-    sections.push(
-      `You have access to these tools: ${toolNames.join(", ")}. Only offer to do things you have tools for. NEVER claim you can perform actions you don't have a tool for.`,
-    );
+    template = DEFAULT_SYSTEM_PROMPT_TEMPLATE;
   }
 
-  sections.push(MEMORY_INSTRUCTIONS);
-  sections.push(FORMATTING_RULES);
-
-  return sections.join("\n\n");
+  return renderTemplate(template, {
+    toolNames: opts.toolNames.join(", "),
+  });
 }
 
 // --- Prompt builder ---
 
 export interface BuildPromptOpts {
+  /** Pre-rendered system prompt (frozen at loop startup). */
+  systemPrompt: string;
   /** Recalled memories from Engram (may be empty). */
   memories: Memory[];
   /** Rolling topic summary (null if no summary exists yet). */
@@ -67,26 +104,24 @@ export interface BuildPromptOpts {
   turns: ChatMessage[];
   /** The current user message text. */
   userText: string;
-  /** Tool names available to the agent (may be empty). */
-  toolNames?: string[];
 }
 
 /**
  * Build the full messages array for a Synapse chat completion call.
  *
  * Layout:
- * - System message (always present, includes capability grounding)
+ * - System message (pre-rendered, frozen prefix for cache)
  * - Memory block appended to system message (if memories present)
  * - Topic summary appended to system message (if summary present)
  * - Turn history (alternating user/assistant messages)
  * - Current user message (always present)
  */
 export function buildPrompt(opts: BuildPromptOpts): ChatMessage[] {
-  const { memories, topicSummary, turns, userText, toolNames = [] } = opts;
+  const { systemPrompt, memories, topicSummary, turns, userText } = opts;
   const messages: ChatMessage[] = [];
 
   // 1. System message (with optional memory block and topic summary)
-  let systemContent = buildSystemPrompt(toolNames);
+  let systemContent = systemPrompt;
 
   if (memories.length > 0) {
     const memoryBlock = memories.map((m) => `- ${m.content}`).join("\n");

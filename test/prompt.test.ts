@@ -1,6 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Memory } from "../src/engram";
-import { buildPrompt, buildSystemPrompt, WILSON_IDENTITY } from "../src/prompt";
+import {
+  buildPrompt,
+  DEFAULT_SYSTEM_PROMPT_TEMPLATE,
+  loadAndRenderSystemPrompt,
+} from "../src/prompt";
 import type { ChatMessage } from "../src/synapse";
 
 // --- Helpers ---
@@ -15,36 +22,98 @@ function makeMemory(content: string): Memory {
   };
 }
 
-// --- buildSystemPrompt ---
+function defaultSystemPrompt(toolNames: string[] = []): string {
+  return loadAndRenderSystemPrompt({ toolNames });
+}
 
-describe("buildSystemPrompt", () => {
-  test("includes Wilson identity", () => {
-    const prompt = buildSystemPrompt([]);
-    expect(prompt).toContain(WILSON_IDENTITY);
-  });
+// --- Temp dir for file tests ---
 
-  test("states conversational-only when no tools", () => {
-    const prompt = buildSystemPrompt([]);
+const TEST_DIR = join(tmpdir(), `cortex-prompt-test-${Date.now()}`);
+
+afterEach(() => {
+  if (existsSync(TEST_DIR)) {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  }
+});
+
+// --- loadAndRenderSystemPrompt ---
+
+describe("loadAndRenderSystemPrompt", () => {
+  test("uses default template when no path is set", () => {
+    const prompt = loadAndRenderSystemPrompt({ toolNames: [] });
+    expect(prompt).toContain("personal life assistant");
     expect(prompt).toContain("only have conversations");
-    expect(prompt).toContain("cannot set reminders");
-    expect(prompt).not.toContain("You have access to these tools");
   });
 
-  test("lists tool names when tools are provided", () => {
-    const prompt = buildSystemPrompt(["calendar.read", "schedule.create"]);
+  test("renders toolNames into default template", () => {
+    const prompt = loadAndRenderSystemPrompt({
+      toolNames: ["calendar.read", "schedule.create"],
+    });
     expect(prompt).toContain("calendar.read, schedule.create");
-    expect(prompt).toContain("You have access to these tools");
     expect(prompt).not.toContain("only have conversations");
   });
 
-  test("includes memory instructions", () => {
-    const prompt = buildSystemPrompt([]);
-    expect(prompt).toContain("do not guess");
+  test("renders no-tools conditional when toolNames is empty", () => {
+    const prompt = loadAndRenderSystemPrompt({ toolNames: [] });
+    expect(prompt).toContain("only have conversations");
+    expect(prompt).not.toContain("You have access to these tools");
   });
 
-  test("includes formatting rules", () => {
-    const prompt = buildSystemPrompt([]);
-    expect(prompt).toContain("Do not use markdown tables");
+  test("reads template from file when it exists", () => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    const filePath = join(TEST_DIR, "prompt.md");
+    writeFileSync(filePath, "I am {{name}}.", "utf-8");
+
+    // toolNames not used in this custom template, but still passed
+    const prompt = loadAndRenderSystemPrompt({
+      templatePath: filePath,
+      toolNames: [],
+    });
+    // {{name}} is not in vars, so it becomes empty string
+    expect(prompt).toBe("I am .");
+  });
+
+  test("writes default template when file does not exist", () => {
+    const filePath = join(TEST_DIR, "subdir", "prompt.md");
+    expect(existsSync(filePath)).toBe(false);
+
+    const prompt = loadAndRenderSystemPrompt({
+      templatePath: filePath,
+      toolNames: [],
+    });
+
+    // File should now exist
+    expect(existsSync(filePath)).toBe(true);
+    // Prompt should be the rendered default
+    expect(prompt).toContain("personal life assistant");
+  });
+
+  test("renders custom template with toolNames", () => {
+    mkdirSync(TEST_DIR, { recursive: true });
+    const filePath = join(TEST_DIR, "prompt.md");
+    writeFileSync(
+      filePath,
+      "{{#if toolNames}}Tools: {{toolNames}}{{else}}Chat only{{/if}}",
+      "utf-8",
+    );
+
+    const withTools = loadAndRenderSystemPrompt({
+      templatePath: filePath,
+      toolNames: ["echo.say"],
+    });
+    expect(withTools).toBe("Tools: echo.say");
+
+    const noTools = loadAndRenderSystemPrompt({
+      templatePath: filePath,
+      toolNames: [],
+    });
+    expect(noTools).toBe("Chat only");
+  });
+
+  test("includes memory and formatting instructions in default", () => {
+    const prompt = loadAndRenderSystemPrompt({ toolNames: [] });
+    expect(prompt).toContain("do not guess");
+    expect(prompt).toContain("Keep responses concise");
   });
 });
 
@@ -53,6 +122,7 @@ describe("buildSystemPrompt", () => {
 describe("buildPrompt", () => {
   test("minimal prompt: system + user message only", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [],
       turns: [],
       userText: "Hello",
@@ -60,13 +130,14 @@ describe("buildPrompt", () => {
 
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe("system");
-    expect(messages[0].content).toContain(WILSON_IDENTITY);
+    expect(messages[0].content).toContain("personal life assistant");
     expect(messages[0].content).toContain("only have conversations");
     expect(messages[1]).toEqual({ role: "user", content: "Hello" });
   });
 
   test("includes memories in system message", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [
         makeMemory("User lives in Seattle"),
         makeMemory("User prefers dark roast coffee"),
@@ -77,7 +148,6 @@ describe("buildPrompt", () => {
 
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe("system");
-    expect(messages[0].content).toContain(WILSON_IDENTITY);
     expect(messages[0].content).toContain("What you know about the user");
     expect(messages[0].content).toContain("- User lives in Seattle");
     expect(messages[0].content).toContain("- User prefers dark roast coffee");
@@ -90,6 +160,7 @@ describe("buildPrompt", () => {
     ];
 
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [],
       turns,
       userText: "What is my name?",
@@ -113,6 +184,7 @@ describe("buildPrompt", () => {
 
   test("includes both memories and turn history", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [makeMemory("User lives in Seattle")],
       turns: [
         { role: "user", content: "Planning a trip to Japan." },
@@ -122,17 +194,11 @@ describe("buildPrompt", () => {
     });
 
     expect(messages).toHaveLength(4);
-
-    // System message has memory block
     expect(messages[0].role).toBe("system");
     expect(messages[0].content).toContain("- User lives in Seattle");
-
-    // Turn history follows
     expect(messages[1].role).toBe("user");
     expect(messages[1].content).toBe("Planning a trip to Japan.");
     expect(messages[2].role).toBe("assistant");
-
-    // Current message is last
     expect(messages[3]).toEqual({
       role: "user",
       content: "What is the time difference?",
@@ -141,6 +207,7 @@ describe("buildPrompt", () => {
 
   test("does not add memory header when memories array is empty", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [],
       turns: [],
       userText: "Hello",
@@ -151,6 +218,7 @@ describe("buildPrompt", () => {
 
   test("preserves memory content exactly", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [makeMemory("User's dog is named Koda (golden retriever)")],
       turns: [],
       userText: "Tell me about my pets.",
@@ -169,6 +237,7 @@ describe("buildPrompt", () => {
     }
 
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [],
       turns,
       userText: "Q4",
@@ -183,6 +252,7 @@ describe("buildPrompt", () => {
 
   test("includes topic summary in system message", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [],
       topicSummary: "Planning a trip to Japan in March.",
       turns: [],
@@ -196,6 +266,7 @@ describe("buildPrompt", () => {
 
   test("topic summary appears after memories in system message", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [makeMemory("User lives in Seattle")],
       topicSummary: "Discussing flight options to Tokyo.",
       turns: [],
@@ -211,6 +282,7 @@ describe("buildPrompt", () => {
 
   test("does not add summary header when topicSummary is null", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [],
       topicSummary: null,
       turns: [],
@@ -222,6 +294,7 @@ describe("buildPrompt", () => {
 
   test("does not add summary header when topicSummary is undefined", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [],
       turns: [],
       userText: "Hello",
@@ -232,6 +305,7 @@ describe("buildPrompt", () => {
 
   test("includes memories, summary, and turns in correct order", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [makeMemory("User likes TypeScript")],
       topicSummary: "Refactoring a Node.js service.",
       turns: [
@@ -255,6 +329,7 @@ describe("buildPrompt", () => {
 
   test("preserves tool_calls, tool_call_id, and name on history turns", () => {
     const messages = buildPrompt({
+      systemPrompt: defaultSystemPrompt(),
       memories: [],
       turns: [
         { role: "user", content: "Greet Watson" },
@@ -303,25 +378,14 @@ describe("buildPrompt", () => {
     expect(finalAssistant.tool_call_id).toBeUndefined();
   });
 
-  test("passes toolNames through to system prompt", () => {
+  test("uses provided systemPrompt string directly", () => {
     const messages = buildPrompt({
-      memories: [],
-      turns: [],
-      userText: "Hello",
-      toolNames: ["calendar.read", "schedule.create"],
-    });
-
-    expect(messages[0].content).toContain("calendar.read, schedule.create");
-    expect(messages[0].content).not.toContain("only have conversations");
-  });
-
-  test("defaults to no tools when toolNames is omitted", () => {
-    const messages = buildPrompt({
+      systemPrompt: "Custom persona prompt.",
       memories: [],
       turns: [],
       userText: "Hello",
     });
 
-    expect(messages[0].content).toContain("only have conversations");
+    expect(messages[0].content).toBe("Custom persona prompt.");
   });
 });

@@ -27,7 +27,7 @@ import {
 import { recallDual } from "./engram";
 import { maybeExtract } from "./extraction";
 import { loadHistory, saveAgentHistory, saveTurnPair } from "./history";
-import { buildPrompt } from "./prompt";
+import { buildPrompt, loadAndRenderSystemPrompt } from "./prompt";
 import type { SkillRegistry } from "./skills";
 import type { OpenAITool } from "./synapse";
 import { chat } from "./synapse";
@@ -102,6 +102,12 @@ export function startProcessingLoop(
 
   const hasTools = openAITools.length > 0;
 
+  // Render system prompt once (frozen prefix for KV-cache reuse)
+  const systemPrompt = loadAndRenderSystemPrompt({
+    templatePath: config.systemPromptFile,
+    toolNames: openAITools.map((t) => t.function.name),
+  });
+
   const done = (async () => {
     while (running) {
       let delay = pollIdleMs;
@@ -138,11 +144,11 @@ export function startProcessingLoop(
 
           // 4. Build prompt
           const messages = buildPrompt({
+            systemPrompt,
             memories,
             topicSummary,
             turns,
             userText: message.text,
-            toolNames: openAITools.map((t) => t.function.name),
           });
 
           // 5. Call Synapse — agent loop with tools or plain chat
