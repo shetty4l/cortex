@@ -11,8 +11,11 @@
  * - No auth required (Engram runs on localhost)
  */
 
+import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+
+const log = createLogger("cortex");
 
 // --- Types ---
 
@@ -91,13 +94,11 @@ export async function remember(
     });
   } catch (e) {
     if (e instanceof DOMException && e.name === "TimeoutError") {
-      console.error(
-        `cortex: Engram remember timed out after ${REMEMBER_TIMEOUT_MS}ms`,
-      );
+      log(`Engram remember timed out after ${REMEMBER_TIMEOUT_MS}ms`);
       return ok(null);
     }
-    console.error(
-      `cortex: Engram connection failed: ${e instanceof Error ? e.message : String(e)}`,
+    log(
+      `Engram connection failed: ${e instanceof Error ? e.message : String(e)}`,
     );
     return ok(null);
   }
@@ -109,9 +110,7 @@ export async function remember(
     } catch {
       text = "(unreadable)";
     }
-    console.error(
-      `cortex: Engram remember returned ${response.status}: ${text.slice(0, 500)}`,
-    );
+    log(`Engram remember returned ${response.status}: ${text.slice(0, 500)}`);
     return ok(null);
   }
 
@@ -157,13 +156,11 @@ export async function recall(
     });
   } catch (e) {
     if (e instanceof DOMException && e.name === "TimeoutError") {
-      console.error(
-        `cortex: Engram recall timed out after ${RECALL_TIMEOUT_MS}ms`,
-      );
+      log(`Engram recall timed out after ${RECALL_TIMEOUT_MS}ms`);
       return ok([]);
     }
-    console.error(
-      `cortex: Engram connection failed: ${e instanceof Error ? e.message : String(e)}`,
+    log(
+      `Engram connection failed: ${e instanceof Error ? e.message : String(e)}`,
     );
     return ok([]);
   }
@@ -175,9 +172,7 @@ export async function recall(
     } catch {
       body = "(unreadable)";
     }
-    console.error(
-      `cortex: Engram recall returned ${response.status}: ${body.slice(0, 500)}`,
-    );
+    log(`Engram recall returned ${response.status}: ${body.slice(0, 500)}`);
     return ok([]);
   }
 

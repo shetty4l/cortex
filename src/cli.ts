@@ -29,7 +29,6 @@ import type { CommandHandler } from "@shetty4l/core/cli";
 import { createLogsCommand, formatUptime, runCli } from "@shetty4l/core/cli";
 import { getConfigDir } from "@shetty4l/core/config";
 import { createDaemonManager } from "@shetty4l/core/daemon";
-import { onShutdown } from "@shetty4l/core/signals";
 import { readVersion } from "@shetty4l/core/version";
 import { join } from "path";
 import { loadConfig } from "./config";
@@ -39,10 +38,8 @@ import {
   listOutboxMessages,
   purgeMessages,
 } from "./db";
-import { startProcessingLoop } from "./loop";
+import { run } from "./index";
 import { sendMessage } from "./send";
-import { startServer } from "./server";
-import { createEmptyRegistry } from "./skills";
 
 const VERSION = readVersion(join(import.meta.dir, ".."));
 
@@ -104,31 +101,8 @@ function withDb(fn: CommandHandler): CommandHandler {
 
 // --- Commands ---
 
-function cmdServe(): void {
-  const configResult = loadConfig();
-  if (!configResult.ok) {
-    console.error(`cortex: ${configResult.error}`);
-    process.exit(1);
-  }
-  const config = configResult.value;
-
-  const dbResult = initDatabase();
-  if (!dbResult.ok) {
-    console.error(`cortex: ${dbResult.error}`);
-    process.exit(1);
-  }
-
-  const server = startServer(config);
-  const loop = startProcessingLoop(config, createEmptyRegistry());
-  console.error("cortex: processing loop started");
-
-  onShutdown(
-    async () => {
-      await loop.stop();
-      server.stop();
-    },
-    { name: "cortex", timeoutMs: 35_000 },
-  );
+async function cmdServe(): Promise<void> {
+  await run();
 }
 
 async function cmdStart(): Promise<number> {
@@ -254,7 +228,14 @@ function cmdConfig(_args: string[], json: boolean): number {
   console.log(
     `Skill dirs: ${config.skillDirs.length > 0 ? config.skillDirs.join(", ") : "(none)"}`,
   );
-  console.log(`Tool timeout: ${config.toolTimeoutMs}ms\n`);
+  console.log(`Tool timeout: ${config.toolTimeoutMs}ms`);
+  console.log(
+    `Telegram token: ${config.telegramBotToken ? "***" : "(not set)"}`,
+  );
+  console.log(
+    `Telegram allowed users: ${config.telegramAllowedUserIds?.join(", ") ?? "(none)"}`,
+  );
+  console.log("");
   return 0;
 }
 

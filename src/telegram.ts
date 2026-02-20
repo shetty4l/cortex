@@ -1,3 +1,4 @@
+import { createLogger } from "@shetty4l/core/log";
 import type { CortexConfig } from "./config";
 import {
   ackOutboxMessage,
@@ -8,6 +9,7 @@ import {
 } from "./db";
 
 const TELEGRAM_API_BASE_URL = "https://api.telegram.org";
+const log = createLogger("cortex");
 
 type TelegramApiEnvelope<T> = {
   ok?: boolean;
@@ -312,6 +314,9 @@ export function startTelegramIngestionLoop(
     while (running) {
       try {
         const updates = await getUpdates(botToken, offset, 20);
+        if (updates.length > 0) {
+          log(`getUpdates: ${updates.length} updates`);
+        }
         if (updates.length === 0) {
           if (running && onEmptyDelayMs > 0) {
             await Bun.sleep(onEmptyDelayMs);
@@ -341,6 +346,7 @@ export function startTelegramIngestionLoop(
           }
 
           if (!allowedUserIds.has(fromId)) {
+            log(`dropped message from unauthorized user ${fromId}`);
             continue;
           }
 
@@ -359,6 +365,9 @@ export function startTelegramIngestionLoop(
             occurredAt: message.date * 1000,
             idempotencyKey: externalMessageId,
           });
+
+          const preview = text.length > 60 ? `${text.slice(0, 57)}...` : text;
+          log(`enqueued inbox [${topicKey}]: ${preview}`);
         }
 
         if (maxUpdateId >= 0) {
@@ -366,7 +375,9 @@ export function startTelegramIngestionLoop(
           setTelegramOffset(offset, botToken);
         }
       } catch (err) {
-        console.error("cortex: telegram ingestion loop error:", err);
+        log(
+          `telegram ingestion loop error: ${err instanceof Error ? err.message : String(err)}`,
+        );
         if (running && onErrorDelayMs > 0) {
           await Bun.sleep(onErrorDelayMs);
         }
@@ -397,6 +408,7 @@ async function sendChunkWithMarkdownFallback(
       throw err;
     }
 
+    log("MarkdownV2 parse failed, falling back to plain text");
     await sendMessage(botToken, topic.chatId, chunk, {
       threadId: topic.threadId,
     });
@@ -452,12 +464,17 @@ export function startTelegramDeliveryLoop(
             }
 
             ackOutboxMessage(message.messageId, message.leaseToken);
+            log(`delivered [${message.topicKey}] (${chunks.length} chunks)`);
           } catch (err) {
-            console.error("cortex: telegram delivery message failed:", err);
+            log(
+              `telegram delivery message failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
           }
         }
       } catch (err) {
-        console.error("cortex: telegram delivery loop error:", err);
+        log(
+          `telegram delivery loop error: ${err instanceof Error ? err.message : String(err)}`,
+        );
         if (running && onErrorDelayMs > 0) {
           await Bun.sleep(onErrorDelayMs);
         }

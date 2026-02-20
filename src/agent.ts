@@ -14,11 +14,14 @@
  * - SkillRuntimeContext.db is deferred (undefined for now)
  */
 
+import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
 import type { SkillRegistry, SkillRuntimeContext } from "./skills";
 import type { ChatMessage, OpenAITool, ToolCall } from "./synapse";
 import { chat } from "./synapse";
+
+const log = createLogger("cortex");
 
 // --- Types ---
 
@@ -106,6 +109,7 @@ export async function runAgentLoop(opts: {
 
     // Max rounds reached — return with whatever content we have
     if (rounds >= config.maxToolRounds) {
+      log(`max tool rounds exhausted (${config.maxToolRounds})`);
       const fallback =
         response.content ||
         "I was unable to complete the task within the allowed number of tool calls.";
@@ -197,13 +201,16 @@ async function executeOneToolCall(
 
   try {
     // Execute with timeout
+    const startMs = performance.now();
     const result = await withTimeout(
       registry.executeTool(qualifiedName, toolCall.function.arguments, ctx),
       config.toolTimeoutMs,
       `Tool execution timed out after ${config.toolTimeoutMs / 1000}s`,
     );
+    const duration = ((performance.now() - startMs) / 1000).toFixed(1);
 
     if (!result.ok) {
+      log(`tool ${qualifiedName} failed in ${duration}s: ${result.error}`);
       return {
         role: "tool",
         content: `Error: ${result.error}`,
@@ -212,6 +219,7 @@ async function executeOneToolCall(
       };
     }
 
+    log(`tool ${qualifiedName} ok in ${duration}s`);
     return {
       role: "tool",
       content: result.value.content,
@@ -220,6 +228,7 @@ async function executeOneToolCall(
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    log(`tool ${qualifiedName} failed: ${message}`);
     return {
       role: "tool",
       content: `Error: ${message}`,

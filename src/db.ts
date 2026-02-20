@@ -12,6 +12,7 @@
 import type { Database } from "bun:sqlite";
 import { getDataDir } from "@shetty4l/core/config";
 import { createDatabaseManager } from "@shetty4l/core/db";
+import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
 import { join } from "path";
@@ -101,6 +102,8 @@ const dbManager = createDatabaseManager({
   path: join(getDataDir("cortex"), "cortex.db"),
   schema: SCHEMA,
 });
+
+const log = createLogger("cortex");
 
 /**
  * Initialize the database. Returns the Database instance on success.
@@ -466,6 +469,9 @@ export function pollOutboxMessages(
           $attempts: newAttempts,
           $now: now,
         });
+        log(
+          `CRITICAL: dead-lettered outbox message ${row.id} after ${newAttempts} attempts (permanent message loss)`,
+        );
         continue;
       }
 

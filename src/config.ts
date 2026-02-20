@@ -10,8 +10,11 @@
  */
 
 import { loadJsonConfig, parsePort } from "@shetty4l/core/config";
+import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+
+const log = createLogger("cortex");
 
 // --- Types ---
 
@@ -301,11 +304,9 @@ export function loadConfig(
 
   if (!quiet) {
     if (loaded.value.source === "file") {
-      console.error(`cortex: loaded config from ${loaded.value.path}`);
+      log(`loaded config from ${loaded.value.path}`);
     } else {
-      console.error(
-        `cortex: no config at ${loaded.value.path}, using defaults`,
-      );
+      log(`no config at ${loaded.value.path}, using defaults`);
     }
   }
 

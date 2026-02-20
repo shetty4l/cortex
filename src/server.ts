@@ -14,6 +14,7 @@ import {
   jsonError,
   jsonOk,
 } from "@shetty4l/core/http";
+import { createLogger } from "@shetty4l/core/log";
 import { readVersion } from "@shetty4l/core/version";
 import { timingSafeEqual } from "crypto";
 import { join } from "path";
@@ -26,6 +27,7 @@ import {
 } from "./db";
 
 const VERSION = readVersion(join(import.meta.dir, ".."));
+const log = createLogger("cortex");
 
 // --- Helpers ---
 
@@ -352,9 +354,7 @@ export function startServer(config: CortexConfig): HttpServer {
 
       if (response) {
         const latency = (performance.now() - start).toFixed(0);
-        console.error(
-          `cortex: ${req.method} ${url.pathname} ${response.status} ${latency}ms`,
-        );
+        log(`${req.method} ${url.pathname} ${response.status} ${latency}ms`);
       }
 
       return response;
