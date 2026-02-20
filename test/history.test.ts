@@ -45,15 +45,15 @@ describe("saveTurn / loadRecentTurns", () => {
     expect(turns[2].content).toBe("Third");
   });
 
-  test("limits to N turn pairs (N*2 rows)", () => {
+  test("limits to N most recent rows", () => {
     // Insert 5 pairs (10 rows)
     for (let i = 1; i <= 5; i++) {
       saveTurn("topic-1", "user", `User ${i}`);
       saveTurn("topic-1", "assistant", `Assistant ${i}`);
     }
 
-    // Limit to 3 pairs = 6 rows, should get the 3 most recent pairs
-    const turns = loadRecentTurns("topic-1", 3);
+    // Limit to 6 rows, should get the 3 most recent pairs
+    const turns = loadRecentTurns("topic-1", 6);
     expect(turns).toHaveLength(6);
     expect(turns[0].content).toBe("User 3");
     expect(turns[1].content).toBe("Assistant 3");
