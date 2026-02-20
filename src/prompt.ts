@@ -63,9 +63,13 @@ export function buildPrompt(opts: BuildPromptOpts): ChatMessage[] {
 
   messages.push({ role: "system", content: systemContent });
 
-  // 2. Turn history
+  // 2. Turn history (preserve tool_calls, tool_call_id, name for tool-calling exchanges)
   for (const turn of turns) {
-    messages.push({ role: turn.role, content: turn.content });
+    const msg: ChatMessage = { role: turn.role, content: turn.content };
+    if (turn.tool_calls) msg.tool_calls = turn.tool_calls;
+    if (turn.tool_call_id) msg.tool_call_id = turn.tool_call_id;
+    if (turn.name) msg.name = turn.name;
+    messages.push(msg);
   }
 
   // 3. Current user message
