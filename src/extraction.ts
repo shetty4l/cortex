@@ -354,6 +354,8 @@ function buildExtractionPrompt(
 ): ChatMessage[] {
   let systemContent =
     "You extract durable facts, preferences, and decisions from conversation turns.\n" +
+    "Only extract facts ABOUT THE USER — their name, preferences, plans, decisions, circumstances.\n" +
+    "NEVER extract facts about the assistant itself, its capabilities, or advice it gave.\n" +
     "Respond with ONLY a JSON array — no markdown, no explanation, no surrounding text.\n" +
     'Format: [{ "content": "...", "category": "fact" | "preference" | "decision" }]\n' +
     "Respond with [] if nothing new to extract. Do NOT repeat facts already known.\n" +

@@ -132,31 +132,63 @@ function cmdConfig(_args: string[], json: boolean): number {
     return 0;
   }
 
-  console.log(`\nHost: ${config.host}`);
-  console.log(`Port: ${config.port}`);
-  console.log(`Synapse: ${config.synapseUrl}`);
-  console.log(`Engram: ${config.engramUrl}`);
-  console.log(`Model: ${config.model ?? "(not set)"}`);
-  console.log(`Extraction model: ${config.extractionModel ?? "(not set)"}`);
-  console.log(`Ingest API key: ${config.ingestApiKey ? "***" : "(not set)"}`);
-  console.log(`Active window: ${config.activeWindowSize} turns`);
-  console.log(`Extraction interval: ${config.extractionInterval} turns`);
-  console.log(`Turn TTL: ${config.turnTtlDays} days`);
-  console.log(`Scheduler tick: ${config.schedulerTickSeconds}s`);
-  console.log(`Scheduler timezone: ${config.schedulerTimezone}`);
-  console.log(`Outbox batch: ${config.outboxPollDefaultBatch}`);
-  console.log(`Outbox lease: ${config.outboxLeaseSeconds}s`);
-  console.log(`Outbox max attempts: ${config.outboxMaxAttempts}`);
-  console.log(
-    `Skill dirs: ${config.skillDirs.length > 0 ? config.skillDirs.join(", ") : "(none)"}`,
-  );
-  console.log(`Tool timeout: ${config.toolTimeoutMs}ms`);
-  console.log(
-    `Telegram token: ${config.telegramBotToken ? "***" : "(not set)"}`,
-  );
-  console.log(
-    `Telegram allowed users: ${config.telegramAllowedUserIds?.join(", ") ?? "(none)"}`,
-  );
+  const LABELS: Record<string, string> = {
+    host: "Host",
+    port: "Port",
+    ingestApiKey: "Ingest API key",
+    synapseUrl: "Synapse",
+    engramUrl: "Engram",
+    model: "Model",
+    extractionModel: "Extraction model",
+    activeWindowSize: "Active window",
+    extractionInterval: "Extraction interval",
+    turnTtlDays: "Turn TTL",
+    schedulerTickSeconds: "Scheduler tick",
+    schedulerTimezone: "Scheduler timezone",
+    telegramBotToken: "Telegram token",
+    telegramAllowedUserIds: "Telegram allowed users",
+    outboxPollDefaultBatch: "Outbox batch",
+    outboxLeaseSeconds: "Outbox lease",
+    outboxMaxAttempts: "Outbox max attempts",
+    systemPromptFile: "System prompt",
+    skillDirs: "Skill dirs",
+    skillConfig: "Skill config",
+    toolTimeoutMs: "Tool timeout",
+    maxToolRounds: "Max tool rounds",
+  };
+
+  const UNITS: Record<string, string> = {
+    activeWindowSize: "turns",
+    extractionInterval: "turns",
+    turnTtlDays: "days",
+    schedulerTickSeconds: "s",
+    outboxLeaseSeconds: "s",
+    toolTimeoutMs: "ms",
+  };
+
+  const MASK = new Set(["ingestApiKey", "telegramBotToken"]);
+
+  console.log("");
+  for (const [key, value] of Object.entries(config)) {
+    const label = LABELS[key] ?? key;
+    const unit = UNITS[key] ? ` ${UNITS[key]}` : "";
+    let display: string;
+
+    if (MASK.has(key)) {
+      display = value ? "***" : "(not set)";
+    } else if (value == null) {
+      display = "(not set)";
+    } else if (Array.isArray(value)) {
+      display = value.length > 0 ? value.join(", ") : "(none)";
+    } else if (typeof value === "object") {
+      const keys = Object.keys(value as Record<string, unknown>);
+      display = keys.length > 0 ? keys.join(", ") : "(none)";
+    } else {
+      display = String(value);
+    }
+
+    console.log(`${label}: ${display}${unit}`);
+  }
   console.log("");
   return 0;
 }
@@ -187,8 +219,8 @@ function cmdInbox(_args: string[], json: boolean): number {
   console.log("-".repeat(100));
 
   for (const msg of messages) {
-    const text =
-      msg.text.length > 28 ? `${msg.text.slice(0, 25)}...` : msg.text;
+    const raw = msg.text.replace(/\n/g, " ");
+    const text = raw.length > 28 ? `${raw.slice(0, 25)}...` : raw;
     const topic =
       msg.topic_key.length > 24
         ? `${msg.topic_key.slice(0, 21)}...`
@@ -222,8 +254,8 @@ function cmdOutbox(_args: string[], json: boolean): number {
   console.log("-".repeat(110));
 
   for (const msg of messages) {
-    const text =
-      msg.text.length > 28 ? `${msg.text.slice(0, 25)}...` : msg.text;
+    const raw = msg.text.replace(/\n/g, " ");
+    const text = raw.length > 28 ? `${raw.slice(0, 25)}...` : raw;
     const topic =
       msg.topic_key.length > 24
         ? `${msg.topic_key.slice(0, 21)}...`
