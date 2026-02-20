@@ -8,8 +8,11 @@
  * Cortex just sends `{ model, messages }` and gets back a chat completion.
  */
 
+import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+
+const log = createLogger("cortex");
 
 // --- Types ---
 
@@ -66,6 +69,7 @@ export async function chat(
   tools?: OpenAITool[],
 ): Promise<Result<ChatResponse>> {
   const url = `${synapseUrl}/v1/chat/completions`;
+  const startMs = performance.now();
 
   const requestBody: Record<string, unknown> = {
     model,
@@ -106,6 +110,8 @@ export async function chat(
   }
 
   if (!response.ok) {
+    const latency = ((performance.now() - startMs) / 1000).toFixed(1);
+    log(`synapse ${model} ${response.status} ${latency}s`);
     return err(`Synapse returned ${response.status}: ${body.slice(0, 500)}`);
   }
 
@@ -156,6 +162,9 @@ export async function chat(
   if (toolCalls && toolCalls.length > 0) {
     result.toolCalls = toolCalls;
   }
+
+  const latency = ((performance.now() - startMs) / 1000).toFixed(1);
+  log(`synapse ${model} ${response.status} ${latency}s`);
 
   return ok(result);
 }

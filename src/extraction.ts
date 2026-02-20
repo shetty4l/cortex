@@ -16,6 +16,7 @@
  * - Never blocks the response path — caller wraps in fire-and-forget
  */
 
+import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
 import type { CortexConfig } from "./config";
@@ -55,6 +56,8 @@ const MAX_EXTRACTION_CHARS = 50_000;
 /** Valid categories for extracted facts. */
 const VALID_CATEGORIES = new Set(["fact", "preference", "decision"]);
 
+const log = createLogger("cortex");
+
 // --- Types ---
 
 interface ExtractedFact {
@@ -85,6 +88,10 @@ export async function maybeExtract(
   if (!cursor || cursor.turns_since_extraction < config.extractionInterval) {
     return;
   }
+
+  log(
+    `[${topicKey}] extraction triggered (${cursor.turns_since_extraction} turns since last)`,
+  );
 
   let afterRowid = cursor.last_extracted_rowid;
 
@@ -198,16 +205,14 @@ async function extractBatch(
     config.synapseUrl,
   );
   if (!result.ok) {
-    console.error(
-      `cortex: [${topicKey}] extraction model failed: ${result.error}`,
-    );
+    log(`[${topicKey}] extraction model failed: ${result.error}`);
     return err(`extraction model failed: ${result.error}`);
   }
 
   // Parse extracted facts
   const parseResult = parseExtractionResponse(result.value.content);
   if (!parseResult.ok) {
-    console.error(`cortex: [${topicKey}] ${parseResult.error}`);
+    log(`[${topicKey}] ${parseResult.error}`);
     return err(parseResult.error);
   }
   const facts = parseResult.value;
@@ -234,15 +239,13 @@ async function extractBatch(
     if (rememberResult.ok && rememberResult.value !== null) {
       stored++;
     } else if (!rememberResult.ok) {
-      console.error(
-        `cortex: [${topicKey}] remember failed: ${rememberResult.error}`,
-      );
+      log(`[${topicKey}] remember failed: ${rememberResult.error}`);
     }
   }
 
   if (facts.length > 0) {
-    console.error(
-      `cortex: [${topicKey}] extracted ${stored}/${facts.length} facts from ${turns.length} turns`,
+    log(
+      `[${topicKey}] extracted ${stored}/${facts.length} facts from ${turns.length} turns`,
     );
   }
 
@@ -278,9 +281,7 @@ async function updateTopicSummary(
       config.synapseUrl,
     );
     if (!result.ok) {
-      console.error(
-        `cortex: [${topicKey}] summary model failed: ${result.error}`,
-      );
+      log(`[${topicKey}] summary model failed: ${result.error}`);
       return err(`summary model failed: ${result.error}`);
     }
 
@@ -305,17 +306,15 @@ async function updateTopicSummary(
     );
 
     if (!rememberResult.ok) {
-      console.error(
-        `cortex: [${topicKey}] summary remember failed: ${rememberResult.error}`,
-      );
+      log(`[${topicKey}] summary remember failed: ${rememberResult.error}`);
     } else {
-      console.error(`cortex: [${topicKey}] topic summary updated`);
+      log(`[${topicKey}] topic summary updated`);
     }
 
     return ok(undefined);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(`cortex: [${topicKey}] summary error: ${msg}`);
+    log(`[${topicKey}] summary error: ${msg}`);
     return err(`summary error: ${msg}`);
   }
 }
@@ -448,8 +447,8 @@ function parseExtractionResponse(response: string): Result<ExtractedFact[]> {
   }
 
   if (facts.length > MAX_FACTS_PER_RUN) {
-    console.error(
-      `cortex: extraction returned ${parsed.length} facts, capping at ${MAX_FACTS_PER_RUN}`,
+    log(
+      `extraction returned ${parsed.length} facts, capping at ${MAX_FACTS_PER_RUN}`,
     );
   }
 

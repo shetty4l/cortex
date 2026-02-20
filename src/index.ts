@@ -5,6 +5,7 @@
  * loads skills, starts the HTTP server, and runs the processing loop.
  */
 
+import { createLogger } from "@shetty4l/core/log";
 import { ok } from "@shetty4l/core/result";
 import { onShutdown } from "@shetty4l/core/signals";
 import { readVersion } from "@shetty4l/core/version";
@@ -23,6 +24,7 @@ import {
 } from "./telegram";
 
 const VERSION = readVersion(join(import.meta.dir, ".."));
+const log = createLogger("cortex");
 
 interface RuntimeDeps {
   startServer: typeof startServer;
@@ -121,18 +123,18 @@ export async function startCortexRuntime(
 }
 
 export async function run(): Promise<void> {
-  console.error(`cortex v${VERSION}`);
+  log(`v${VERSION}`);
 
   const configResult = loadConfig();
   if (!configResult.ok) {
-    console.error(`cortex: ${configResult.error}`);
+    log(configResult.error);
     process.exit(1);
   }
   const config = configResult.value;
 
   const dbResult = initDatabase();
   if (!dbResult.ok) {
-    console.error(`cortex: ${dbResult.error}`);
+    log(dbResult.error);
     process.exit(1);
   }
 
@@ -142,19 +144,21 @@ export async function run(): Promise<void> {
       : ok(createEmptyRegistry());
 
   if (!registryResult.ok) {
-    console.error(`cortex: fatal: ${registryResult.error}`);
+    log(`fatal: ${registryResult.error}`);
     process.exit(1);
   }
 
   const registry = registryResult.value;
-  console.error(
-    `cortex: loaded ${registry.tools.length} tools from ${config.skillDirs.length} skill dirs`,
+  log(
+    `loaded ${registry.tools.length} tools from ${config.skillDirs.length} skill dirs`,
   );
 
   const runtime = await startCortexRuntime(config, registry);
   onShutdown(
     async () => {
+      log("shutting down...");
       await runtime.stop();
+      log("shutdown complete");
     },
     { name: "cortex", timeoutMs: 35_000 },
   );

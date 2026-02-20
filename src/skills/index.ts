@@ -13,6 +13,7 @@
  * - Registry is immutable after construction
  */
 
+import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
 import { existsSync, readdirSync } from "fs";
@@ -25,6 +26,8 @@ export const CURRENT_RUNTIME_API_VERSION = "1";
 
 /** Valid identifier pattern for skill IDs and tool names. */
 const VALID_IDENTIFIER = /^[a-z][a-z0-9_-]*$/;
+
+const log = createLogger("cortex");
 
 // --- Types ---
 
@@ -353,8 +356,8 @@ async function loadSingleSkill(
     });
   }
 
-  console.error(
-    `cortex: loaded skill ${manifest.id} v${manifest.version} (${rawTools.length} tools)`,
+  log(
+    `loaded skill ${manifest.id} v${manifest.version} (${rawTools.length} tools)`,
   );
 
   return ok(undefined);

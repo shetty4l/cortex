@@ -14,6 +14,7 @@
  *  10. Mark the inbox message as done (or failed on error)
  */
 
+import { createLogger } from "@shetty4l/core/log";
 import { runAgentLoop } from "./agent";
 import type { CortexConfig } from "./config";
 import {
@@ -38,6 +39,8 @@ const DEFAULT_POLL_BUSY_MS = 100;
 
 /** How long to wait before re-checking when the inbox was empty. */
 const DEFAULT_POLL_IDLE_MS = 2_000;
+
+const log = createLogger("cortex");
 
 // --- Extraction concurrency ---
 
@@ -84,9 +87,7 @@ export function startProcessingLoop(
   const pollIdleMs = options?.pollIdleMs ?? DEFAULT_POLL_IDLE_MS;
 
   if (!config.extractionModel) {
-    console.error(
-      "cortex: extraction disabled — no extractionModel configured",
-    );
+    log("extraction disabled — no extractionModel configured");
   }
 
   // Convert registry tools → OpenAI format once at loop start (cache-aware)
@@ -116,7 +117,7 @@ export function startProcessingLoop(
             message.text.length > 60
               ? `${message.text.slice(0, 57)}...`
               : message.text;
-          console.error(`cortex: [${message.topic_key}] claimed: ${preview}`);
+          log(`[${message.topic_key}] claimed: ${preview}`);
 
           // 1. Recall memories from Engram (graceful on failure)
           const memories = await recallDual(
@@ -131,8 +132,8 @@ export function startProcessingLoop(
           // 3. Load topic summary (fast SQLite read)
           const topicSummary = getTopicSummary(message.topic_key);
 
-          console.error(
-            `cortex: [${message.topic_key}] context: memories=${memories.length} turns=${turns.length}`,
+          log(
+            `[${message.topic_key}] context: memories=${memories.length} turns=${turns.length}`,
           );
 
           // 4. Build prompt
@@ -211,9 +212,8 @@ export function startProcessingLoop(
             if (!extractionInFlight.has(message.topic_key)) {
               const p = maybeExtract(message.topic_key, config)
                 .catch((e) =>
-                  console.error(
-                    `cortex: [${message.topic_key}] extraction error:`,
-                    e,
+                  log(
+                    `[${message.topic_key}] extraction error: ${e instanceof Error ? e.message : String(e)}`,
                   ),
                 )
                 .finally(() => extractionInFlight.delete(message.topic_key));
@@ -229,18 +229,18 @@ export function startProcessingLoop(
 
             completeInboxMessage(message.id);
 
-            console.error(`cortex: [${message.topic_key}] done in ${elapsed}s`);
+            log(`[${message.topic_key}] done in ${elapsed}s`);
           } else {
-            console.error(
-              `cortex: [${message.topic_key}] failed in ${elapsed}s: ${errorMsg}`,
-            );
+            log(`[${message.topic_key}] failed in ${elapsed}s: ${errorMsg}`);
             completeInboxMessage(message.id, errorMsg);
           }
         }
       } catch (err) {
         // Unexpected error in the loop itself (e.g. DB failure on claim).
         // Log and continue — don't crash the loop.
-        console.error("cortex: processing loop error:", err);
+        log(
+          `processing loop error: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
 
       if (running) {
