@@ -223,6 +223,6 @@ describe("telegram roundtrip", () => {
     expect(sentPayloads[0].chat_id).toBe(-42);
     expect(sentPayloads[0].message_thread_id).toBe(9);
     expect(sentPayloads[0].text).toBe("Roundtrip reply from synapse");
-    expect(sentPayloads[0].parse_mode).toBe("MarkdownV2");
+    expect(sentPayloads[0].parse_mode).toBeUndefined();
   });
 });

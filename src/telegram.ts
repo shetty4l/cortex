@@ -393,26 +393,14 @@ export function startTelegramIngestionLoop(
   };
 }
 
-async function sendChunkWithMarkdownFallback(
+async function sendChunk(
   botToken: string,
   topic: TelegramTopic,
   chunk: string,
 ): Promise<void> {
-  try {
-    await sendMessage(botToken, topic.chatId, chunk, {
-      threadId: topic.threadId,
-      parseMode: "MarkdownV2",
-    });
-  } catch (err) {
-    if (!(err instanceof TelegramApiError) || err.statusCode !== 400) {
-      throw err;
-    }
-
-    log("MarkdownV2 parse failed, falling back to plain text");
-    await sendMessage(botToken, topic.chatId, chunk, {
-      threadId: topic.threadId,
-    });
-  }
+  await sendMessage(botToken, topic.chatId, chunk, {
+    threadId: topic.threadId,
+  });
 }
 
 export function startTelegramDeliveryLoop(
@@ -460,7 +448,7 @@ export function startTelegramDeliveryLoop(
 
             const chunks = splitTelegramMessageText(message.text);
             for (const chunk of chunks) {
-              await sendChunkWithMarkdownFallback(botToken, topic, chunk);
+              await sendChunk(botToken, topic, chunk);
             }
 
             ackOutboxMessage(message.messageId, message.leaseToken);

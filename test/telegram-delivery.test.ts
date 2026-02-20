@@ -108,7 +108,7 @@ describe("telegram delivery helpers", () => {
 });
 
 describe("telegram delivery loop", () => {
-  test("falls back to plain text on MarkdownV2 400 and then acks", async () => {
+  test("delivers plain text without parse mode and then acks", async () => {
     const messageId = enqueueOutboxMessage({
       source: "telegram",
       topicKey: "-100:7",
@@ -119,14 +119,6 @@ describe("telegram delivery loop", () => {
     globalThis.fetch = (async (_url: any, init: any) => {
       const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
       requests.push(payload);
-
-      if (payload.parse_mode === "MarkdownV2") {
-        return Response.json({
-          ok: false,
-          error_code: 400,
-          description: "Bad Request: can't parse entities",
-        });
-      }
 
       return Response.json({
         ok: true,
@@ -147,11 +139,10 @@ describe("telegram delivery loop", () => {
     await waitFor(() => getOutboxMessage(messageId)?.status === "delivered");
     await loop.stop();
 
-    expect(requests).toHaveLength(2);
-    expect(requests[0].parse_mode).toBe("MarkdownV2");
-    expect(requests[1].parse_mode).toBeUndefined();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].parse_mode).toBeUndefined();
+    expect(requests[0].text).toBe("hello *world*");
     expect(requests[0].message_thread_id).toBe(7);
-    expect(requests[1].message_thread_id).toBe(7);
   });
 
   test("does not ack when any chunk fails", async () => {

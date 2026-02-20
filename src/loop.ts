@@ -142,6 +142,7 @@ export function startProcessingLoop(
             topicSummary,
             turns,
             userText: message.text,
+            toolNames: openAITools.map((t) => t.function.name),
           });
 
           // 5. Call Synapse — agent loop with tools or plain chat
