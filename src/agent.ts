@@ -114,6 +114,27 @@ export async function runAgentLoop(opts: {
   }
 }
 
+// --- Helpers ---
+
+/**
+ * Race a promise against a timeout. Clears the timer in all cases.
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  errorMessage: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(errorMessage)), ms);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
 // --- Tool execution ---
 
 /**
@@ -140,12 +161,9 @@ async function executeOneToolCall(
 ): Promise<ChatMessage> {
   const qualifiedName = toolCall.function.name;
 
-  // Parse arguments
-  let parsedArgs: string;
+  // Validate arguments is valid JSON
   try {
-    // Validate that arguments is valid JSON
     JSON.parse(toolCall.function.arguments);
-    parsedArgs = toolCall.function.arguments;
   } catch {
     return {
       role: "tool",
@@ -162,26 +180,28 @@ async function executeOneToolCall(
       (config.skillConfig as Record<string, Record<string, unknown>>)[
         qualifiedName.split(".")[0]
       ] ?? {},
-    db: undefined as unknown as SkillRuntimeContext["db"],
+    db: {
+      query: () => {
+        throw new Error(
+          "db is not available in the current skill runtime context",
+        );
+      },
+      run: () => {
+        throw new Error(
+          "db is not available in the current skill runtime context",
+        );
+      },
+    },
     http: { fetch: globalThis.fetch },
   };
 
   try {
     // Execute with timeout
-    const result = await Promise.race([
-      registry.executeTool(qualifiedName, parsedArgs, ctx),
-      new Promise<never>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(
-              new Error(
-                `Tool execution timed out after ${config.toolTimeoutMs / 1000}s`,
-              ),
-            ),
-          config.toolTimeoutMs,
-        ),
-      ),
-    ]);
+    const result = await withTimeout(
+      registry.executeTool(qualifiedName, toolCall.function.arguments, ctx),
+      config.toolTimeoutMs,
+      `Tool execution timed out after ${config.toolTimeoutMs / 1000}s`,
+    );
 
     if (!result.ok) {
       return {
@@ -194,7 +214,7 @@ async function executeOneToolCall(
 
     return {
       role: "tool",
-      content: JSON.stringify(result.value.content),
+      content: result.value.content,
       tool_call_id: toolCall.id,
       name: qualifiedName,
     };
