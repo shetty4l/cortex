@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Memory } from "../src/engram";
-import { buildPrompt, SYSTEM_PROMPT } from "../src/prompt";
+import { buildPrompt, buildSystemPrompt, WILSON_IDENTITY } from "../src/prompt";
 import type { ChatMessage } from "../src/synapse";
 
 // --- Helpers ---
@@ -15,7 +15,40 @@ function makeMemory(content: string): Memory {
   };
 }
 
-// --- Tests ---
+// --- buildSystemPrompt ---
+
+describe("buildSystemPrompt", () => {
+  test("includes Wilson identity", () => {
+    const prompt = buildSystemPrompt([]);
+    expect(prompt).toContain(WILSON_IDENTITY);
+  });
+
+  test("states conversational-only when no tools", () => {
+    const prompt = buildSystemPrompt([]);
+    expect(prompt).toContain("only have conversations");
+    expect(prompt).toContain("cannot set reminders");
+    expect(prompt).not.toContain("You have access to these tools");
+  });
+
+  test("lists tool names when tools are provided", () => {
+    const prompt = buildSystemPrompt(["calendar.read", "schedule.create"]);
+    expect(prompt).toContain("calendar.read, schedule.create");
+    expect(prompt).toContain("You have access to these tools");
+    expect(prompt).not.toContain("only have conversations");
+  });
+
+  test("includes memory instructions", () => {
+    const prompt = buildSystemPrompt([]);
+    expect(prompt).toContain("do not guess");
+  });
+
+  test("includes formatting rules", () => {
+    const prompt = buildSystemPrompt([]);
+    expect(prompt).toContain("Do not use markdown tables");
+  });
+});
+
+// --- buildPrompt ---
 
 describe("buildPrompt", () => {
   test("minimal prompt: system + user message only", () => {
@@ -27,7 +60,8 @@ describe("buildPrompt", () => {
 
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe("system");
-    expect(messages[0].content).toBe(SYSTEM_PROMPT);
+    expect(messages[0].content).toContain(WILSON_IDENTITY);
+    expect(messages[0].content).toContain("only have conversations");
     expect(messages[1]).toEqual({ role: "user", content: "Hello" });
   });
 
@@ -43,10 +77,8 @@ describe("buildPrompt", () => {
 
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe("system");
-    expect(messages[0].content).toContain(SYSTEM_PROMPT);
-    expect(messages[0].content).toContain(
-      "These are facts and preferences you've learned",
-    );
+    expect(messages[0].content).toContain(WILSON_IDENTITY);
+    expect(messages[0].content).toContain("What you know about the user");
     expect(messages[0].content).toContain("- User lives in Seattle");
     expect(messages[0].content).toContain("- User prefers dark roast coffee");
   });
@@ -114,8 +146,7 @@ describe("buildPrompt", () => {
       userText: "Hello",
     });
 
-    expect(messages[0].content).toBe(SYSTEM_PROMPT);
-    expect(messages[0].content).not.toContain("facts and preferences");
+    expect(messages[0].content).not.toContain("What you know about the user");
   });
 
   test("preserves memory content exactly", () => {
@@ -186,7 +217,6 @@ describe("buildPrompt", () => {
       userText: "Hello",
     });
 
-    expect(messages[0].content).toBe(SYSTEM_PROMPT);
     expect(messages[0].content).not.toContain("Current conversation context");
   });
 
@@ -197,7 +227,6 @@ describe("buildPrompt", () => {
       userText: "Hello",
     });
 
-    expect(messages[0].content).toBe(SYSTEM_PROMPT);
     expect(messages[0].content).not.toContain("Current conversation context");
   });
 
@@ -272,5 +301,27 @@ describe("buildPrompt", () => {
     expect(finalAssistant.role).toBe("assistant");
     expect(finalAssistant.tool_calls).toBeUndefined();
     expect(finalAssistant.tool_call_id).toBeUndefined();
+  });
+
+  test("passes toolNames through to system prompt", () => {
+    const messages = buildPrompt({
+      memories: [],
+      turns: [],
+      userText: "Hello",
+      toolNames: ["calendar.read", "schedule.create"],
+    });
+
+    expect(messages[0].content).toContain("calendar.read, schedule.create");
+    expect(messages[0].content).not.toContain("only have conversations");
+  });
+
+  test("defaults to no tools when toolNames is omitted", () => {
+    const messages = buildPrompt({
+      memories: [],
+      turns: [],
+      userText: "Hello",
+    });
+
+    expect(messages[0].content).toContain("only have conversations");
   });
 });
