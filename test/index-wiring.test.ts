@@ -139,9 +139,7 @@ describe("index runtime wiring", () => {
       "loop:stop",
       "server:stop",
     ]);
-    expect(logs).toContain(
-      "cortex: telegram adapter disabled (no token configured)",
-    );
+    expect(logs).toContain("telegram adapter disabled (no token configured)");
   });
 
   test("cleans up started components when telegram startup fails", async () => {

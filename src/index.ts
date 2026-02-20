@@ -39,7 +39,7 @@ const DEFAULT_RUNTIME_DEPS: RuntimeDeps = {
   startProcessingLoop,
   startTelegramIngestionLoop,
   startTelegramDeliveryLoop,
-  log: console.error,
+  log,
 };
 
 export interface CortexRuntime {
@@ -52,10 +52,10 @@ export async function startCortexRuntime(
   deps: RuntimeDeps = DEFAULT_RUNTIME_DEPS,
 ): Promise<CortexRuntime> {
   const server = deps.startServer(config);
-  deps.log(`cortex: listening on http://${config.host}:${config.port}`);
+  deps.log(`listening on http://${config.host}:${config.port}`);
 
   const loop = deps.startProcessingLoop(config, registry);
-  deps.log("cortex: processing loop started");
+  deps.log("processing loop started");
 
   let telegramIngestion: TelegramIngestionLoop | null = null;
   let telegramDelivery: TelegramDeliveryLoop | null = null;
@@ -64,7 +64,7 @@ export async function startCortexRuntime(
     try {
       telegramIngestion = deps.startTelegramIngestionLoop(config);
       telegramDelivery = deps.startTelegramDeliveryLoop(config);
-      deps.log("cortex: telegram adapter enabled (ingestion+delivery started)");
+      deps.log("telegram adapter enabled (ingestion+delivery started)");
     } catch (startupError) {
       const cleanupErrors: unknown[] = [];
 
@@ -97,15 +97,13 @@ export async function startCortexRuntime(
       }
 
       if (cleanupErrors.length > 0) {
-        deps.log(
-          `cortex: startup cleanup encountered ${cleanupErrors.length} errors`,
-        );
+        deps.log(`startup cleanup encountered ${cleanupErrors.length} errors`);
       }
 
       throw startupError;
     }
   } else {
-    deps.log("cortex: telegram adapter disabled (no token configured)");
+    deps.log("telegram adapter disabled (no token configured)");
   }
 
   return {
