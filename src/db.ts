@@ -689,7 +689,7 @@ export function saveAgentTurns(
         $id: `turn_${crypto.randomUUID()}`,
         $topicKey: topicKey,
         $role: turn.role,
-        $content: turn.content || null,
+        $content: turn.content ?? null,
         $toolCallId: turn.tool_call_id ?? null,
         $toolCalls: turn.tool_calls ? JSON.stringify(turn.tool_calls) : null,
         $name: turn.name ?? null,
@@ -703,12 +703,12 @@ export function saveAgentTurns(
 /**
  * Load the most recent turns for a topic, ordered oldest-first.
  *
- * @param limit Maximum number of turn **pairs** to return (default 8).
- *              Fetches limit * 2 rows to cover user + assistant per pair.
+ * @param maxRows Maximum number of rows to return (default 16).
+ *                Callers should size this to cover the expected turn density
+ *                (e.g. tool-calling conversations have more messages per exchange).
  */
-export function loadRecentTurns(topicKey: string, limit = 8): Turn[] {
+export function loadRecentTurns(topicKey: string, maxRows = 16): Turn[] {
   const database = getDatabase();
-  const maxRows = limit * 2;
 
   // Subquery grabs the most recent rows (DESC), outer query re-orders ASC.
   // Use _rowid_ for deterministic ordering when created_at ties (same ms).

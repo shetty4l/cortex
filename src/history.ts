@@ -50,9 +50,10 @@ export function saveAgentHistory(topicKey: string, turns: ChatMessage[]): void {
 export function loadHistory(topicKey: string, limit = 8): ChatMessage[] {
   // Load a generous number of rows to ensure we get enough user messages.
   // With tool calling, a single user group can have many messages
-  // (user + assistant-with-tools + tool-results + final-assistant).
-  const maxRows = limit * 6;
-  const turns = loadTurns(topicKey, Math.ceil(maxRows / 2));
+  // (user + assistant-with-tools + N tool-results + final-assistant).
+  // Use limit * 8 to handle heavy tool-use topics (e.g. 3 parallel tools,
+  // 2 rounds per exchange = ~8 messages per user group).
+  const turns = loadTurns(topicKey, limit * 8);
 
   if (turns.length === 0) return [];
 
