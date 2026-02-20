@@ -15,9 +15,7 @@ import {
   jsonOk,
 } from "@shetty4l/core/http";
 import { createLogger } from "@shetty4l/core/log";
-import { readVersion } from "@shetty4l/core/version";
 import { timingSafeEqual } from "crypto";
-import { join } from "path";
 import type { CortexConfig } from "./config";
 import {
   ackOutboxMessage,
@@ -25,8 +23,8 @@ import {
   findInboxDuplicate,
   pollOutboxMessages,
 } from "./db";
+import { VERSION } from "./version";
 
-const VERSION = readVersion(join(import.meta.dir, ".."));
 const log = createLogger("cortex");
 
 // --- Helpers ---
