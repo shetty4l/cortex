@@ -9,7 +9,7 @@
  * String values in the config file support ${ENV_VAR} interpolation.
  */
 
-import { loadJsonConfig, parsePort } from "@shetty4l/core/config";
+import { expandPath, loadJsonConfig, parsePort } from "@shetty4l/core/config";
 import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
@@ -378,6 +378,11 @@ export function loadConfig(
       );
     }
     config.maxToolRounds = val;
+  }
+
+  // Path expansion (resolve ~ to home directory)
+  if (config.systemPromptFile) {
+    config.systemPromptFile = expandPath(config.systemPromptFile);
   }
 
   // Required field validation

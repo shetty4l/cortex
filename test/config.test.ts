@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { loadConfig } from "../src/config";
 
@@ -444,5 +444,45 @@ describe("config", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("CORTEX_MAX_TOOL_ROUNDS");
+  });
+
+  // --- systemPromptFile tests ---
+
+  test("expands ~ in systemPromptFile to home directory", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({ systemPromptFile: "~/prompts/prompt.md" }),
+    );
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.systemPromptFile).toBe(
+      join(homedir(), "prompts/prompt.md"),
+    );
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("leaves absolute systemPromptFile path unchanged", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({ systemPromptFile: "/etc/cortex/prompt.md" }),
+    );
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.systemPromptFile).toBe("/etc/cortex/prompt.md");
+
+    rmSync(tmpDir, { recursive: true });
   });
 });
