@@ -26,7 +26,12 @@
  */
 
 import type { CommandHandler } from "@shetty4l/core/cli";
-import { createLogsCommand, formatUptime, runCli } from "@shetty4l/core/cli";
+import {
+  createDaemonCommands,
+  createHealthCommand,
+  createLogsCommand,
+  runCli,
+} from "@shetty4l/core/cli";
 import { getConfigDir } from "@shetty4l/core/config";
 import { createDaemonManager } from "@shetty4l/core/daemon";
 import { join } from "path";
@@ -103,97 +108,16 @@ async function cmdServe(): Promise<void> {
   await run();
 }
 
-async function cmdStart(): Promise<number> {
-  const daemon = getDaemon();
-  const result = await daemon.start();
-  if (!result.ok) {
-    console.error(result.error);
-    return 1;
-  }
-  console.log(
-    `cortex daemon started (PID: ${result.value.pid}, port: ${result.value.port ?? 7751})`,
-  );
-  return 0;
-}
+const daemonCmds = createDaemonCommands({ name: "cortex", getDaemon });
 
-async function cmdStop(): Promise<number> {
-  const daemon = getDaemon();
-  const result = await daemon.stop();
-  if (!result.ok) {
-    console.error(result.error);
-    return 1;
-  }
-  console.log(`cortex daemon stopped (was PID: ${result.value.pid})`);
-  return 0;
-}
-
-async function cmdStatus(_args: string[], json: boolean): Promise<number> {
-  const daemon = getDaemon();
-  const status = await daemon.status();
-
-  if (json) {
-    console.log(JSON.stringify(status, null, 2));
-    return status.running ? 0 : 1;
-  }
-
-  if (!status.running) {
-    console.log("cortex is not running");
-    return 1;
-  }
-
-  const uptimeStr = status.uptime ? formatUptime(status.uptime) : "unknown";
-  console.log(
-    `cortex is running (PID: ${status.pid}, port: ${status.port}, uptime: ${uptimeStr})`,
-  );
-  return 0;
-}
-
-async function cmdRestart(): Promise<number> {
-  const daemon = getDaemon();
-  const result = await daemon.restart();
-  if (!result.ok) {
-    console.error(result.error);
-    return 1;
-  }
-  console.log(`cortex daemon restarted (PID: ${result.value.pid})`);
-  return 0;
-}
-
-async function cmdHealth(_args: string[], json: boolean): Promise<number> {
-  const configResult = loadConfig({ quiet: true, skipRequiredChecks: true });
-  const port = configResult.ok ? configResult.value.port : 7751;
-
-  let response: Response;
-  try {
-    response = await fetch(`http://localhost:${port}/health`);
-  } catch {
-    if (json) {
-      console.log(JSON.stringify({ error: "Server not reachable", port }));
-    } else {
-      console.error(`cortex is not running on port ${port}`);
-    }
-    return 1;
-  }
-
-  const data = (await response.json()) as {
-    status: string;
-    version: string;
-    uptime: number;
-  };
-
-  if (json) {
-    console.log(JSON.stringify(data, null, 2));
-    return data.status === "healthy" ? 0 : 1;
-  }
-
-  console.log(
-    `\nStatus:  ${data.status === "healthy" ? "healthy" : "degraded"}`,
-  );
-  console.log(`Version: ${data.version}`);
-  console.log(`Uptime:  ${formatUptime(data.uptime)}\n`);
-
-  return data.status === "healthy" ? 0 : 1;
-}
+const cmdHealth = createHealthCommand({
+  name: "cortex",
+  getHealthUrl: () => {
+    const configResult = loadConfig({ quiet: true, skipRequiredChecks: true });
+    const port = configResult.ok ? configResult.value.port : 7751;
+    return `http://localhost:${port}/health`;
+  },
+});
 
 function cmdConfig(_args: string[], json: boolean): number {
   const configResult = loadConfig();
@@ -400,10 +324,7 @@ runCli({
   version: VERSION,
   help: HELP,
   commands: {
-    start: () => cmdStart(),
-    stop: () => cmdStop(),
-    status: cmdStatus,
-    restart: () => cmdRestart(),
+    ...daemonCmds,
     serve: () => cmdServe(),
     health: cmdHealth,
     config: cmdConfig,
