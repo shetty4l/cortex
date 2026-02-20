@@ -24,7 +24,7 @@ import {
   loadRecentTurns,
 } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
-import { WILSON_IDENTITY } from "../src/prompt";
+import { DEFAULT_SYSTEM_PROMPT_TEMPLATE } from "../src/prompt";
 import type { SkillRegistry } from "../src/skills";
 import { createEmptyRegistry } from "../src/skills";
 
@@ -242,7 +242,7 @@ describe("processing loop", () => {
     // System prompt + user message (no memories, no history)
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe("system");
-    expect(messages[0].content).toContain("Wilson");
+    expect(messages[0].content).toContain("personal life assistant");
     expect(messages[1].role).toBe("user");
     expect(messages[1].content).toBe("What is 2+2?");
   });
@@ -613,7 +613,7 @@ describe("processing loop", () => {
 
     const messages = capturedBody.messages!;
     expect(messages[0].role).toBe("system");
-    expect(messages[0].content).toContain(WILSON_IDENTITY);
+    expect(messages[0].content).toContain("personal life assistant");
     expect(messages[0].content).toContain("What you know about the user");
     expect(messages[0].content).toContain("User lives in Seattle");
   });
