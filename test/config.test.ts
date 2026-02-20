@@ -13,6 +13,8 @@ describe("config", () => {
     "CORTEX_INGEST_API_KEY",
     "CORTEX_MODEL",
     "CORTEX_MAX_TOOL_ROUNDS",
+    "CORTEX_TELEGRAM_BOT_TOKEN",
+    "CORTEX_TELEGRAM_ALLOWED_USER_IDS",
   ];
 
   beforeEach(() => {
@@ -58,6 +60,8 @@ describe("config", () => {
     expect(config.ingestApiKey).toBeUndefined();
     expect(config.model).toBeUndefined();
     expect(config.extractionModel).toBeUndefined();
+    expect(config.telegramBotToken).toBeUndefined();
+    expect(config.telegramAllowedUserIds).toEqual([]);
   });
 
   test("loads config from file", () => {
@@ -226,6 +230,130 @@ describe("config", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("model: must be a non-empty string");
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("loads telegram settings from config file", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        telegramBotToken: "bot-token",
+        telegramAllowedUserIds: [123, 456],
+      }),
+    );
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.telegramBotToken).toBe("bot-token");
+    expect(result.value.telegramAllowedUserIds).toEqual([123, 456]);
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("trims telegramBotToken from config file", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        telegramBotToken: "  bot-token  ",
+      }),
+    );
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.telegramBotToken).toBe("bot-token");
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("CORTEX_TELEGRAM_ALLOWED_USER_IDS env var parses comma-separated IDs", () => {
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    process.env.CORTEX_TELEGRAM_ALLOWED_USER_IDS = " 123, 456 ,789 ";
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.telegramAllowedUserIds).toEqual([123, 456, 789]);
+  });
+
+  test("CORTEX_TELEGRAM_ALLOWED_USER_IDS supports empty value as empty list", () => {
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    process.env.CORTEX_TELEGRAM_ALLOWED_USER_IDS = "  ";
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.telegramAllowedUserIds).toEqual([]);
+  });
+
+  test("returns error on invalid CORTEX_TELEGRAM_ALLOWED_USER_IDS entry", () => {
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    process.env.CORTEX_TELEGRAM_ALLOWED_USER_IDS = "123, abc";
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("CORTEX_TELEGRAM_ALLOWED_USER_IDS");
+  });
+
+  test("returns error on invalid telegramAllowedUserIds in config file", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({ telegramAllowedUserIds: [123, 4.5] }),
+    );
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain(
+      "telegramAllowedUserIds: must be an array of integers",
+    );
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("returns error on empty CORTEX_TELEGRAM_BOT_TOKEN", () => {
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    process.env.CORTEX_TELEGRAM_BOT_TOKEN = "   ";
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("CORTEX_TELEGRAM_BOT_TOKEN");
+  });
+
+  test("returns error on whitespace-only telegramBotToken in config file", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        telegramBotToken: "   ",
+      }),
+    );
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain(
+      "telegramBotToken: must be a non-empty string",
+    );
 
     rmSync(tmpDir, { recursive: true });
   });

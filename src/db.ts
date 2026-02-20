@@ -88,6 +88,11 @@ const SCHEMA = `
     summary TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS telegram_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `;
 
 // --- Connection (via core DatabaseManager) ---
@@ -847,4 +852,45 @@ export function upsertTopicSummary(topicKey: string, summary: string): void {
        SET summary = $summary, updated_at = $now`,
     )
     .run({ $topicKey: topicKey, $summary: summary, $now: Date.now() });
+}
+
+// --- Telegram state operations ---
+
+/**
+ * Get the saved Telegram update offset.
+ * Returns null when no offset exists or the stored value is invalid.
+ */
+function telegramOffsetKey(botToken?: string): string {
+  if (!botToken) return "offset";
+  return `offset:${Bun.hash(botToken).toString(16)}`;
+}
+
+export function getTelegramOffset(botToken?: string): number | null {
+  const database = getDatabase();
+  const key = telegramOffsetKey(botToken);
+  const row = database
+    .prepare("SELECT value FROM telegram_state WHERE key = $key")
+    .get({ $key: key }) as { value: string } | null;
+
+  if (!row) return null;
+  if (!/^-?\d+$/.test(row.value)) return null;
+
+  const parsed = Number(row.value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/**
+ * Upsert the saved Telegram update offset.
+ */
+export function setTelegramOffset(offset: number, botToken?: string): void {
+  const database = getDatabase();
+  const key = telegramOffsetKey(botToken);
+  database
+    .prepare(
+      `INSERT INTO telegram_state (key, value)
+       VALUES ($key, $offset)
+       ON CONFLICT(key) DO UPDATE
+       SET value = $offset`,
+    )
+    .run({ $key: key, $offset: String(offset) });
 }
