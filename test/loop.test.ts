@@ -7,6 +7,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { ok } from "@shetty4l/core/result";
 import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
@@ -20,6 +21,7 @@ import {
 } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
 import { SYSTEM_PROMPT } from "../src/prompt";
+import type { SkillRegistry } from "../src/skills";
 import { createEmptyRegistry } from "../src/skills";
 
 // --- Mock Synapse server ---
@@ -974,5 +976,113 @@ describe("processing loop", () => {
     expect(systemMsg.content).toContain(
       "Planning a vacation to Japan in spring.",
     );
+  });
+
+  // --- Slice 8: Tool-calling loop integration test ---
+
+  test("processes tool calls through the full agent loop", async () => {
+    // Build a registry with a single stub tool
+    const stubRegistry: SkillRegistry = {
+      tools: [
+        {
+          name: "stub.greet",
+          description: "Returns a greeting",
+          inputSchema: {
+            type: "object",
+            properties: { name: { type: "string" } },
+          },
+          mutatesState: false,
+        },
+      ],
+      async executeTool(name, argumentsJson, _ctx) {
+        const args = JSON.parse(argumentsJson);
+        return ok({ content: `Hello, ${args.name}!` });
+      },
+      isMutating() {
+        return false;
+      },
+    };
+
+    let callNum = 0;
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages: Array<{ role: string; content: string }>;
+        tools?: unknown[];
+      };
+      callNum++;
+
+      if (callNum === 1) {
+        // First call: model requests a tool call
+        return Response.json({
+          id: "chat-tool-1",
+          object: "chat.completion",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "",
+                tool_calls: [
+                  {
+                    id: "call_abc",
+                    type: "function",
+                    function: {
+                      name: "stub.greet",
+                      arguments: JSON.stringify({ name: "Watson" }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        });
+      }
+
+      // Second call: model produces final response (after seeing tool result)
+      return Response.json(openaiResponse("The greeting is: Hello, Watson!"));
+    };
+
+    const { eventId } = ingestMessage({
+      text: "Greet Watson",
+      topicKey: "topic-tools",
+    });
+    const loop = startProcessingLoop(testConfig(), stubRegistry, FAST_LOOP);
+
+    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await loop.stop();
+
+    // Inbox done, outbox has response
+    const inbox = getInboxMessage(eventId);
+    expect(inbox?.status).toBe("done");
+    expect(inbox?.error).toBeNull();
+
+    const outbox = listOutboxMessagesByTopic("topic-tools");
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0].text).toBe("The greeting is: Hello, Watson!");
+
+    // Synapse called twice: once with tool_calls, once with final response
+    expect(callNum).toBe(2);
+
+    // Tool turns saved to history:
+    // user + assistant(tool_calls) + tool(result) + assistant(final)
+    const turns = loadRecentTurns("topic-tools");
+    expect(turns.length).toBeGreaterThanOrEqual(4);
+
+    // Check roles in order
+    expect(turns[0].role).toBe("user");
+    expect(turns[0].content).toBe("Greet Watson");
+
+    expect(turns[1].role).toBe("assistant");
+    expect(turns[1].tool_calls).not.toBeNull(); // has tool_calls JSON
+
+    expect(turns[2].role).toBe("tool");
+    expect(turns[2].content).toBe("Hello, Watson!");
+    expect(turns[2].tool_call_id).toBe("call_abc");
+    expect(turns[2].name).toBe("stub.greet");
+
+    expect(turns[3].role).toBe("assistant");
+    expect(turns[3].content).toBe("The greeting is: Hello, Watson!");
   });
 });
