@@ -7,11 +7,15 @@ import {
   expect,
   test,
 } from "bun:test";
+import { unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ok } from "@shetty4l/core/result";
 import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
   enqueueInboxMessage,
+  getDatabase,
   getExtractionCursor,
   getInboxMessage,
   getTopicSummary,
@@ -1084,5 +1088,47 @@ describe("processing loop", () => {
 
     expect(turns[3].role).toBe("assistant");
     expect(turns[3].content).toBe("The greeting is: Hello, Watson!");
+  });
+
+  test("recovers inbox messages stuck in processing after restart", async () => {
+    mockSynapseHandler = () => Response.json(openaiResponse("Recovered!"));
+
+    // Use a temp file DB so data persists across re-init (simulates restart)
+    const tmpDb = join(tmpdir(), `cortex-test-${crypto.randomUUID()}.db`);
+
+    try {
+      initDatabase(tmpDb);
+
+      // Simulate a message stuck in 'processing' from a prior crash
+      const { eventId } = ingestMessage({ text: "Stuck message" });
+      getDatabase().exec(
+        `UPDATE inbox_messages SET status = 'processing' WHERE id = '${eventId}'`,
+      );
+      expect(getInboxMessage(eventId)?.status).toBe("processing");
+
+      // Re-init the database (simulates a restart) — should recover the message
+      initDatabase(tmpDb);
+
+      // The message should be back to 'pending'
+      expect(getInboxMessage(eventId)?.status).toBe("pending");
+
+      // Processing loop should pick it up and complete it
+      const loop = startProcessingLoop(
+        testConfig(),
+        createEmptyRegistry(),
+        FAST_LOOP,
+      );
+
+      await waitFor(() => getInboxMessage(eventId)?.status === "done");
+      await loop.stop();
+
+      expect(getInboxMessage(eventId)?.status).toBe("done");
+      const outbox = listOutboxMessagesByTopic("topic-1");
+      expect(outbox).toHaveLength(1);
+      expect(outbox[0].text).toBe("Recovered!");
+    } finally {
+      closeDatabase();
+      unlinkSync(tmpDb);
+    }
   });
 });
