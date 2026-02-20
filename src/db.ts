@@ -119,6 +119,18 @@ export function initDatabase(pathOverride?: string): Result<Database> {
     const db = dbManager.init(pathOverride);
     // Enable foreign keys (core sets WAL mode already)
     db.exec("PRAGMA foreign_keys = ON");
+
+    // Recover inbox messages left in 'processing' from a prior crash.
+    // Safe because the processing loop hasn't started yet at this point.
+    const recovered = db
+      .prepare(
+        `UPDATE inbox_messages SET status = 'pending' WHERE status = 'processing'`,
+      )
+      .run();
+    if (recovered.changes > 0) {
+      log(`recovered ${recovered.changes} inbox messages stuck in processing`);
+    }
+
     return ok(db);
   } catch (e) {
     return err(
