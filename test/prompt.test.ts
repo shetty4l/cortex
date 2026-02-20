@@ -223,4 +223,54 @@ describe("buildPrompt", () => {
     expect(messages[2].content).toBe("It depends on the use case.");
     expect(messages[3].content).toBe("What about interfaces?");
   });
+
+  test("preserves tool_calls, tool_call_id, and name on history turns", () => {
+    const messages = buildPrompt({
+      memories: [],
+      turns: [
+        { role: "user", content: "Greet Watson" },
+        {
+          role: "assistant",
+          content: "",
+          tool_calls: [
+            {
+              id: "call_1",
+              type: "function",
+              function: { name: "echo.say", arguments: '{"text":"hi"}' },
+            },
+          ],
+        },
+        {
+          role: "tool",
+          content: "hi",
+          tool_call_id: "call_1",
+          name: "echo.say",
+        },
+        { role: "assistant", content: "The echo says hi" },
+      ],
+      userText: "Do it again",
+    });
+
+    // system + 4 history turns + current user = 6
+    expect(messages).toHaveLength(6);
+
+    // Assistant with tool_calls
+    const assistantWithTools = messages[2];
+    expect(assistantWithTools.role).toBe("assistant");
+    expect(assistantWithTools.tool_calls).toHaveLength(1);
+    expect(assistantWithTools.tool_calls![0].id).toBe("call_1");
+
+    // Tool result with tool_call_id and name
+    const toolResult = messages[3];
+    expect(toolResult.role).toBe("tool");
+    expect(toolResult.tool_call_id).toBe("call_1");
+    expect(toolResult.name).toBe("echo.say");
+    expect(toolResult.content).toBe("hi");
+
+    // Final assistant — no tool fields
+    const finalAssistant = messages[4];
+    expect(finalAssistant.role).toBe("assistant");
+    expect(finalAssistant.tool_calls).toBeUndefined();
+    expect(finalAssistant.tool_call_id).toBeUndefined();
+  });
 });
