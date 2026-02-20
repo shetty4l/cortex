@@ -8,8 +8,6 @@
 import { createLogger } from "@shetty4l/core/log";
 import { ok } from "@shetty4l/core/result";
 import { onShutdown } from "@shetty4l/core/signals";
-import { readVersion } from "@shetty4l/core/version";
-import { join } from "path";
 import type { CortexConfig } from "./config";
 import { loadConfig } from "./config";
 import { initDatabase } from "./db";
@@ -22,8 +20,8 @@ import {
   type TelegramDeliveryLoop,
   type TelegramIngestionLoop,
 } from "./telegram";
+import { VERSION } from "./version";
 
-const VERSION = readVersion(join(import.meta.dir, ".."));
 const log = createLogger("cortex");
 
 interface RuntimeDeps {

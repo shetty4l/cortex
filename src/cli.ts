@@ -29,7 +29,6 @@ import type { CommandHandler } from "@shetty4l/core/cli";
 import { createLogsCommand, formatUptime, runCli } from "@shetty4l/core/cli";
 import { getConfigDir } from "@shetty4l/core/config";
 import { createDaemonManager } from "@shetty4l/core/daemon";
-import { readVersion } from "@shetty4l/core/version";
 import { join } from "path";
 import { loadConfig } from "./config";
 import {
@@ -40,8 +39,7 @@ import {
 } from "./db";
 import { run } from "./index";
 import { sendMessage } from "./send";
-
-const VERSION = readVersion(join(import.meta.dir, ".."));
+import { VERSION } from "./version";
 
 const HELP = `
 Cortex CLI \u2014 channel-agnostic life assistant runtime
