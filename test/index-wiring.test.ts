@@ -194,4 +194,71 @@ describe("index runtime wiring", () => {
       "server:stop",
     ]);
   });
+
+  test("logs warning when telegram enabled with empty allowedUserIds", async () => {
+    const logs: string[] = [];
+
+    const runtime = await startCortexRuntime(
+      testConfig({ telegramBotToken: "123:abc", telegramAllowedUserIds: [] }),
+      createEmptyRegistry(),
+      {
+        startServer: () => ({ port: 0, stop: () => {} }),
+        startProcessingLoop: () => ({ stop: async () => {} }),
+        startTelegramIngestionLoop: () => ({ stop: async () => {} }),
+        startTelegramDeliveryLoop: () => ({ stop: async () => {} }),
+        log: (message) => {
+          logs.push(message);
+        },
+      },
+    );
+
+    await runtime.stop();
+
+    expect(
+      logs.some((l) =>
+        l.includes(
+          "telegram adapter enabled with empty allowedUserIds — all messages will be rejected",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  test("logs detailed cleanup errors on startup failure", async () => {
+    const logs: string[] = [];
+
+    await expect(
+      startCortexRuntime(
+        testConfig({ telegramBotToken: "123:abc" }),
+        createEmptyRegistry(),
+        {
+          startServer: () => ({
+            port: 0,
+            stop: () => {
+              throw new Error("server cleanup failed");
+            },
+          }),
+          startProcessingLoop: () => ({
+            stop: async () => {
+              throw new Error("loop cleanup failed");
+            },
+          }),
+          startTelegramIngestionLoop: () => ({ stop: async () => {} }),
+          startTelegramDeliveryLoop: () => {
+            throw new Error("delivery startup failed");
+          },
+          log: (message) => {
+            logs.push(message);
+          },
+        },
+      ),
+    ).rejects.toThrow("delivery startup failed");
+
+    const cleanupLog = logs.find((l) =>
+      l.includes("startup cleanup encountered"),
+    );
+    expect(cleanupLog).toBeDefined();
+    expect(cleanupLog).toContain("2 errors");
+    expect(cleanupLog).toContain("loop cleanup failed");
+    expect(cleanupLog).toContain("server cleanup failed");
+  });
 });

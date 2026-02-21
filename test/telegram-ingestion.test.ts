@@ -387,4 +387,128 @@ describe("telegram ingestion loop", () => {
     expect(stopped).toBe(true);
     expect(fetchCalls).toBe(1);
   });
+
+  test("retries failed enqueue without advancing cursor past failure", async () => {
+    let fetchCalls = 0;
+    const offsets: Array<number | undefined> = [];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      fetchCalls++;
+      const body = JSON.parse(String(init?.body)) as { offset?: number };
+      offsets.push(body.offset);
+
+      if (fetchCalls === 1) {
+        return Response.json({
+          ok: true,
+          result: [
+            {
+              update_id: 600,
+              message: {
+                message_id: 1,
+                date: 1700000500,
+                from: { id: 222 },
+                chat: { id: -10 },
+                text: "first message",
+              },
+            },
+            {
+              update_id: 601,
+              message: {
+                message_id: 2,
+                date: 1700000501,
+                from: { id: 222 },
+                chat: { id: -10 },
+                text: "second message",
+              },
+            },
+            {
+              update_id: 602,
+              message: {
+                message_id: 3,
+                date: 1700000502,
+                from: { id: 222 },
+                chat: { id: -10 },
+                text: "third message",
+              },
+            },
+          ],
+        });
+      }
+
+      if (fetchCalls === 2) {
+        expect(body.offset).toBe(601);
+        return Response.json({
+          ok: true,
+          result: [
+            {
+              update_id: 601,
+              message: {
+                message_id: 2,
+                date: 1700000501,
+                from: { id: 222 },
+                chat: { id: -10 },
+                text: "second message",
+              },
+            },
+            {
+              update_id: 602,
+              message: {
+                message_id: 3,
+                date: 1700000502,
+                from: { id: 222 },
+                chat: { id: -10 },
+                text: "third message",
+              },
+            },
+          ],
+        });
+      }
+
+      return Response.json({ ok: true, result: [] });
+    }) as unknown as typeof fetch;
+
+    const db = getDatabase();
+    let insertCount = 0;
+
+    const originalPrepare = db.prepare.bind(db);
+    db.prepare = ((sql: string) => {
+      const stmt = originalPrepare(sql);
+      if (sql.includes("INSERT INTO inbox_messages")) {
+        const originalRun = stmt.run.bind(stmt);
+        stmt.run = ((
+          ...args: Parameters<typeof stmt.run>
+        ): ReturnType<typeof stmt.run> => {
+          insertCount++;
+          if (insertCount === 2) {
+            throw new Error("simulated enqueue failure");
+          }
+          return originalRun(...args);
+        }) as typeof stmt.run;
+      }
+      return stmt;
+    }) as typeof db.prepare;
+
+    const loop = startTelegramIngestionLoop(
+      testConfig({ telegramAllowedUserIds: [222] }),
+      { onErrorDelayMs: 1 },
+    );
+
+    await waitFor(() => getTelegramOffset("123:abc") === 603);
+    await loop.stop();
+
+    const rows = db
+      .prepare(
+        "SELECT external_message_id, text FROM inbox_messages ORDER BY created_at ASC",
+      )
+      .all() as Array<{ external_message_id: string; text: string }>;
+
+    expect(rows).toHaveLength(3);
+    expect(rows[0].external_message_id).toBe("600:1");
+    expect(rows[0].text).toBe("first message");
+    expect(rows[1].external_message_id).toBe("601:2");
+    expect(rows[1].text).toBe("second message");
+    expect(rows[2].external_message_id).toBe("602:3");
+    expect(rows[2].text).toBe("third message");
+    expect(offsets).toContain(601);
+    expect(getTelegramOffset("123:abc")).toBe(603);
+  });
 });
