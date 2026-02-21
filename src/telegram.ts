@@ -7,6 +7,8 @@ import {
   pollOutboxMessages,
   setTelegramOffset,
 } from "./db";
+import { chunkMarkdownV2 } from "./telegram-chunker";
+import { formatForTelegram } from "./telegram-format";
 
 const TELEGRAM_API_BASE_URL = "https://api.telegram.org";
 const log = createLogger("cortex");
@@ -167,18 +169,35 @@ async function callTelegramApi<T>(
   method: string,
   payload: Record<string, unknown>,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<T> {
   const url = `${TELEGRAM_API_BASE_URL}/bot${botToken}/${method}`;
 
   let response: Response;
   try {
+    const signals: AbortSignal[] = [AbortSignal.timeout(timeoutMs)];
+    if (signal) {
+      signals.push(signal);
+    }
     response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.any(signals),
     });
   } catch (e) {
+    if (
+      e instanceof Error &&
+      e.name === "AbortError" &&
+      signal?.aborted === true
+    ) {
+      throw new TelegramApiError(
+        method,
+        0,
+        `Telegram ${method} request canceled`,
+      );
+    }
+
     const isTimeout =
       e instanceof Error &&
       (e.name === "TimeoutError" || e.name === "AbortError");
@@ -251,6 +270,7 @@ export async function getUpdates(
   botToken: string,
   offset?: number,
   timeoutSec = 20,
+  signal?: AbortSignal,
 ): Promise<TelegramUpdate[]> {
   const payload: Record<string, unknown> = {
     timeout: timeoutSec,
@@ -266,6 +286,7 @@ export async function getUpdates(
     "getUpdates",
     payload,
     requestTimeoutMs,
+    signal,
   );
 }
 
@@ -309,11 +330,17 @@ export function startTelegramIngestionLoop(
 
   let running = true;
   let offset = getTelegramOffset(botToken) ?? undefined;
+  const abortController = new AbortController();
 
   const done = (async () => {
     while (running) {
       try {
-        const updates = await getUpdates(botToken, offset, 20);
+        const updates = await getUpdates(
+          botToken,
+          offset,
+          20,
+          abortController.signal,
+        );
         if (updates.length > 0) {
           log(`getUpdates: ${updates.length} updates`);
         }
@@ -324,15 +351,16 @@ export function startTelegramIngestionLoop(
           continue;
         }
 
-        let maxUpdateId = -1;
+        let maxHandledUpdateId = -1;
 
         for (const update of updates) {
-          if (update.update_id > maxUpdateId) {
-            maxUpdateId = update.update_id;
-          }
+          let handledForCursor = true;
 
           const message = update.message;
-          if (!message) continue;
+          if (!message) {
+            maxHandledUpdateId = update.update_id;
+            continue;
+          }
 
           const text = message.text;
           const fromId = message.from?.id;
@@ -342,11 +370,13 @@ export function startTelegramIngestionLoop(
             typeof fromId !== "number" ||
             typeof chatId !== "number"
           ) {
+            maxHandledUpdateId = update.update_id;
             continue;
           }
 
           if (!allowedUserIds.has(fromId)) {
             log(`dropped message from unauthorized user ${fromId}`);
+            maxHandledUpdateId = update.update_id;
             continue;
           }
 
@@ -356,25 +386,46 @@ export function startTelegramIngestionLoop(
               ? `${chatId}:${message.message_thread_id}`
               : String(chatId);
 
-          enqueueInboxMessage({
-            source: "telegram",
-            externalMessageId,
-            topicKey,
-            userId: String(fromId),
-            text,
-            occurredAt: message.date * 1000,
-            idempotencyKey: externalMessageId,
-          });
+          try {
+            enqueueInboxMessage({
+              source: "telegram",
+              externalMessageId,
+              topicKey,
+              userId: String(fromId),
+              text,
+              occurredAt: message.date * 1000,
+              idempotencyKey: externalMessageId,
+            });
 
-          const preview = text.length > 60 ? `${text.slice(0, 57)}...` : text;
-          log(`enqueued inbox [${topicKey}]: ${preview}`);
+            const preview = text.length > 60 ? `${text.slice(0, 57)}...` : text;
+            log(`enqueued inbox [${topicKey}]: ${preview}`);
+          } catch (enqueueErr) {
+            handledForCursor = false;
+            log(
+              `failed to enqueue update ${update.update_id} (msg ${message.message_id}): ${enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr)}`,
+            );
+          }
+
+          if (!handledForCursor) {
+            break;
+          }
+
+          maxHandledUpdateId = update.update_id;
         }
 
-        if (maxUpdateId >= 0) {
-          offset = maxUpdateId + 1;
+        if (maxHandledUpdateId >= 0) {
+          offset = maxHandledUpdateId + 1;
           setTelegramOffset(offset, botToken);
         }
       } catch (err) {
+        const isExpectedStopCancellation =
+          !running &&
+          err instanceof TelegramApiError &&
+          err.message.includes("request canceled");
+        if (isExpectedStopCancellation) {
+          continue;
+        }
+
         log(
           `telegram ingestion loop error: ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -388,6 +439,7 @@ export function startTelegramIngestionLoop(
   return {
     async stop() {
       running = false;
+      abortController.abort();
       await done;
     },
   };
@@ -397,9 +449,11 @@ async function sendChunk(
   botToken: string,
   topic: TelegramTopic,
   chunk: string,
+  parseMode?: string,
 ): Promise<void> {
   await sendMessage(botToken, topic.chatId, chunk, {
     threadId: topic.threadId,
+    parseMode: parseMode,
   });
 }
 
@@ -446,13 +500,30 @@ export function startTelegramDeliveryLoop(
               );
             }
 
-            const chunks = splitTelegramMessageText(message.text);
+            const convertedText = formatForTelegram(message.text);
+            const chunks = chunkMarkdownV2(convertedText);
             for (const chunk of chunks) {
-              await sendChunk(botToken, topic, chunk);
+              await sendChunk(botToken, topic, chunk, "MarkdownV2");
             }
 
-            ackOutboxMessage(message.messageId, message.leaseToken);
-            log(`delivered [${message.topicKey}] (${chunks.length} chunks)`);
+            const ackResult = ackOutboxMessage(
+              message.messageId,
+              message.leaseToken,
+            );
+            if (
+              ackResult === "delivered" ||
+              ackResult === "already_delivered"
+            ) {
+              log(`delivered [${message.topicKey}] (${chunks.length} chunks)`);
+            } else if (ackResult === "lease_conflict") {
+              log(
+                `ack lease_conflict for [${message.topicKey}] (messageId=${message.messageId}) — lease may have expired during slow delivery`,
+              );
+            } else if (ackResult === "not_found") {
+              log(
+                `ack not_found for [${message.topicKey}] (messageId=${message.messageId}) — message disappeared during delivery`,
+              );
+            }
           } catch (err) {
             log(
               `telegram delivery message failed: ${err instanceof Error ? err.message : String(err)}`,

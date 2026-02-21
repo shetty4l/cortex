@@ -59,10 +59,18 @@ export async function startCortexRuntime(
   let telegramDelivery: TelegramDeliveryLoop | null = null;
 
   if (config.telegramBotToken) {
+    const allowedIds = config.telegramAllowedUserIds ?? [];
+    if (allowedIds.length === 0) {
+      deps.log(
+        "telegram adapter enabled with empty allowedUserIds — all messages will be rejected",
+      );
+    }
     try {
       telegramIngestion = deps.startTelegramIngestionLoop(config);
       telegramDelivery = deps.startTelegramDeliveryLoop(config);
-      deps.log("telegram adapter enabled (ingestion+delivery started)");
+      if (allowedIds.length > 0) {
+        deps.log("telegram adapter enabled (ingestion+delivery started)");
+      }
     } catch (startupError) {
       const cleanupErrors: unknown[] = [];
 
@@ -95,7 +103,12 @@ export async function startCortexRuntime(
       }
 
       if (cleanupErrors.length > 0) {
-        deps.log(`startup cleanup encountered ${cleanupErrors.length} errors`);
+        const details = cleanupErrors
+          .map((e) => (e instanceof Error ? e.message : String(e)))
+          .join("; ");
+        deps.log(
+          `startup cleanup encountered ${cleanupErrors.length} errors: ${details}`,
+        );
       }
 
       throw startupError;

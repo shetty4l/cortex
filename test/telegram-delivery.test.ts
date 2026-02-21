@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { CortexConfig } from "../src/config";
 import {
+  ackOutboxMessage,
   closeDatabase,
   enqueueOutboxMessage,
   getOutboxMessage,
@@ -108,11 +109,11 @@ describe("telegram delivery helpers", () => {
 });
 
 describe("telegram delivery loop", () => {
-  test("delivers plain text without parse mode and then acks", async () => {
+  test("delivers text with MarkdownV2 parse mode and then acks", async () => {
     const messageId = enqueueOutboxMessage({
       source: "telegram",
       topicKey: "-100:7",
-      text: "hello *world*",
+      text: "hello **world**",
     });
 
     const requests: Array<Record<string, unknown>> = [];
@@ -140,7 +141,7 @@ describe("telegram delivery loop", () => {
     await loop.stop();
 
     expect(requests).toHaveLength(1);
-    expect(requests[0].parse_mode).toBeUndefined();
+    expect(requests[0].parse_mode).toBe("MarkdownV2");
     expect(requests[0].text).toBe("hello *world*");
     expect(requests[0].message_thread_id).toBe(7);
   });
@@ -183,5 +184,91 @@ describe("telegram delivery loop", () => {
     const row = getOutboxMessage(messageId);
     expect(row).not.toBeNull();
     expect(row!.status).not.toBe("delivered");
+  });
+
+  test("delivers long MarkdownV2 content without chunk parse errors", async () => {
+    const text = `${"snake_case_value ".repeat(260)}\n\n${"more_text_with_underscores ".repeat(260)}`;
+    const messageId = enqueueOutboxMessage({
+      source: "telegram",
+      topicKey: "-201",
+      text,
+    });
+
+    const requests: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(payload);
+      const chunk = String(payload.text ?? "");
+
+      if (chunk.endsWith("\\")) {
+        return new Response("can't parse entities", { status: 400 });
+      }
+
+      return Response.json({
+        ok: true,
+        result: {
+          message_id: requests.length,
+          date: 1700000000,
+          chat: { id: -201 },
+        },
+      });
+    }) as unknown as typeof fetch;
+
+    const loop = startTelegramDeliveryLoop(testConfig(), {
+      maxBatch: 1,
+      onErrorDelayMs: 1,
+      onEmptyDelayMs: 1,
+    });
+
+    await waitFor(
+      () => getOutboxMessage(messageId)?.status === "delivered",
+      3000,
+    );
+    await loop.stop();
+
+    expect(requests.length).toBeGreaterThan(1);
+    expect(
+      requests.every((payload) => payload.parse_mode === "MarkdownV2"),
+    ).toBe(true);
+  });
+
+  test("logs lease_conflict when ack fails due to expired lease", async () => {
+    const messageId = enqueueOutboxMessage({
+      source: "telegram",
+      topicKey: "-300",
+      text: "test message",
+    });
+
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      await Bun.sleep(150);
+      return Response.json({
+        ok: true,
+        result: {
+          message_id: 1,
+          date: 1700000000,
+          chat: { id: -300 },
+        },
+      });
+    }) as unknown as typeof fetch;
+
+    const loop = startTelegramDeliveryLoop(testConfig(), {
+      maxBatch: 1,
+      leaseSeconds: 0.1,
+      onErrorDelayMs: 1,
+      onEmptyDelayMs: 1,
+    });
+
+    await waitFor(() => fetchCalled, 2000);
+    await Bun.sleep(200);
+    await loop.stop();
+
+    expect(fetchCalled).toBe(true);
+
+    const row = getOutboxMessage(messageId);
+    expect(row).not.toBeNull();
+    expect(row!.status).toBe("leased");
+    expect(row!.attempts).toBeGreaterThanOrEqual(1);
   });
 });
