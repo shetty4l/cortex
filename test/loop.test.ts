@@ -13,7 +13,9 @@ import { join } from "node:path";
 import { ok } from "@shetty4l/core/result";
 import type { CortexConfig } from "../src/config";
 import {
+  claimNextInboxMessage,
   closeDatabase,
+  computeBackoffDelay,
   enqueueInboxMessage,
   getDatabase,
   getExtractionCursor,
@@ -22,8 +24,9 @@ import {
   initDatabase,
   listOutboxMessagesByTopic,
   loadRecentTurns,
+  retryInboxMessage,
 } from "../src/db";
-import { startProcessingLoop } from "../src/loop";
+import { isTransientError, startProcessingLoop } from "../src/loop";
 import { DEFAULT_SYSTEM_PROMPT_TEMPLATE } from "../src/prompt";
 import type { SkillRegistry } from "../src/skills";
 import { createEmptyRegistry } from "../src/skills";
@@ -345,11 +348,11 @@ describe("processing loop", () => {
     expect(outboxB[0].text).toBe("Echo: Topic B msg");
   });
 
-  test("marks inbox as failed when Synapse returns an error", async () => {
+  test("marks inbox as failed when Synapse returns a permanent error", async () => {
     mockSynapseHandler = () =>
       Response.json(
-        { error: { message: "All providers exhausted", type: "server_error" } },
-        { status: 502 },
+        { error: { message: "Invalid request", type: "invalid_request" } },
+        { status: 400 },
       );
 
     const { eventId } = ingestMessage({ text: "Will fail" });
@@ -368,10 +371,58 @@ describe("processing loop", () => {
 
     const inbox = getInboxMessage(eventId);
     expect(inbox?.status).toBe("failed");
-    expect(inbox?.error).toContain("502");
+    expect(inbox?.error).toContain("400");
 
     // No outbox message should be written on failure
     const outbox = listOutboxMessagesByTopic("topic-1");
+    expect(outbox).toHaveLength(0);
+  });
+
+  test("retries inbox message on transient error (502)", async () => {
+    let callCount = 0;
+    mockSynapseHandler = () => {
+      callCount++;
+      if (callCount <= 2) {
+        return Response.json(
+          {
+            error: {
+              message: "All providers exhausted",
+              type: "server_error",
+            },
+          },
+          { status: 502 },
+        );
+      }
+      return Response.json(openaiResponse("Recovered after retry"));
+    };
+
+    const { eventId } = ingestMessage({
+      text: "Will retry",
+      topicKey: "topic-transient",
+    });
+
+    const loop = startProcessingLoop(
+      testConfig(),
+      createEmptyRegistry(),
+      FAST_LOOP,
+    );
+
+    // First call: 502 → transient → retry (but with backoff delay)
+    await waitFor(() => {
+      const msg = getInboxMessage(eventId);
+      return msg?.status === "pending" && msg.attempts > 0;
+    });
+
+    const msg = getInboxMessage(eventId);
+    expect(msg?.status).toBe("pending");
+    expect(msg?.error).toContain("502");
+    // Message should have a future next_attempt_at (backoff)
+    expect(msg!.next_attempt_at).toBeGreaterThan(0);
+
+    await loop.stop();
+
+    // No outbox message yet — still retrying
+    const outbox = listOutboxMessagesByTopic("topic-transient");
     expect(outbox).toHaveLength(0);
   });
 
@@ -1134,5 +1185,219 @@ describe("processing loop", () => {
       closeDatabase();
       unlinkSync(tmpDb);
     }
+  });
+});
+
+// --- isTransientError tests ---
+
+describe("isTransientError", () => {
+  test("matches 429 rate limit", () => {
+    expect(isTransientError("Synapse returned 429: rate limited")).toBe(true);
+  });
+
+  test("matches 502 bad gateway", () => {
+    expect(
+      isTransientError("Synapse returned 502: All providers exhausted"),
+    ).toBe(true);
+  });
+
+  test("matches 503 unavailable", () => {
+    expect(isTransientError("Synapse returned 503: model unavailable")).toBe(
+      true,
+    );
+  });
+
+  test("matches 504 gateway timeout", () => {
+    expect(isTransientError("Synapse returned 504: gateway timeout")).toBe(
+      true,
+    );
+  });
+
+  test("matches timeout errors", () => {
+    expect(isTransientError("Synapse request timed out after 60000ms")).toBe(
+      true,
+    );
+  });
+
+  test("matches ECONNREFUSED", () => {
+    expect(isTransientError("Synapse connection failed: ECONNREFUSED")).toBe(
+      true,
+    );
+  });
+
+  test("matches ECONNRESET", () => {
+    expect(isTransientError("Synapse connection failed: ECONNRESET")).toBe(
+      true,
+    );
+  });
+
+  test("does not match 400 bad request", () => {
+    expect(isTransientError("Synapse returned 400: bad request")).toBe(false);
+  });
+
+  test("does not match 401 unauthorized", () => {
+    expect(isTransientError("Synapse returned 401: unauthorized")).toBe(false);
+  });
+
+  test("does not match parse errors", () => {
+    expect(isTransientError("Synapse returned invalid JSON")).toBe(false);
+  });
+
+  test("does not match content errors", () => {
+    expect(isTransientError("Synapse response has no content")).toBe(false);
+  });
+});
+
+// --- retryInboxMessage tests ---
+
+describe("retryInboxMessage", () => {
+  beforeEach(() => {
+    initDatabase(":memory:");
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  test("schedules retry with exponential backoff", () => {
+    const { eventId } = enqueueInboxMessage({
+      channel: "test",
+      externalMessageId: "msg-retry-1",
+      topicKey: "topic-retry",
+      userId: "user-1",
+      text: "Will retry",
+      occurredAt: Date.now(),
+      idempotencyKey: "key-retry-1",
+    });
+
+    // Simulate the message being claimed (attempts = 1)
+    const claimed = claimNextInboxMessage();
+    expect(claimed).not.toBeNull();
+    expect(claimed!.attempts).toBe(1);
+
+    const beforeRetry = Date.now();
+    retryInboxMessage(eventId, 1, 5, "Synapse returned 429: rate limited");
+
+    const msg = getInboxMessage(eventId);
+    expect(msg?.status).toBe("pending");
+    expect(msg?.error).toContain("429");
+    // Backoff for attempt 1: 2^0 * 5000 = 5000ms ±20% → [4000, 6000]
+    expect(msg!.next_attempt_at).toBeGreaterThan(beforeRetry);
+    expect(msg!.next_attempt_at - beforeRetry).toBeGreaterThanOrEqual(4000);
+    expect(msg!.next_attempt_at - beforeRetry).toBeLessThanOrEqual(6000);
+  });
+
+  test("marks as permanently failed when max attempts reached", () => {
+    const { eventId } = enqueueInboxMessage({
+      channel: "test",
+      externalMessageId: "msg-retry-max",
+      topicKey: "topic-retry",
+      userId: "user-1",
+      text: "Will exhaust retries",
+      occurredAt: Date.now(),
+      idempotencyKey: "key-retry-max",
+    });
+
+    retryInboxMessage(eventId, 5, 5, "Synapse returned 502: upstream error");
+
+    const msg = getInboxMessage(eventId);
+    expect(msg?.status).toBe("failed");
+    expect(msg?.error).toContain("502");
+  });
+
+  test("backoff caps at 15 minutes", () => {
+    // At attempt 12: 2^11 * 5000 = 10_240_000 → cap to 900_000 (15min)
+    const delay = computeBackoffDelay(12);
+    // 900_000 * [0.8, 1.2] → [720_000, 1_080_000]
+    expect(delay).toBeGreaterThanOrEqual(720_000);
+    expect(delay).toBeLessThanOrEqual(1_080_000);
+  });
+
+  test("backoff increases exponentially", () => {
+    // Run multiple samples to get averages and confirm order
+    const samples = 50;
+    let sum1 = 0;
+    let sum3 = 0;
+    for (let i = 0; i < samples; i++) {
+      sum1 += computeBackoffDelay(1);
+      sum3 += computeBackoffDelay(3);
+    }
+    const avg1 = sum1 / samples;
+    const avg3 = sum3 / samples;
+    // Attempt 1: ~5s, Attempt 3: ~20s — avg3 should be clearly larger
+    expect(avg3).toBeGreaterThan(avg1 * 2);
+  });
+});
+
+// --- claimNextInboxMessage + next_attempt_at tests ---
+
+describe("claimNextInboxMessage with next_attempt_at", () => {
+  beforeEach(() => {
+    initDatabase(":memory:");
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  test("skips messages with future next_attempt_at", () => {
+    const { eventId } = enqueueInboxMessage({
+      channel: "test",
+      externalMessageId: "msg-future",
+      topicKey: "topic-future",
+      userId: "user-1",
+      text: "Future retry",
+      occurredAt: Date.now(),
+      idempotencyKey: "key-future",
+    });
+
+    // Set next_attempt_at far in the future
+    const futureTime = Date.now() + 60_000;
+    getDatabase().exec(
+      `UPDATE inbox_messages SET next_attempt_at = ${futureTime} WHERE id = '${eventId}'`,
+    );
+
+    // Claim should return null — message isn't ready yet
+    const claimed = claimNextInboxMessage();
+    expect(claimed).toBeNull();
+  });
+
+  test("claims messages with past next_attempt_at", () => {
+    const { eventId } = enqueueInboxMessage({
+      channel: "test",
+      externalMessageId: "msg-past",
+      topicKey: "topic-past",
+      userId: "user-1",
+      text: "Past retry",
+      occurredAt: Date.now(),
+      idempotencyKey: "key-past",
+    });
+
+    // Set next_attempt_at in the past (simulates backoff elapsed)
+    const pastTime = Date.now() - 1000;
+    getDatabase().exec(
+      `UPDATE inbox_messages SET next_attempt_at = ${pastTime} WHERE id = '${eventId}'`,
+    );
+
+    const claimed = claimNextInboxMessage();
+    expect(claimed).not.toBeNull();
+    expect(claimed!.id).toBe(eventId);
+  });
+
+  test("claims messages with default next_attempt_at = 0", () => {
+    enqueueInboxMessage({
+      channel: "test",
+      externalMessageId: "msg-default",
+      topicKey: "topic-default",
+      userId: "user-1",
+      text: "Default retry",
+      occurredAt: Date.now(),
+      idempotencyKey: "key-default",
+    });
+
+    // Default next_attempt_at is 0 — should be immediately claimable
+    const claimed = claimNextInboxMessage();
+    expect(claimed).not.toBeNull();
+    expect(claimed!.text).toBe("Default retry");
   });
 });
