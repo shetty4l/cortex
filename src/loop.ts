@@ -237,6 +237,7 @@ export function startProcessingLoop(
           }
 
           const elapsed = ((performance.now() - startMs) / 1000).toFixed(1);
+          const processingMs = Math.round(performance.now() - startMs);
 
           if (ok) {
             // 7. Trigger async extraction (fire-and-forget, serialized per topic)
@@ -263,7 +264,7 @@ export function startProcessingLoop(
               text: responseText,
             });
 
-            completeInboxMessage(message.id);
+            completeInboxMessage(message.id, processingMs);
 
             const responsePreview =
               responseText.length > 120
@@ -282,7 +283,7 @@ export function startProcessingLoop(
                 errorMsg!,
               );
             } else {
-              completeInboxMessage(message.id, errorMsg);
+              completeInboxMessage(message.id, processingMs, errorMsg);
             }
           }
         }
