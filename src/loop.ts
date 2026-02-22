@@ -23,6 +23,7 @@ import {
   enqueueOutboxMessage,
   getTopicSummary,
   incrementTurnsSinceExtraction,
+  retryInboxMessage,
 } from "./db";
 import { recallDual } from "./engram";
 import { maybeExtract } from "./extraction";
@@ -43,6 +44,22 @@ const DEFAULT_POLL_BUSY_MS = 100;
 const DEFAULT_POLL_IDLE_MS = 2_000;
 
 const log = createLogger("cortex");
+
+// --- Transient error detection ---
+
+/**
+ * Detect whether an error message indicates a transient failure
+ * that should be retried (vs a permanent failure).
+ *
+ * Transient: rate limits, server errors, timeouts, connection failures.
+ * Permanent: bad requests, auth failures, model errors.
+ */
+const TRANSIENT_ERROR_PATTERN =
+  /\b(429|502|503|504|timed?\s*out|ECONNREFUSED|ECONNRESET)\b/i;
+
+export function isTransientError(error: string): boolean {
+  return TRANSIENT_ERROR_PATTERN.test(error);
+}
 
 // --- Extraction concurrency ---
 
@@ -257,7 +274,16 @@ export function startProcessingLoop(
             );
           } else {
             log(`[${message.topic_key}] failed in ${elapsed}s: ${errorMsg}`);
-            completeInboxMessage(message.id, errorMsg);
+            if (isTransientError(errorMsg!)) {
+              retryInboxMessage(
+                message.id,
+                message.attempts,
+                config.inboxMaxAttempts,
+                errorMsg!,
+              );
+            } else {
+              completeInboxMessage(message.id, errorMsg);
+            }
           }
         }
       } catch (err) {

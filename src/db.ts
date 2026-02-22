@@ -33,6 +33,7 @@ const SCHEMA = `
     priority INTEGER NOT NULL DEFAULT 5,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
@@ -245,6 +246,7 @@ export interface InboxMessage {
   priority: number;
   status: string;
   attempts: number;
+  next_attempt_at: number;
   error: string | null;
   created_at: number;
   updated_at: number;
@@ -345,13 +347,12 @@ export function claimNextInboxMessage(): InboxMessage | null {
   const database = getDatabase();
   const now = Date.now();
 
-  // SQLite RETURNING requires 3.35+; Bun's bundled SQLite supports it.
   const stmt = database.prepare(`
     UPDATE inbox_messages
     SET status = 'processing', attempts = attempts + 1, updated_at = $now
     WHERE id = (
       SELECT id FROM inbox_messages
-      WHERE status = 'pending'
+      WHERE status = 'pending' AND next_attempt_at <= $now
       ORDER BY priority ASC, created_at ASC
       LIMIT 1
     )
@@ -375,6 +376,59 @@ export function completeInboxMessage(id: string, error?: string): void {
     WHERE id = $id
   `);
   stmt.run({ $id: id, $status: status, $error: error ?? null, $now: now });
+}
+
+/**
+ * Retry a transient-failed inbox message with exponential backoff.
+ *
+ * Sets the message back to 'pending' with a future next_attempt_at.
+ * If attempts >= maxAttempts, marks as permanently 'failed' instead.
+ *
+ * Backoff formula: min(2^(attempts-1) * 5000ms, 15min) with ±20% jitter.
+ * Reuses the same formula as outbox retry (computeBackoffDelay).
+ */
+export function retryInboxMessage(
+  id: string,
+  attempts: number,
+  maxAttempts: number,
+  error: string,
+): void {
+  const database = getDatabase();
+  const now = Date.now();
+
+  if (attempts >= maxAttempts) {
+    // Permanent failure — max retries exhausted
+    const stmt = database.prepare(`
+      UPDATE inbox_messages
+      SET status = 'failed', error = $error, updated_at = $now
+      WHERE id = $id
+    `);
+    stmt.run({ $id: id, $error: error, $now: now });
+    log(
+      `inbox message ${id} permanently failed after ${attempts} attempts: ${error}`,
+    );
+    return;
+  }
+
+  // Schedule retry with exponential backoff
+  const delay = computeBackoffDelay(attempts);
+  const nextAttemptAt = now + delay;
+
+  const stmt = database.prepare(`
+    UPDATE inbox_messages
+    SET status = 'pending', next_attempt_at = $nextAttemptAt, error = $error, updated_at = $now
+    WHERE id = $id
+  `);
+  stmt.run({
+    $id: id,
+    $nextAttemptAt: nextAttemptAt,
+    $error: error,
+    $now: now,
+  });
+
+  log(
+    `inbox message ${id} scheduled for retry in ${Math.round(delay / 1000)}s (attempt ${attempts}/${maxAttempts})`,
+  );
 }
 
 // --- Outbox operations ---
