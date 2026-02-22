@@ -16,7 +16,7 @@ describe("health endpoint", () => {
       host: "127.0.0.1",
       port: 0,
       ingestApiKey: "test-key",
-      model: "test-model",
+      models: ["test-model"],
       synapseUrl: "http://localhost:7750",
       engramUrl: "http://localhost:7749",
       activeWindowSize: 10,
@@ -27,12 +27,13 @@ describe("health endpoint", () => {
       outboxPollDefaultBatch: 20,
       outboxLeaseSeconds: 60,
       outboxMaxAttempts: 10,
+      inboxMaxAttempts: 5,
       skillDirs: [],
       skillConfig: {},
       toolTimeoutMs: 20000,
       maxToolRounds: 8,
       synapseTimeoutMs: 60_000,
-      thalamusModel: "test-model",
+      thalamusModels: ["test-model"],
       thalamusSyncIntervalMs: 21_600_000,
     };
 

@@ -7,6 +7,7 @@ import {
   insertReceptorBuffer,
   upsertReceptorCursor,
 } from "../db";
+import { chat } from "../synapse";
 import { listTopics } from "../topics";
 import { formatChannelData } from "./formatters";
 import {
@@ -35,7 +36,7 @@ export interface ReceiveResult {
 
 export interface ThalamusConfig {
   synapseUrl: string;
-  thalamusModel: string;
+  thalamusModels: string[];
   synapseTimeoutMs: number;
   syncIntervalMs: number;
 }
@@ -170,34 +171,22 @@ export class Thalamus {
     );
     const userPrompt = buildTriageUserPrompt(channelBuffers, existingTopics);
 
-    // Call Synapse directly (not through agent loop)
-    const response = await fetch(`${config.synapseUrl}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: config.thalamusModel,
-        messages: [
-          { role: "system", content: THALAMUS_TRIAGE_SYSTEM_PROMPT },
-          { role: "user", content: userPrompt },
-        ],
-        temperature: 0.3,
-      }),
-      signal: AbortSignal.timeout(config.synapseTimeoutMs),
-    });
+    // Call Synapse via shared chat() — gets model fallback for free
+    const chatResult = await chat(
+      [
+        { role: "system", content: THALAMUS_TRIAGE_SYSTEM_PROMPT },
+        { role: "user", content: userPrompt },
+      ],
+      config.thalamusModels,
+      config.synapseUrl,
+      { temperature: 0.3, timeoutMs: config.synapseTimeoutMs },
+    );
 
-    if (!response.ok) {
-      throw new Error(
-        `Synapse returned ${response.status}: ${await response.text()}`,
-      );
+    if (!chatResult.ok) {
+      throw new Error(chatResult.error);
     }
 
-    const body = (await response.json()) as {
-      choices?: Array<{
-        message?: { content?: string | null };
-      }>;
-    };
-
-    const messageContent = body.choices?.[0]?.message?.content ?? "";
+    const messageContent = chatResult.value.content;
     const items = parseSyncOutput(messageContent);
 
     // Create inbox messages for each triaged group

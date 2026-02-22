@@ -361,7 +361,7 @@ function makeThalamusConfig(
 ): ThalamusConfig {
   return {
     synapseUrl: mockSynapseUrl,
-    thalamusModel: "test-model",
+    thalamusModels: ["test-model"],
     synapseTimeoutMs: 30000,
     syncIntervalMs: 21_600_000,
     ...overrides,
@@ -543,7 +543,7 @@ describe("thalamus.syncAll()", () => {
     };
 
     const thalamus = new Thalamus(
-      makeThalamusConfig({ thalamusModel: "gpt-oss:20b" }),
+      makeThalamusConfig({ thalamusModels: ["gpt-oss:20b"] }),
     );
     await thalamus.syncAll();
 

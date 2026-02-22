@@ -42,7 +42,7 @@ afterAll(() => {
 
 function agentConfig(overrides?: Partial<AgentConfig>): AgentConfig {
   return {
-    model: "test-model",
+    models: ["test-model"],
     synapseUrl: mockUrl,
     toolTimeoutMs: 5000,
     maxToolRounds: 8,

@@ -108,8 +108,8 @@ function testConfig(overrides?: Partial<CortexConfig>): CortexConfig {
     ingestApiKey: "test-key",
     synapseUrl: mockSynapseUrl,
     engramUrl: mockEngramUrl,
-    model: "test-model",
-    extractionModel: "test-extraction-model",
+    models: ["test-model"],
+    extractionModels: ["test-extraction-model"],
     extractionInterval: 3,
     activeWindowSize: 10,
     turnTtlDays: 30,
@@ -118,12 +118,13 @@ function testConfig(overrides?: Partial<CortexConfig>): CortexConfig {
     outboxPollDefaultBatch: 20,
     outboxLeaseSeconds: 60,
     outboxMaxAttempts: 10,
+    inboxMaxAttempts: 5,
     skillDirs: [],
     skillConfig: {},
     toolTimeoutMs: 20000,
     maxToolRounds: 8,
     synapseTimeoutMs: 60_000,
-    thalamusModel: "test-model",
+    thalamusModels: ["test-model"],
     thalamusSyncIntervalMs: 21_600_000,
     ...overrides,
   };
@@ -168,7 +169,7 @@ async function processAndExtract(
   topicKey: string,
   config: CortexConfig,
 ): Promise<void> {
-  if (config.extractionModel) {
+  if (config.extractionModels) {
     incrementTurnsSinceExtraction(topicKey);
   }
   await maybeExtract(topicKey, config);
@@ -300,7 +301,7 @@ describe("maybeExtract", () => {
   });
 
   test("skipped when extractionModel is undefined", async () => {
-    const config = testConfig({ extractionModel: undefined });
+    const config = testConfig({ extractionModels: undefined });
     seedTurns("topic-1", 5);
 
     await maybeExtract("topic-1", config);

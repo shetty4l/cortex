@@ -26,7 +26,7 @@ const log = createLogger("cortex");
 // --- Types ---
 
 export interface AgentConfig {
-  model: string;
+  models: string[];
   synapseUrl: string;
   toolTimeoutMs: number;
   maxToolRounds: number;
@@ -67,13 +67,10 @@ export async function runAgentLoop(opts: {
 
   while (true) {
     // Call LLM
-    const result = await chat(
-      messages,
-      config.model,
-      config.synapseUrl,
+    const result = await chat(messages, config.models, config.synapseUrl, {
       tools,
-      config.synapseTimeoutMs,
-    );
+      timeoutMs: config.synapseTimeoutMs,
+    });
     if (!result.ok) {
       return err(result.error);
     }

@@ -91,8 +91,8 @@ export function startProcessingLoop(
   const pollIdleMs = options?.pollIdleMs ?? DEFAULT_POLL_IDLE_MS;
   const builtinCtx = options?.builtinContext;
 
-  if (!config.extractionModel) {
-    log("extraction disabled — no extractionModel configured");
+  if (!config.extractionModels) {
+    log("extraction disabled — no extractionModels configured");
   }
 
   // Convert registry tools → OpenAI format once at loop start (cache-aware)
@@ -172,7 +172,7 @@ export function startProcessingLoop(
               tools: openAITools,
               registry,
               config: {
-                model: config.model,
+                models: config.models,
                 synapseUrl: config.synapseUrl,
                 toolTimeoutMs: config.toolTimeoutMs,
                 maxToolRounds: config.maxToolRounds,
@@ -203,10 +203,9 @@ export function startProcessingLoop(
             // Plain chat path (no tools loaded)
             const result = await chat(
               messages,
-              config.model,
+              config.models,
               config.synapseUrl,
-              undefined,
-              config.synapseTimeoutMs,
+              { timeoutMs: config.synapseTimeoutMs },
             );
 
             if (result.ok) {
@@ -226,7 +225,7 @@ export function startProcessingLoop(
             // 7. Trigger async extraction (fire-and-forget, serialized per topic)
             //    Always increment the turn counter — even when extraction is
             //    already in-flight — so the cadence stays accurate.
-            if (config.extractionModel) {
+            if (config.extractionModels) {
               incrementTurnsSinceExtraction(message.topic_key);
             }
             if (!extractionInFlight.has(message.topic_key)) {

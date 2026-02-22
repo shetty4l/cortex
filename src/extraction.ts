@@ -81,7 +81,7 @@ export async function maybeExtract(
   config: CortexConfig,
 ): Promise<void> {
   // Guard: extraction disabled if no model configured
-  if (!config.extractionModel) return;
+  if (!config.extractionModels) return;
 
   // Check if extraction is due
   const cursor = getExtractionCursor(topicKey);
@@ -198,10 +198,10 @@ async function extractBatch(
   // Build extraction prompt
   const messages = buildExtractionPrompt(turns, existingMemories);
 
-  // Call extraction model (extractionModel is guaranteed set by caller guard)
+  // Call extraction model (extractionModels is guaranteed set by caller guard)
   const result = await chat(
     messages,
-    config.extractionModel!,
+    config.extractionModels!,
     config.synapseUrl,
   );
   if (!result.ok) {
@@ -277,7 +277,7 @@ async function updateTopicSummary(
 
     const result = await chat(
       messages,
-      config.extractionModel!,
+      config.extractionModels!,
       config.synapseUrl,
     );
     if (!result.ok) {
