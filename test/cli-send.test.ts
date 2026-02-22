@@ -51,7 +51,7 @@ function testConfig(port: number): CortexConfig {
     ingestApiKey: API_KEY,
     synapseUrl: mockSynapseUrl,
     engramUrl: "http://localhost:7749",
-    model: "test-model",
+    models: ["test-model"],
     activeWindowSize: 10,
     extractionInterval: 3,
     turnTtlDays: 30,
@@ -60,12 +60,13 @@ function testConfig(port: number): CortexConfig {
     outboxPollDefaultBatch: 20,
     outboxLeaseSeconds: 60,
     outboxMaxAttempts: 10,
+    inboxMaxAttempts: 5,
     skillDirs: [],
     skillConfig: {},
     toolTimeoutMs: 20000,
     maxToolRounds: 8,
     synapseTimeoutMs: 60_000,
-    thalamusModel: "test-model",
+    thalamusModels: ["test-model"],
     thalamusSyncIntervalMs: 21_600_000,
   };
 }

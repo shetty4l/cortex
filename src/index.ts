@@ -75,7 +75,7 @@ export async function startCortexRuntime(
 ): Promise<CortexRuntime> {
   const thalamus = new Thalamus({
     synapseUrl: config.synapseUrl,
-    thalamusModel: config.thalamusModel,
+    thalamusModels: config.thalamusModels,
     synapseTimeoutMs: config.synapseTimeoutMs,
     syncIntervalMs: config.thalamusSyncIntervalMs,
   });

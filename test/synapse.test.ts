@@ -82,7 +82,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Hi" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -111,7 +111,7 @@ describe("synapse client", () => {
         { role: "system", content: "You are helpful." },
         { role: "user", content: "Hello" },
       ],
-      "my-model",
+      ["my-model"],
       mockUrl,
     );
 
@@ -134,7 +134,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "What time is it?" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -151,7 +151,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Hi" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -169,7 +169,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Hi" }],
-      "nonexistent-model",
+      ["nonexistent-model"],
       mockUrl,
     );
 
@@ -190,7 +190,7 @@ describe("synapse client", () => {
         { status: 400 },
       );
 
-    const result = await chat([], "test-model", mockUrl);
+    const result = await chat([], ["test-model"], mockUrl);
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -203,7 +203,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Hi" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -217,7 +217,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Hi" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -240,7 +240,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Hi" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -254,7 +254,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Hi" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -266,7 +266,7 @@ describe("synapse client", () => {
   test("returns error on connection failure", async () => {
     const result = await chat(
       [{ role: "user", content: "Hi" }],
-      "test-model",
+      ["test-model"],
       "http://127.0.0.1:1", // port 1 — nothing listening
     );
 
@@ -294,7 +294,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Say hello" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -329,7 +329,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Add 1+2" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -361,7 +361,9 @@ describe("synapse client", () => {
       },
     ];
 
-    await chat([{ role: "user", content: "Hi" }], "test-model", mockUrl, tools);
+    await chat([{ role: "user", content: "Hi" }], ["test-model"], mockUrl, {
+      tools,
+    });
 
     expect(capturedBody.tools).toBeDefined();
     expect(capturedBody.tools).toEqual(tools);
@@ -375,12 +377,7 @@ describe("synapse client", () => {
       return Response.json(openaiResponse("ok"));
     };
 
-    await chat(
-      [{ role: "user", content: "Hi" }],
-      "test-model",
-      mockUrl,
-      undefined,
-    );
+    await chat([{ role: "user", content: "Hi" }], ["test-model"], mockUrl);
 
     expect(capturedBody.tools).toBeUndefined();
   });
@@ -393,7 +390,7 @@ describe("synapse client", () => {
       return Response.json(openaiResponse("ok"));
     };
 
-    await chat([{ role: "user", content: "Hi" }], "test-model", mockUrl, []);
+    await chat([{ role: "user", content: "Hi" }], ["test-model"], mockUrl);
 
     expect(capturedBody.tools).toBeUndefined();
   });
@@ -403,7 +400,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Hi" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -435,7 +432,7 @@ describe("synapse client", () => {
 
     const result = await chat(
       [{ role: "user", content: "Do two things" }],
-      "test-model",
+      ["test-model"],
       mockUrl,
     );
 
@@ -446,5 +443,120 @@ describe("synapse client", () => {
     expect(result.value.toolCalls![0].function.name).toBe("echo.say");
     expect(result.value.toolCalls![1].id).toBe("call_b");
     expect(result.value.toolCalls![1].function.name).toBe("math.add");
+  });
+
+  // --- 429 model fallback tests ---
+
+  test("429 fallback: tries next model on rate limit", async () => {
+    let callCount = 0;
+    const modelsRequested: string[] = [];
+
+    mockHandler = async (req) => {
+      callCount++;
+      const body = (await req.json()) as { model: string };
+      modelsRequested.push(body.model);
+
+      if (body.model === "model-a") {
+        return Response.json({ error: "rate limited" }, { status: 429 });
+      }
+      return Response.json(openaiResponse("Hello from model-b"));
+    };
+
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      ["model-a", "model-b"],
+      mockUrl,
+    );
+
+    expect(callCount).toBe(2);
+    expect(modelsRequested).toEqual(["model-a", "model-b"]);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.content).toBe("Hello from model-b");
+  });
+
+  test("429 fallback: non-429 error stops immediately", async () => {
+    let callCount = 0;
+
+    mockHandler = () => {
+      callCount++;
+      return Response.json({ error: "bad request" }, { status: 400 });
+    };
+
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      ["model-a", "model-b"],
+      mockUrl,
+    );
+
+    expect(callCount).toBe(1);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("400");
+  });
+
+  test("429 fallback: all models exhausted returns last error", async () => {
+    mockHandler = () =>
+      Response.json({ error: "rate limited" }, { status: 429 });
+
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      ["model-a", "model-b", "model-c"],
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("429");
+  });
+
+  test("429 fallback: single model behaves like old API", async () => {
+    mockHandler = () => Response.json(openaiResponse("ok"));
+
+    const result = await chat(
+      [{ role: "user", content: "Hi" }],
+      ["only-model"],
+      mockUrl,
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.content).toBe("ok");
+  });
+
+  test("temperature is included in request body when provided", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    mockHandler = async (req) => {
+      capturedBody = (await req.json()) as Record<string, unknown>;
+      return Response.json(openaiResponse("ok"));
+    };
+
+    await chat([{ role: "user", content: "Hi" }], ["test-model"], mockUrl, {
+      temperature: 0.3,
+    });
+
+    expect(capturedBody.temperature).toBe(0.3);
+  });
+
+  test("temperature is not included when not provided", async () => {
+    let capturedBody: Record<string, unknown> = {};
+
+    mockHandler = async (req) => {
+      capturedBody = (await req.json()) as Record<string, unknown>;
+      return Response.json(openaiResponse("ok"));
+    };
+
+    await chat([{ role: "user", content: "Hi" }], ["test-model"], mockUrl);
+
+    expect(capturedBody.temperature).toBeUndefined();
+  });
+
+  test("empty models array returns error", async () => {
+    const result = await chat([{ role: "user", content: "Hi" }], [], mockUrl);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("No models provided");
   });
 });

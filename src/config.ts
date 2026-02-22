@@ -4,7 +4,7 @@
  * Load order:
  *   1. Defaults (hardcoded)
  *   2. Config file (~/.config/cortex/config.json)
- *   3. Environment variables (CORTEX_PORT, CORTEX_HOST, CORTEX_MODEL, CORTEX_CONFIG_PATH, CORTEX_INGEST_API_KEY, CORTEX_MAX_TOOL_ROUNDS, CORTEX_TELEGRAM_BOT_TOKEN, CORTEX_TELEGRAM_ALLOWED_USER_IDS)
+ *   3. Environment variables (CORTEX_PORT, CORTEX_HOST, CORTEX_MODELS, CORTEX_CONFIG_PATH, CORTEX_INGEST_API_KEY, CORTEX_MAX_TOOL_ROUNDS, CORTEX_TELEGRAM_BOT_TOKEN, CORTEX_TELEGRAM_ALLOWED_USER_IDS)
  *
  * String values in the config file support ${ENV_VAR} interpolation.
  */
@@ -31,8 +31,8 @@ export interface CortexConfig {
   engramUrl: string;
 
   // Models
-  model: string;
-  extractionModel?: string;
+  models: string[];
+  extractionModels?: string[];
 
   // History
   activeWindowSize: number;
@@ -52,6 +52,9 @@ export interface CortexConfig {
   outboxLeaseSeconds: number;
   outboxMaxAttempts: number;
 
+  // Inbox
+  inboxMaxAttempts: number;
+
   // System prompt
   systemPromptFile?: string;
 
@@ -65,7 +68,7 @@ export interface CortexConfig {
   synapseTimeoutMs: number;
 
   // Thalamus
-  thalamusModel: string;
+  thalamusModels: string[];
   thalamusSyncIntervalMs: number;
 
   // Output routing
@@ -76,7 +79,7 @@ export interface CortexConfig {
 
 const DEFAULTS: Omit<
   CortexConfig,
-  "ingestApiKey" | "model" | "extractionModel"
+  "ingestApiKey" | "models" | "extractionModels"
 > = {
   host: "127.0.0.1",
   port: 7751,
@@ -92,12 +95,13 @@ const DEFAULTS: Omit<
   outboxPollDefaultBatch: 20,
   outboxLeaseSeconds: 60,
   outboxMaxAttempts: 10,
+  inboxMaxAttempts: 5,
   skillDirs: [],
   skillConfig: {},
   toolTimeoutMs: 20000,
   maxToolRounds: 8,
   synapseTimeoutMs: 60_000,
-  thalamusModel: "gpt-oss:20b",
+  thalamusModels: ["gpt-oss:20b"],
   thalamusSyncIntervalMs: 21_600_000,
 };
 
@@ -148,11 +152,8 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "ingestApiKey", label: "ingestApiKey" },
     { key: "synapseUrl", label: "synapseUrl" },
     { key: "engramUrl", label: "engramUrl" },
-    { key: "model", label: "model" },
-    { key: "extractionModel", label: "extractionModel" },
     { key: "telegramBotToken", label: "telegramBotToken" },
     { key: "systemPromptFile", label: "systemPromptFile" },
-    { key: "thalamusModel", label: "thalamusModel" },
     { key: "silentChannelAlias", label: "silentChannelAlias" },
   ];
 
@@ -176,6 +177,36 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
         // biome-ignore lint: dynamic field assignment
         (result as Record<string, unknown>)[field.key] = value;
       }
+    }
+  }
+
+  // Model array fields — non-empty array of non-empty strings
+  const modelArrayFields: Array<{
+    key: keyof CortexConfig;
+    label: string;
+    required: boolean;
+  }> = [
+    { key: "models", label: "models", required: true },
+    { key: "extractionModels", label: "extractionModels", required: false },
+    { key: "thalamusModels", label: "thalamusModels", required: false },
+  ];
+
+  for (const field of modelArrayFields) {
+    if (obj[field.key] !== undefined) {
+      const val = obj[field.key];
+      if (!Array.isArray(val)) {
+        return err(`${field.label}: must be an array of strings`);
+      }
+      if (val.length === 0) {
+        return err(`${field.label}: must be a non-empty array`);
+      }
+      for (let i = 0; i < val.length; i++) {
+        if (typeof val[i] !== "string" || (val[i] as string).length === 0) {
+          return err(`${field.label}[${i}]: must be a non-empty string`);
+        }
+      }
+      // biome-ignore lint: dynamic field assignment
+      (result as Record<string, unknown>)[field.key] = val;
     }
   }
 
@@ -206,6 +237,7 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "outboxPollDefaultBatch", min: 1, max: 100 },
     { key: "outboxLeaseSeconds", min: 10, max: 300 },
     { key: "outboxMaxAttempts", min: 1 },
+    { key: "inboxMaxAttempts", min: 1 },
     { key: "toolTimeoutMs", min: 1000 },
     { key: "maxToolRounds", min: 1, max: 20 },
     { key: "synapseTimeoutMs", min: 5_000 },
@@ -293,10 +325,10 @@ interface LoadConfigOptions {
 /** Config with relaxed required fields — returned when skipRequiredChecks is true. */
 export type PartialCortexConfig = Omit<
   CortexConfig,
-  "ingestApiKey" | "model"
+  "ingestApiKey" | "models"
 > & {
   ingestApiKey?: string;
-  model?: string;
+  models?: string[];
 };
 
 export function loadConfig(
@@ -332,9 +364,9 @@ export function loadConfig(
   }
 
   // Merge: defaults <- validated file config <- env overrides
-  const config: Omit<CortexConfig, "ingestApiKey" | "model"> &
-    Partial<Pick<CortexConfig, "ingestApiKey" | "model">> & {
-      extractionModel?: string;
+  const config: Omit<CortexConfig, "ingestApiKey" | "models"> &
+    Partial<Pick<CortexConfig, "ingestApiKey" | "models">> & {
+      extractionModels?: string[];
     } = {
     ...DEFAULTS,
     ...validated.value,
@@ -362,13 +394,18 @@ export function loadConfig(
     if (!keyResult.ok) return keyResult as Result<never>;
     config.ingestApiKey = keyResult.value;
   }
-  if (process.env.CORTEX_MODEL) {
-    const modelResult = requireNonEmptyEnv(
-      "CORTEX_MODEL",
-      process.env.CORTEX_MODEL,
-    );
-    if (!modelResult.ok) return modelResult as Result<never>;
-    config.model = modelResult.value;
+  if (process.env.CORTEX_MODELS) {
+    const raw = process.env.CORTEX_MODELS.trim();
+    if (raw.length === 0) {
+      return err("CORTEX_MODELS: must be a non-empty comma-separated list");
+    }
+    const models = raw.split(",").map((m) => m.trim());
+    for (let i = 0; i < models.length; i++) {
+      if (models[i].length === 0) {
+        return err(`CORTEX_MODELS: entry ${i} is empty`);
+      }
+    }
+    config.models = models;
   }
   if (process.env.CORTEX_TELEGRAM_BOT_TOKEN !== undefined) {
     const tokenResult = requireNonEmptyEnv(
@@ -409,9 +446,9 @@ export function loadConfig(
         "ingestApiKey is required. Set it in config.json or via CORTEX_INGEST_API_KEY env var.",
       );
     }
-    if (!config.model) {
+    if (!config.models || config.models.length === 0) {
       return err(
-        "model is required. Set it in config.json or via CORTEX_MODEL env var.",
+        "models is required. Set it in config.json or via CORTEX_MODELS env var.",
       );
     }
   }

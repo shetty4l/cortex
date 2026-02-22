@@ -11,7 +11,7 @@ describe("config", () => {
     "CORTEX_HOST",
     "CORTEX_CONFIG_PATH",
     "CORTEX_INGEST_API_KEY",
-    "CORTEX_MODEL",
+    "CORTEX_MODELS",
     "CORTEX_MAX_TOOL_ROUNDS",
     "CORTEX_TELEGRAM_BOT_TOKEN",
     "CORTEX_TELEGRAM_ALLOWED_USER_IDS",
@@ -59,8 +59,8 @@ describe("config", () => {
     expect(config.maxToolRounds).toBe(8);
     expect(config.synapseTimeoutMs).toBe(60_000);
     expect(config.ingestApiKey).toBeUndefined();
-    expect(config.model).toBeUndefined();
-    expect(config.extractionModel).toBeUndefined();
+    expect(config.models).toBeUndefined();
+    expect(config.extractionModels).toBeUndefined();
     expect(config.telegramBotToken).toBeUndefined();
     expect(config.telegramAllowedUserIds).toEqual([]);
   });
@@ -74,7 +74,7 @@ describe("config", () => {
       JSON.stringify({
         port: 9999,
         host: "0.0.0.0",
-        model: "qwen2.5:14b",
+        models: ["qwen2.5:14b"],
         skillDirs: ["/opt/skills"],
       }),
     );
@@ -88,7 +88,7 @@ describe("config", () => {
 
     expect(config.port).toBe(9999);
     expect(config.host).toBe("0.0.0.0");
-    expect(config.model).toBe("qwen2.5:14b");
+    expect(config.models).toEqual(["qwen2.5:14b"]);
     expect(config.skillDirs).toEqual(["/opt/skills"]);
     // Defaults preserved for unset fields
     expect(config.synapseUrl).toBe("http://localhost:7750");
@@ -102,14 +102,14 @@ describe("config", () => {
 
     writeFileSync(
       configPath,
-      JSON.stringify({ port: 9999, model: "file-model" }),
+      JSON.stringify({ port: 9999, models: ["file-model"] }),
     );
 
     process.env.CORTEX_CONFIG_PATH = configPath;
     process.env.CORTEX_PORT = "8888";
     process.env.CORTEX_HOST = "0.0.0.0";
     process.env.CORTEX_INGEST_API_KEY = "test-key";
-    process.env.CORTEX_MODEL = "env-model";
+    process.env.CORTEX_MODELS = "env-model";
 
     const result = loadConfig({ quiet: true });
 
@@ -120,7 +120,7 @@ describe("config", () => {
     expect(config.port).toBe(8888);
     expect(config.host).toBe("0.0.0.0");
     expect(config.ingestApiKey).toBe("test-key");
-    expect(config.model).toBe("env-model");
+    expect(config.models).toEqual(["env-model"]);
 
     rmSync(tmpDir, { recursive: true });
   });
@@ -217,20 +217,20 @@ describe("config", () => {
     const result = loadConfig({ quiet: true });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("model is required");
+    expect(result.error).toContain("models is required");
   });
 
-  test("returns error on empty model string in config file", () => {
+  test("returns error on empty models array in config file", () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
     const configPath = join(tmpDir, "config.json");
 
-    writeFileSync(configPath, JSON.stringify({ model: "" }));
+    writeFileSync(configPath, JSON.stringify({ models: [] }));
     process.env.CORTEX_CONFIG_PATH = configPath;
 
     const result = loadConfig({ quiet: true, skipRequiredChecks: true });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("model: must be a non-empty string");
+    expect(result.error).toContain("models: must be a non-empty array");
 
     rmSync(tmpDir, { recursive: true });
   });
