@@ -282,7 +282,13 @@ export class TelegramChannel implements Channel {
               ackResult === "delivered" ||
               ackResult === "already_delivered"
             ) {
-              log(`delivered [${message.topicKey}] (${chunks.length} chunks)`);
+              const preview =
+                message.text.length > 120
+                  ? `${message.text.slice(0, 117)}...`
+                  : message.text;
+              log(
+                `delivered [${message.topicKey}] (${chunks.length} chunks): ${preview}`,
+              );
             } else if (ackResult === "lease_conflict") {
               log(
                 `ack lease_conflict for [${message.topicKey}] (messageId=${message.messageId}) — lease may have expired during slow delivery`,
