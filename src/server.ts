@@ -351,6 +351,7 @@ export function startServer(
     port: config.port,
     host: config.host,
     version: VERSION,
+    idleTimeout: 120,
     onRequest: async (req: Request, url: URL) => {
       const start = performance.now();
       let response: Response | null = null;

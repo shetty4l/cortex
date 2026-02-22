@@ -203,7 +203,7 @@ export class Thalamus {
     // Create inbox messages for each triaged group
     for (const item of items) {
       const idempotencyHash = [...item.rawBufferIds].sort().join(",");
-      const idempotencyKey = `thalamus-sync:${idempotencyHash}`;
+      const idempotencyKey = `thalamus-sync:${item.topicKey}:${idempotencyHash}`;
 
       enqueueInboxMessage({
         channel: "thalamus",

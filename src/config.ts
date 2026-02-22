@@ -67,6 +67,9 @@ export interface CortexConfig {
   // Thalamus
   thalamusModel: string;
   thalamusSyncIntervalMs: number;
+
+  // Output routing
+  silentChannelAlias?: string;
 }
 
 // --- Defaults ---
@@ -150,6 +153,7 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "telegramBotToken", label: "telegramBotToken" },
     { key: "systemPromptFile", label: "systemPromptFile" },
     { key: "thalamusModel", label: "thalamusModel" },
+    { key: "silentChannelAlias", label: "silentChannelAlias" },
   ];
 
   for (const field of stringFields) {

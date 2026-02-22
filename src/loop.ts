@@ -31,6 +31,8 @@ import { buildPrompt, loadAndRenderSystemPrompt } from "./prompt";
 import type { SkillRegistry } from "./skills";
 import type { OpenAITool } from "./synapse";
 import { chat } from "./synapse";
+import type { BuiltinToolContext } from "./tools";
+import { resolveOutputChannel } from "./tools";
 
 // --- Constants ---
 
@@ -67,6 +69,8 @@ export interface ProcessingLoopOptions {
   pollBusyMs?: number;
   /** Override idle poll interval (ms). Default: 2000. */
   pollIdleMs?: number;
+  /** Mutable context shared with built-in tools (topicKey updated per message). */
+  builtinContext?: BuiltinToolContext;
 }
 
 /**
@@ -85,6 +89,7 @@ export function startProcessingLoop(
   let running = true;
   const pollBusyMs = options?.pollBusyMs ?? DEFAULT_POLL_BUSY_MS;
   const pollIdleMs = options?.pollIdleMs ?? DEFAULT_POLL_IDLE_MS;
+  const builtinCtx = options?.builtinContext;
 
   if (!config.extractionModel) {
     log("extraction disabled — no extractionModel configured");
@@ -118,6 +123,11 @@ export function startProcessingLoop(
         if (message) {
           delay = pollBusyMs;
           const startMs = performance.now();
+
+          // Update built-in tool context for this message
+          if (builtinCtx) {
+            builtinCtx.topicKey = message.topic_key;
+          }
 
           const preview =
             message.text.length > 60
@@ -232,7 +242,7 @@ export function startProcessingLoop(
 
             // 8. Write to outbox
             enqueueOutboxMessage({
-              channel: message.channel,
+              channel: resolveOutputChannel(message.channel, config),
               topicKey: message.topic_key,
               text: responseText,
             });

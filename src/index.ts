@@ -21,6 +21,8 @@ import { startServer } from "./server";
 import { createEmptyRegistry, loadSkills, type SkillRegistry } from "./skills";
 import { Thalamus } from "./thalamus";
 import { Tick } from "./tick";
+import { type BuiltinToolContext, createCombinedRegistry } from "./tools";
+import { createSendMessageTool } from "./tools/send-message";
 import { VERSION } from "./version";
 
 const log = createLogger("cortex");
@@ -81,10 +83,23 @@ export async function startCortexRuntime(
   const server = deps.startServer(config, thalamus);
   deps.log(`listening on http://${config.host}:${config.port}`);
 
-  const loop = deps.startProcessingLoop(config, registry);
+  // Create channel registry (needed by built-in tools)
+  const channels = deps.createChannelRegistry(config, thalamus);
+
+  // Create built-in tools with mutable per-message context
+  const builtinCtx: BuiltinToolContext = { topicKey: "" };
+  const builtinTools = [createSendMessageTool(channels)];
+  const combinedRegistry = createCombinedRegistry(
+    builtinTools,
+    registry,
+    () => builtinCtx,
+  );
+
+  const loop = deps.startProcessingLoop(config, combinedRegistry, {
+    builtinContext: builtinCtx,
+  });
   deps.log("processing loop started");
 
-  const channels = deps.createChannelRegistry(config, thalamus);
   await channels.startAll();
 
   await thalamus.start();
