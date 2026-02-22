@@ -372,16 +372,13 @@ export function startServer(
           response = jsonError(503, "Thalamus not initialized");
         } else {
           const channel = url.searchParams.get("channel");
-          try {
-            if (channel) {
-              await thalamus.syncChannel(channel);
-            } else {
-              await thalamus.syncAll();
-            }
-            response = jsonOk({ ok: true });
-          } catch (e) {
-            const message = e instanceof Error ? e.message : String(e);
-            response = jsonOk({ ok: false, error: message }, 500);
+          const result = channel
+            ? await thalamus.syncChannel(channel)
+            : await thalamus.syncAll();
+          if (result.ok) {
+            response = jsonOk(result);
+          } else {
+            response = jsonOk(result, 500);
           }
         }
       }
