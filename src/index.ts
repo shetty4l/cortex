@@ -8,18 +8,13 @@
 import { createLogger } from "@shetty4l/core/log";
 import { ok } from "@shetty4l/core/result";
 import { onShutdown } from "@shetty4l/core/signals";
+import { TelegramChannel } from "./channels/telegram";
 import type { CortexConfig } from "./config";
 import { loadConfig } from "./config";
 import { initDatabase } from "./db";
 import { startProcessingLoop } from "./loop";
 import { startServer } from "./server";
 import { createEmptyRegistry, loadSkills, type SkillRegistry } from "./skills";
-import {
-  startTelegramDeliveryLoop,
-  startTelegramIngestionLoop,
-  type TelegramDeliveryLoop,
-  type TelegramIngestionLoop,
-} from "./telegram";
 import { VERSION } from "./version";
 
 const log = createLogger("cortex");
@@ -27,16 +22,21 @@ const log = createLogger("cortex");
 interface RuntimeDeps {
   startServer: typeof startServer;
   startProcessingLoop: typeof startProcessingLoop;
-  startTelegramIngestionLoop: typeof startTelegramIngestionLoop;
-  startTelegramDeliveryLoop: typeof startTelegramDeliveryLoop;
+  createTelegramChannel: (config: CortexConfig) => TelegramChannel | null;
   log: (message: string) => void;
+}
+
+function defaultCreateTelegramChannel(
+  config: CortexConfig,
+): TelegramChannel | null {
+  if (!config.telegramBotToken) return null;
+  return new TelegramChannel(config);
 }
 
 const DEFAULT_RUNTIME_DEPS: RuntimeDeps = {
   startServer,
   startProcessingLoop,
-  startTelegramIngestionLoop,
-  startTelegramDeliveryLoop,
+  createTelegramChannel: defaultCreateTelegramChannel,
   log,
 };
 
@@ -55,39 +55,27 @@ export async function startCortexRuntime(
   const loop = deps.startProcessingLoop(config, registry);
   deps.log("processing loop started");
 
-  let telegramIngestion: TelegramIngestionLoop | null = null;
-  let telegramDelivery: TelegramDeliveryLoop | null = null;
+  const telegramChannel = deps.createTelegramChannel(config);
 
-  if (config.telegramBotToken) {
+  if (telegramChannel) {
     const allowedIds = config.telegramAllowedUserIds ?? [];
     if (allowedIds.length === 0) {
       deps.log(
-        "telegram adapter enabled with empty allowedUserIds — all messages will be rejected",
+        "telegram channel enabled with empty allowedUserIds — all messages will be rejected",
       );
     }
     try {
-      telegramIngestion = deps.startTelegramIngestionLoop(config);
-      telegramDelivery = deps.startTelegramDeliveryLoop(config);
+      await telegramChannel.start();
       if (allowedIds.length > 0) {
-        deps.log("telegram adapter enabled (ingestion+delivery started)");
+        deps.log("telegram channel enabled (ingestion+delivery started)");
       }
     } catch (startupError) {
       const cleanupErrors: unknown[] = [];
 
-      if (telegramDelivery) {
-        try {
-          await telegramDelivery.stop();
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
-      }
-
-      if (telegramIngestion) {
-        try {
-          await telegramIngestion.stop();
-        } catch (error) {
-          cleanupErrors.push(error);
-        }
+      try {
+        await telegramChannel.stop();
+      } catch (error) {
+        cleanupErrors.push(error);
       }
 
       try {
@@ -114,16 +102,13 @@ export async function startCortexRuntime(
       throw startupError;
     }
   } else {
-    deps.log("telegram adapter disabled (no token configured)");
+    deps.log("telegram channel disabled (no token configured)");
   }
 
   return {
     async stop() {
-      if (telegramDelivery) {
-        await telegramDelivery.stop();
-      }
-      if (telegramIngestion) {
-        await telegramIngestion.stop();
+      if (telegramChannel) {
+        await telegramChannel.stop();
       }
       await loop.stop();
       server.stop();

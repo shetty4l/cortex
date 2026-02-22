@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { getUpdates, sendMessage, TelegramApiError } from "../src/telegram";
+import {
+  getUpdates,
+  sendMessage,
+  TelegramApiError,
+} from "../src/channels/telegram/api";
 
 const originalFetch = globalThis.fetch;
 

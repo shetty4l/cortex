@@ -7,6 +7,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { TelegramChannel } from "../src/channels/telegram";
 import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
@@ -16,10 +17,6 @@ import {
 } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
 import { createEmptyRegistry } from "../src/skills";
-import {
-  startTelegramDeliveryLoop,
-  startTelegramIngestionLoop,
-} from "../src/telegram";
 
 const originalFetch = globalThis.fetch;
 
@@ -190,15 +187,14 @@ describe("telegram roundtrip", () => {
       pollBusyMs: 5,
       pollIdleMs: 5,
     });
-    const ingestionLoop = startTelegramIngestionLoop(config, {
-      onErrorDelayMs: 1,
-      onEmptyDelayMs: 1,
+    const telegramChannel = new TelegramChannel(config, {
+      ingestionOnErrorDelayMs: 1,
+      ingestionOnEmptyDelayMs: 1,
+      deliveryMaxBatch: 2,
+      deliveryOnErrorDelayMs: 1,
+      deliveryOnEmptyDelayMs: 1,
     });
-    const deliveryLoop = startTelegramDeliveryLoop(config, {
-      maxBatch: 2,
-      onErrorDelayMs: 1,
-      onEmptyDelayMs: 1,
-    });
+    await telegramChannel.start();
 
     try {
       await waitFor(() => {
@@ -222,8 +218,7 @@ describe("telegram roundtrip", () => {
         );
       });
     } finally {
-      await deliveryLoop.stop();
-      await ingestionLoop.stop();
+      await telegramChannel.stop();
       await processingLoop.stop();
     }
 

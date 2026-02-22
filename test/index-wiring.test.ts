@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { TelegramChannel } from "../src/channels/telegram";
 import type { CortexConfig } from "../src/config";
 import { startCortexRuntime } from "../src/index";
 import { createEmptyRegistry } from "../src/skills";
@@ -29,7 +30,7 @@ function testConfig(overrides: Partial<CortexConfig> = {}): CortexConfig {
 }
 
 describe("index runtime wiring", () => {
-  test("starts telegram ingestion+delivery only when token exists", async () => {
+  test("starts telegram channel only when token exists", async () => {
     const events: string[] = [];
 
     const runtime = await startCortexRuntime(
@@ -53,48 +54,41 @@ describe("index runtime wiring", () => {
             },
           };
         },
-        startTelegramIngestionLoop: () => {
-          events.push("telegram-ingestion:start");
+        createTelegramChannel: () => {
           return {
-            stop: async () => {
-              events.push("telegram-ingestion:stop");
+            name: "telegram",
+            canReceive: true,
+            canDeliver: true,
+            mode: "realtime" as const,
+            priority: 0,
+            start: async () => {
+              events.push("telegram:start");
             },
-          };
-        },
-        startTelegramDeliveryLoop: () => {
-          events.push("telegram-delivery:start");
-          return {
             stop: async () => {
-              events.push("telegram-delivery:stop");
+              events.push("telegram:stop");
             },
-          };
+            sync: async () => {},
+          } as unknown as TelegramChannel;
         },
         log: () => {},
       },
     );
 
-    expect(events).toEqual([
-      "server:start",
-      "loop:start",
-      "telegram-ingestion:start",
-      "telegram-delivery:start",
-    ]);
+    expect(events).toEqual(["server:start", "loop:start", "telegram:start"]);
 
     await runtime.stop();
 
     expect(events).toEqual([
       "server:start",
       "loop:start",
-      "telegram-ingestion:start",
-      "telegram-delivery:start",
-      "telegram-delivery:stop",
-      "telegram-ingestion:stop",
+      "telegram:start",
+      "telegram:stop",
       "loop:stop",
       "server:stop",
     ]);
   });
 
-  test("keeps telegram adapter disabled when token is missing", async () => {
+  test("keeps telegram channel disabled when token is missing", async () => {
     const events: string[] = [];
     const logs: string[] = [];
 
@@ -119,12 +113,7 @@ describe("index runtime wiring", () => {
             },
           };
         },
-        startTelegramIngestionLoop: () => {
-          throw new Error("telegram ingestion should not start without token");
-        },
-        startTelegramDeliveryLoop: () => {
-          throw new Error("telegram delivery should not start without token");
-        },
+        createTelegramChannel: () => null,
         log: (message) => {
           logs.push(message);
         },
@@ -139,7 +128,7 @@ describe("index runtime wiring", () => {
       "loop:stop",
       "server:stop",
     ]);
-    expect(logs).toContain("telegram adapter disabled (no token configured)");
+    expect(logs).toContain("telegram channel disabled (no token configured)");
   });
 
   test("cleans up started components when telegram startup fails", async () => {
@@ -167,29 +156,33 @@ describe("index runtime wiring", () => {
               },
             };
           },
-          startTelegramIngestionLoop: () => {
-            events.push("telegram-ingestion:start");
+          createTelegramChannel: () => {
             return {
-              stop: async () => {
-                events.push("telegram-ingestion:stop");
+              name: "telegram",
+              canReceive: true,
+              canDeliver: true,
+              mode: "realtime" as const,
+              priority: 0,
+              start: async () => {
+                events.push("telegram:start");
+                throw new Error("telegram startup failed");
               },
-            };
-          },
-          startTelegramDeliveryLoop: () => {
-            events.push("telegram-delivery:start");
-            throw new Error("delivery startup failed");
+              stop: async () => {
+                events.push("telegram:stop");
+              },
+              sync: async () => {},
+            } as unknown as TelegramChannel;
           },
           log: () => {},
         },
       ),
-    ).rejects.toThrow("delivery startup failed");
+    ).rejects.toThrow("telegram startup failed");
 
     expect(events).toEqual([
       "server:start",
       "loop:start",
-      "telegram-ingestion:start",
-      "telegram-delivery:start",
-      "telegram-ingestion:stop",
+      "telegram:start",
+      "telegram:stop",
       "loop:stop",
       "server:stop",
     ]);
@@ -204,8 +197,18 @@ describe("index runtime wiring", () => {
       {
         startServer: () => ({ port: 0, stop: () => {} }),
         startProcessingLoop: () => ({ stop: async () => {} }),
-        startTelegramIngestionLoop: () => ({ stop: async () => {} }),
-        startTelegramDeliveryLoop: () => ({ stop: async () => {} }),
+        createTelegramChannel: () => {
+          return {
+            name: "telegram",
+            canReceive: true,
+            canDeliver: true,
+            mode: "realtime" as const,
+            priority: 0,
+            start: async () => {},
+            stop: async () => {},
+            sync: async () => {},
+          } as unknown as TelegramChannel;
+        },
         log: (message) => {
           logs.push(message);
         },
@@ -217,7 +220,7 @@ describe("index runtime wiring", () => {
     expect(
       logs.some((l) =>
         l.includes(
-          "telegram adapter enabled with empty allowedUserIds — all messages will be rejected",
+          "telegram channel enabled with empty allowedUserIds — all messages will be rejected",
         ),
       ),
     ).toBe(true);
@@ -242,16 +245,26 @@ describe("index runtime wiring", () => {
               throw new Error("loop cleanup failed");
             },
           }),
-          startTelegramIngestionLoop: () => ({ stop: async () => {} }),
-          startTelegramDeliveryLoop: () => {
-            throw new Error("delivery startup failed");
+          createTelegramChannel: () => {
+            return {
+              name: "telegram",
+              canReceive: true,
+              canDeliver: true,
+              mode: "realtime" as const,
+              priority: 0,
+              start: async () => {
+                throw new Error("telegram startup failed");
+              },
+              stop: async () => {},
+              sync: async () => {},
+            } as unknown as TelegramChannel;
           },
           log: (message) => {
             logs.push(message);
           },
         },
       ),
-    ).rejects.toThrow("delivery startup failed");
+    ).rejects.toThrow("telegram startup failed");
 
     const cleanupLog = logs.find((l) =>
       l.includes("startup cleanup encountered"),

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { chunkMarkdownV2 } from "../src/telegram-chunker";
-import { formatForTelegram } from "../src/telegram-format";
+import { chunkMarkdownV2 } from "../src/channels/telegram/chunker";
+import { formatForTelegram } from "../src/channels/telegram/format";
 
 function hasOddTrailingBackslash(text: string): boolean {
   let slashCount = 0;
