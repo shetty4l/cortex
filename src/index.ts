@@ -8,13 +8,19 @@
 import { createLogger } from "@shetty4l/core/log";
 import { ok } from "@shetty4l/core/result";
 import { onShutdown } from "@shetty4l/core/signals";
+import { ChannelRegistry } from "./channels";
+import { SilentChannel } from "./channels/silent";
 import { TelegramChannel } from "./channels/telegram";
 import type { CortexConfig } from "./config";
 import { loadConfig } from "./config";
 import { initDatabase } from "./db";
+import { Hippocampus } from "./hippocampus";
 import { startProcessingLoop } from "./loop";
+import { RAS } from "./ras";
 import { startServer } from "./server";
 import { createEmptyRegistry, loadSkills, type SkillRegistry } from "./skills";
+import { Thalamus } from "./thalamus";
+import { Tick } from "./tick";
 import { VERSION } from "./version";
 
 const log = createLogger("cortex");
@@ -22,21 +28,31 @@ const log = createLogger("cortex");
 interface RuntimeDeps {
   startServer: typeof startServer;
   startProcessingLoop: typeof startProcessingLoop;
-  createTelegramChannel: (config: CortexConfig) => TelegramChannel | null;
+  createChannelRegistry: (config: CortexConfig) => ChannelRegistry;
   log: (message: string) => void;
 }
 
-function defaultCreateTelegramChannel(
-  config: CortexConfig,
-): TelegramChannel | null {
-  if (!config.telegramBotToken) return null;
-  return new TelegramChannel(config);
+function defaultCreateChannelRegistry(config: CortexConfig): ChannelRegistry {
+  const registry = new ChannelRegistry();
+  if (config.telegramBotToken) {
+    const allowedIds = config.telegramAllowedUserIds ?? [];
+    if (allowedIds.length === 0) {
+      log(
+        "telegram channel enabled with empty allowedUserIds — all messages will be rejected",
+      );
+    }
+    registry.register(new TelegramChannel(config));
+  } else {
+    log("telegram channel disabled (no token configured)");
+  }
+  registry.register(new SilentChannel());
+  return registry;
 }
 
 const DEFAULT_RUNTIME_DEPS: RuntimeDeps = {
   startServer,
   startProcessingLoop,
-  createTelegramChannel: defaultCreateTelegramChannel,
+  createChannelRegistry: defaultCreateChannelRegistry,
   log,
 };
 
@@ -55,61 +71,21 @@ export async function startCortexRuntime(
   const loop = deps.startProcessingLoop(config, registry);
   deps.log("processing loop started");
 
-  const telegramChannel = deps.createTelegramChannel(config);
+  const channels = deps.createChannelRegistry(config);
+  await channels.startAll();
 
-  if (telegramChannel) {
-    const allowedIds = config.telegramAllowedUserIds ?? [];
-    if (allowedIds.length === 0) {
-      deps.log(
-        "telegram channel enabled with empty allowedUserIds — all messages will be rejected",
-      );
-    }
-    try {
-      await telegramChannel.start();
-      if (allowedIds.length > 0) {
-        deps.log("telegram channel enabled (ingestion+delivery started)");
-      }
-    } catch (startupError) {
-      const cleanupErrors: unknown[] = [];
-
-      try {
-        await telegramChannel.stop();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-
-      try {
-        await loop.stop();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-
-      try {
-        server.stop();
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-
-      if (cleanupErrors.length > 0) {
-        const details = cleanupErrors
-          .map((e) => (e instanceof Error ? e.message : String(e)))
-          .join("; ");
-        deps.log(
-          `startup cleanup encountered ${cleanupErrors.length} errors: ${details}`,
-        );
-      }
-
-      throw startupError;
-    }
-  } else {
-    deps.log("telegram channel disabled (no token configured)");
-  }
+  const thalamus = new Thalamus();
+  const tick = new Tick();
+  const hippocampus = new Hippocampus();
+  const ras = new RAS();
 
   return {
     async stop() {
-      if (telegramChannel) {
-        await telegramChannel.stop();
-      }
+      await ras.stop();
+      await hippocampus.stop();
+      await tick.stop();
+      await thalamus.stop();
+      await channels.stopAll();
       await loop.stop();
       server.stop();
     },
