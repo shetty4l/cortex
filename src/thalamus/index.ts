@@ -1,5 +1,6 @@
 import { createLogger } from "@shetty4l/core/log";
 import { type EnqueueResult, enqueueInboxMessage } from "../db";
+import { formatChannelData } from "./formatters";
 
 const log = createLogger("cortex");
 
@@ -63,7 +64,7 @@ export class Thalamus {
     const { channel, externalId, data, occurredAt, metadata } = payload;
 
     const priority = getChannelPriority(channel);
-    const text = JSON.stringify(data);
+    const text = formatChannelData(channel, data);
     const idempotencyKey = `${channel}:${externalId}`;
 
     // Extract topicKey from data if present, otherwise use channel name
