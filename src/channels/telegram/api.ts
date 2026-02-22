@@ -1,7 +1,3 @@
-import { createLogger } from "@shetty4l/core/log";
-
-const log = createLogger("cortex");
-
 export const TELEGRAM_API_BASE_URL = "https://api.telegram.org";
 export const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
 
