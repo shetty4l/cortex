@@ -334,4 +334,28 @@ describe("POST /receive", () => {
     const body2 = (await resp2.json()) as { eventId: string };
     expect(body1.eventId).not.toBe(body2.eventId);
   });
+
+  // --- Mode tests ---
+
+  test("POST /receive with mode=buffered returns 202 with eventId", async () => {
+    const payload = validPayload({ mode: "buffered", channel: "calendar" });
+    const response = await post(payload, API_KEY);
+
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as { eventId: string; status: string };
+    expect(body.status).toBe("queued");
+    expect(body.eventId).toMatch(/^rb_/);
+  });
+
+  test("POST /receive without mode still works (backward compat)", async () => {
+    const payload = validPayload();
+    // Ensure no mode field
+    delete (payload as Record<string, unknown>).mode;
+    const response = await post(payload, API_KEY);
+
+    expect(response.status).toBe(202);
+    const body = (await response.json()) as { eventId: string; status: string };
+    expect(body.status).toBe("queued");
+    expect(body.eventId).toMatch(/^evt_/);
+  });
 });
