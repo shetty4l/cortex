@@ -239,7 +239,13 @@ export function startProcessingLoop(
 
             completeInboxMessage(message.id);
 
-            log(`[${message.topic_key}] done in ${elapsed}s`);
+            const responsePreview =
+              responseText.length > 120
+                ? `${responseText.slice(0, 117)}...`
+                : responseText;
+            log(
+              `[${message.topic_key}] done in ${elapsed}s: ${responsePreview}`,
+            );
           } else {
             log(`[${message.topic_key}] failed in ${elapsed}s: ${errorMsg}`);
             completeInboxMessage(message.id, errorMsg);
