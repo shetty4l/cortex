@@ -65,7 +65,9 @@ export async function startCortexRuntime(
   registry: SkillRegistry,
   deps: RuntimeDeps = DEFAULT_RUNTIME_DEPS,
 ): Promise<CortexRuntime> {
-  const server = deps.startServer(config);
+  const thalamus = new Thalamus();
+
+  const server = deps.startServer(config, thalamus);
   deps.log(`listening on http://${config.host}:${config.port}`);
 
   const loop = deps.startProcessingLoop(config, registry);
@@ -74,7 +76,6 @@ export async function startCortexRuntime(
   const channels = deps.createChannelRegistry(config);
   await channels.startAll();
 
-  const thalamus = new Thalamus();
   const tick = new Tick();
   const hippocampus = new Hippocampus();
   const ras = new RAS();

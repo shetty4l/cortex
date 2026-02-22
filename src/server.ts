@@ -3,7 +3,8 @@
  *
  * Routes:
  *   GET  /health      — health check (handled by core)
- *   POST /ingest      — channel-agnostic event ingress
+ *   POST /ingest      — channel-agnostic event ingress (legacy)
+ *   POST /receive     — thalamus-gated event ingress
  *   POST /outbox/poll — connector delivery claim
  *   POST /outbox/ack  — connector delivery acknowledgement
  */
@@ -23,6 +24,7 @@ import {
   findInboxDuplicate,
   pollOutboxMessages,
 } from "./db";
+import type { Thalamus } from "./thalamus";
 import { VERSION } from "./version";
 
 const log = createLogger("cortex");
@@ -151,6 +153,117 @@ async function handleIngest(
     occurredAt: new Date(body.occurredAt!).getTime(),
     idempotencyKey: body.idempotencyKey!,
     metadata: body.metadata,
+  });
+
+  if (result.duplicate) {
+    return jsonOk(
+      { eventId: result.eventId, status: "duplicate_ignored" },
+      200,
+    );
+  }
+
+  return jsonOk({ eventId: result.eventId, status: "queued" }, 202);
+}
+
+// --- POST /receive handler ---
+
+interface ReceiveRequestBody {
+  channel?: unknown;
+  externalId?: unknown;
+  data?: unknown;
+  occurredAt?: unknown;
+  metadata?: unknown;
+}
+
+function validateReceiveBody(body: ReceiveRequestBody): string[] {
+  const details: string[] = [];
+
+  if (body.channel === undefined || body.channel === null) {
+    details.push("channel is required");
+  } else if (typeof body.channel !== "string" || body.channel.length === 0) {
+    details.push("channel must be a non-empty string");
+  }
+
+  if (body.externalId === undefined || body.externalId === null) {
+    details.push("externalId is required");
+  } else if (
+    typeof body.externalId !== "string" ||
+    body.externalId.length === 0
+  ) {
+    details.push("externalId must be a non-empty string");
+  }
+
+  if (body.data === undefined || body.data === null) {
+    details.push("data is required");
+  }
+
+  if (body.occurredAt === undefined || body.occurredAt === null) {
+    details.push("occurredAt is required");
+  } else if (
+    typeof body.occurredAt !== "string" ||
+    body.occurredAt.length === 0
+  ) {
+    details.push("occurredAt must be a non-empty string");
+  } else {
+    const ts = new Date(body.occurredAt).getTime();
+    if (Number.isNaN(ts)) {
+      details.push("occurredAt must be a valid ISO 8601 date string");
+    }
+  }
+
+  if (
+    body.metadata !== undefined &&
+    body.metadata !== null &&
+    (typeof body.metadata !== "object" || Array.isArray(body.metadata))
+  ) {
+    details.push("metadata must be an object");
+  }
+
+  return details;
+}
+
+async function handleReceive(
+  req: Request,
+  config: CortexConfig,
+  thalamus: Thalamus,
+): Promise<Response> {
+  const authError = requireAuth(req, config);
+  if (authError) return authError;
+
+  let body: ReceiveRequestBody;
+  try {
+    body = (await req.json()) as ReceiveRequestBody;
+  } catch {
+    return jsonOk(
+      {
+        error: "invalid_request",
+        details: ["Request body must be valid JSON"],
+      },
+      400,
+    );
+  }
+
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return jsonOk(
+      {
+        error: "invalid_request",
+        details: ["Request body must be a JSON object"],
+      },
+      400,
+    );
+  }
+
+  const details = validateReceiveBody(body);
+  if (details.length > 0) {
+    return jsonOk({ error: "invalid_request", details }, 400);
+  }
+
+  const result = thalamus.receive({
+    channel: body.channel as string,
+    externalId: body.externalId as string,
+    data: body.data,
+    occurredAt: body.occurredAt as string,
+    metadata: body.metadata as Record<string, unknown> | undefined,
   });
 
   if (result.duplicate) {
@@ -332,7 +445,10 @@ async function handleOutboxAck(
 
 // --- Server ---
 
-export function startServer(config: CortexConfig): HttpServer {
+export function startServer(
+  config: CortexConfig,
+  thalamus?: Thalamus,
+): HttpServer {
   return createServer({
     name: "cortex",
     port: config.port,
@@ -344,6 +460,12 @@ export function startServer(config: CortexConfig): HttpServer {
 
       if (req.method === "POST" && url.pathname === "/ingest") {
         response = await handleIngest(req, config);
+      } else if (
+        req.method === "POST" &&
+        url.pathname === "/receive" &&
+        thalamus
+      ) {
+        response = await handleReceive(req, config, thalamus);
       } else if (req.method === "POST" && url.pathname === "/outbox/poll") {
         response = await handleOutboxPoll(req, config);
       } else if (req.method === "POST" && url.pathname === "/outbox/ack") {
