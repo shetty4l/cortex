@@ -67,9 +67,11 @@ export async function chat(
   model: string,
   synapseUrl: string,
   tools?: OpenAITool[],
+  timeoutMs?: number,
 ): Promise<Result<ChatResponse>> {
   const url = `${synapseUrl}/v1/chat/completions`;
   const startMs = performance.now();
+  const effectiveTimeout = timeoutMs ?? REQUEST_TIMEOUT_MS;
 
   const requestBody: Record<string, unknown> = {
     model,
@@ -86,11 +88,11 @@ export async function chat(
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(effectiveTimeout),
     });
   } catch (e) {
     if (e instanceof DOMException && e.name === "TimeoutError") {
-      return err(`Synapse request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      return err(`Synapse request timed out after ${effectiveTimeout}ms`);
     }
     if (e instanceof DOMException && e.name === "AbortError") {
       return err("Synapse request was aborted");

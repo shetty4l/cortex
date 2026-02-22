@@ -31,6 +31,7 @@ export interface AgentConfig {
   toolTimeoutMs: number;
   maxToolRounds: number;
   skillConfig: Record<string, unknown>;
+  synapseTimeoutMs?: number;
 }
 
 export interface AgentResult {
@@ -66,7 +67,13 @@ export async function runAgentLoop(opts: {
 
   while (true) {
     // Call LLM
-    const result = await chat(messages, config.model, config.synapseUrl, tools);
+    const result = await chat(
+      messages,
+      config.model,
+      config.synapseUrl,
+      tools,
+      config.synapseTimeoutMs,
+    );
     if (!result.ok) {
       return err(result.error);
     }
