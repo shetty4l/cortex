@@ -3,7 +3,7 @@
  *
  * Routes:
  *   GET  /health      — health check (handled by core)
- *   POST /ingest      — channel-agnostic event ingress (legacy)
+ *   POST /ingest      — DEPRECATED (returns 410 Gone)
  *   POST /receive     — thalamus-gated event ingress
  *   POST /outbox/poll — connector delivery claim
  *   POST /outbox/ack  — connector delivery acknowledgement
@@ -18,12 +18,7 @@ import {
 import { createLogger } from "@shetty4l/core/log";
 import { timingSafeEqual } from "crypto";
 import type { CortexConfig } from "./config";
-import {
-  ackOutboxMessage,
-  enqueueInboxMessage,
-  findInboxDuplicate,
-  pollOutboxMessages,
-} from "./db";
+import { ackOutboxMessage, pollOutboxMessages } from "./db";
 import type { Thalamus } from "./thalamus";
 import { VERSION } from "./version";
 
@@ -53,116 +48,15 @@ function requireAuth(req: Request, config: CortexConfig): Response | null {
 
 // --- Route handlers ---
 
-interface IngestRequestBody {
-  channel?: string;
-  externalMessageId?: string;
-  idempotencyKey?: string;
-  topicKey?: string;
-  userId?: string;
-  text?: string;
-  occurredAt?: string;
-  metadata?: Record<string, unknown>;
-}
+// --- POST /ingest (DEPRECATED) ---
 
-function validateIngestBody(body: IngestRequestBody): string[] {
-  const details: string[] = [];
-  const requiredStringFields: Array<{
-    key: keyof IngestRequestBody;
-    label: string;
-  }> = [
-    { key: "channel", label: "channel" },
-    { key: "externalMessageId", label: "externalMessageId" },
-    { key: "idempotencyKey", label: "idempotencyKey" },
-    { key: "topicKey", label: "topicKey" },
-    { key: "userId", label: "userId" },
-    { key: "text", label: "text" },
-    { key: "occurredAt", label: "occurredAt" },
-  ];
-
-  for (const field of requiredStringFields) {
-    const val = body[field.key];
-    if (val === undefined || val === null) {
-      details.push(`${field.label} is required`);
-    } else if (typeof val !== "string" || val.length === 0) {
-      details.push(`${field.label} must be a non-empty string`);
-    }
-  }
-
-  if (
-    body.occurredAt &&
-    typeof body.occurredAt === "string" &&
-    body.occurredAt.length > 0
-  ) {
-    const ts = new Date(body.occurredAt).getTime();
-    if (Number.isNaN(ts)) {
-      details.push("occurredAt must be a valid ISO 8601 date string");
-    }
-  }
-
-  return details;
-}
-
-async function handleIngest(
-  req: Request,
-  config: CortexConfig,
-): Promise<Response> {
-  const authError = requireAuth(req, config);
-  if (authError) return authError;
-
-  let body: IngestRequestBody;
-  try {
-    body = (await req.json()) as IngestRequestBody;
-  } catch {
-    return jsonOk(
-      {
-        error: "invalid_request",
-        details: ["Request body must be valid JSON"],
-      },
-      400,
-    );
-  }
-
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    return jsonOk(
-      {
-        error: "invalid_request",
-        details: ["Request body must be a JSON object"],
-      },
-      400,
-    );
-  }
-
-  const details = validateIngestBody(body);
-  if (details.length > 0) {
-    return jsonOk({ error: "invalid_request", details }, 400);
-  }
-
-  // Dedup check (optimistic — avoids insert overhead in common case)
-  const existingId = findInboxDuplicate(body.channel!, body.externalMessageId!);
-  if (existingId) {
-    return jsonOk({ eventId: existingId, status: "duplicate_ignored" }, 200);
-  }
-
-  // Enqueue (catches UNIQUE constraint race if concurrent duplicate slips past)
-  const result = enqueueInboxMessage({
-    channel: body.channel!,
-    externalMessageId: body.externalMessageId!,
-    topicKey: body.topicKey!,
-    userId: body.userId!,
-    text: body.text!,
-    occurredAt: new Date(body.occurredAt!).getTime(),
-    idempotencyKey: body.idempotencyKey!,
-    metadata: body.metadata,
-  });
-
-  if (result.duplicate) {
-    return jsonOk(
-      { eventId: result.eventId, status: "duplicate_ignored" },
-      200,
-    );
-  }
-
-  return jsonOk({ eventId: result.eventId, status: "queued" }, 202);
+function handleIngestDeprecated(): Response {
+  return jsonOk(
+    {
+      error: "POST /ingest has been removed. Use POST /receive instead.",
+    },
+    410,
+  );
 }
 
 // --- POST /receive handler ---
@@ -459,7 +353,7 @@ export function startServer(
       let response: Response | null = null;
 
       if (req.method === "POST" && url.pathname === "/ingest") {
-        response = await handleIngest(req, config);
+        response = handleIngestDeprecated();
       } else if (
         req.method === "POST" &&
         url.pathname === "/receive" &&
