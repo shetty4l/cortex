@@ -22,7 +22,7 @@ import { join } from "path";
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS inbox_messages (
     id TEXT PRIMARY KEY,
-    source TEXT NOT NULL,
+    channel TEXT NOT NULL,
     external_message_id TEXT NOT NULL,
     topic_key TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -30,14 +30,15 @@ const SCHEMA = `
     occurred_at INTEGER NOT NULL,
     idempotency_key TEXT NOT NULL,
     metadata_json TEXT,
+    priority INTEGER NOT NULL DEFAULT 5,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     error TEXT,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
-    -- Dedup is on (source, external_message_id), NOT idempotency_key.
+    -- Dedup is on (channel, external_message_id), NOT idempotency_key.
     -- idempotency_key is stored for connector-layer tracing/debugging.
-    UNIQUE(source, external_message_id)
+    UNIQUE(channel, external_message_id)
   );
 
   CREATE INDEX IF NOT EXISTS idx_inbox_status_created
@@ -47,7 +48,7 @@ const SCHEMA = `
 
   CREATE TABLE IF NOT EXISTS outbox_messages (
     id TEXT PRIMARY KEY,
-    source TEXT NOT NULL,
+    channel TEXT NOT NULL,
     topic_key TEXT NOT NULL,
     text TEXT NOT NULL,
     payload_json TEXT,
@@ -61,8 +62,8 @@ const SCHEMA = `
     updated_at INTEGER NOT NULL
   );
 
-  CREATE INDEX IF NOT EXISTS idx_outbox_source_status_next
-    ON outbox_messages(source, status, next_attempt_at);
+  CREATE INDEX IF NOT EXISTS idx_outbox_channel_status_next
+    ON outbox_messages(channel, status, next_attempt_at);
 
   CREATE TABLE IF NOT EXISTS turns (
     id TEXT PRIMARY KEY,
@@ -90,10 +91,75 @@ const SCHEMA = `
     updated_at INTEGER NOT NULL
   );
 
-  CREATE TABLE IF NOT EXISTS telegram_state (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
+  CREATE TABLE IF NOT EXISTS topics (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed', 'archived')),
+    starts_at INTEGER,
+    ends_at INTEGER,
+    telegram_thread_id INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    topic_id TEXT NOT NULL REFERENCES topics(id),
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'in_progress', 'completed', 'cancelled')),
+    due_at INTEGER,
+    completed_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_tasks_topic ON tasks(topic_id);
+  CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON tasks(status, due_at);
+
+  CREATE TABLE IF NOT EXISTS receptor_buffers (
+    id TEXT PRIMARY KEY,
+    channel TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    metadata_json TEXT,
+    occurred_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(channel, external_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_receptor_buffers_channel_created ON receptor_buffers(channel, created_at);
+
+  CREATE TABLE IF NOT EXISTS receptor_cursors (
+    channel TEXT PRIMARY KEY,
+    cursor_value TEXT NOT NULL,
+    last_synced_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS pending_approvals (
+    id TEXT PRIMARY KEY,
+    topic_key TEXT NOT NULL,
+    action TEXT NOT NULL,
+    tool_name TEXT,
+    tool_args_json TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'expired')),
+    proposed_at INTEGER NOT NULL,
+    resolved_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status);
+
+  CREATE TABLE IF NOT EXISTS scheduled_events (
+    id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    reference_id TEXT,
+    fires_at INTEGER NOT NULL,
+    fired_at INTEGER,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'fired', 'cancelled')),
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_scheduled_events_status_fires ON scheduled_events(status, fires_at);
 `;
 
 // --- Connection (via core DatabaseManager) ---
@@ -155,7 +221,7 @@ export function resetDatabase(): void {
 // --- Inbox operations ---
 
 export interface InboxInsertInput {
-  source: string;
+  channel: string;
   externalMessageId: string;
   topicKey: string;
   userId: string;
@@ -163,11 +229,12 @@ export interface InboxInsertInput {
   occurredAt: number;
   idempotencyKey: string;
   metadata?: Record<string, unknown>;
+  priority?: number;
 }
 
 export interface InboxMessage {
   id: string;
-  source: string;
+  channel: string;
   external_message_id: string;
   topic_key: string;
   user_id: string;
@@ -175,6 +242,7 @@ export interface InboxMessage {
   occurred_at: number;
   idempotency_key: string;
   metadata_json: string | null;
+  priority: number;
   status: string;
   attempts: number;
   error: string | null;
@@ -183,19 +251,19 @@ export interface InboxMessage {
 }
 
 /**
- * Check if an inbox message already exists for this (source, externalMessageId).
+ * Check if an inbox message already exists for this (channel, externalMessageId).
  * Returns the existing message ID if found, null otherwise.
  */
 export function findInboxDuplicate(
-  source: string,
+  channel: string,
   externalMessageId: string,
 ): string | null {
   const database = getDatabase();
   const stmt = database.prepare(
-    "SELECT id FROM inbox_messages WHERE source = $source AND external_message_id = $externalMessageId",
+    "SELECT id FROM inbox_messages WHERE channel = $channel AND external_message_id = $externalMessageId",
   );
   const row = stmt.get({
-    $source: source,
+    $channel: channel,
     $externalMessageId: externalMessageId,
   }) as { id: string } | null;
   return row?.id ?? null;
@@ -217,12 +285,12 @@ export function enqueueInboxMessage(input: InboxInsertInput): EnqueueResult {
 
   const stmt = database.prepare(`
     INSERT INTO inbox_messages (
-      id, source, external_message_id, topic_key, user_id, text,
-      occurred_at, idempotency_key, metadata_json, status, attempts,
+      id, channel, external_message_id, topic_key, user_id, text,
+      occurred_at, idempotency_key, metadata_json, priority, status, attempts,
       created_at, updated_at
     ) VALUES (
-      $id, $source, $externalMessageId, $topicKey, $userId, $text,
-      $occurredAt, $idempotencyKey, $metadataJson, 'pending', 0,
+      $id, $channel, $externalMessageId, $topicKey, $userId, $text,
+      $occurredAt, $idempotencyKey, $metadataJson, $priority, 'pending', 0,
       $now, $now
     )
   `);
@@ -230,7 +298,7 @@ export function enqueueInboxMessage(input: InboxInsertInput): EnqueueResult {
   try {
     stmt.run({
       $id: id,
-      $source: input.source,
+      $channel: input.channel,
       $externalMessageId: input.externalMessageId,
       $topicKey: input.topicKey,
       $userId: input.userId,
@@ -238,6 +306,7 @@ export function enqueueInboxMessage(input: InboxInsertInput): EnqueueResult {
       $occurredAt: input.occurredAt,
       $idempotencyKey: input.idempotencyKey,
       $metadataJson: input.metadata ? JSON.stringify(input.metadata) : null,
+      $priority: input.priority ?? 5,
       $now: now,
     });
     return { eventId: id, duplicate: false };
@@ -245,7 +314,7 @@ export function enqueueInboxMessage(input: InboxInsertInput): EnqueueResult {
     // UNIQUE constraint violation — concurrent duplicate slipped past the check
     if (err instanceof Error && err.message.includes("UNIQUE constraint")) {
       const existingId = findInboxDuplicate(
-        input.source,
+        input.channel,
         input.externalMessageId,
       );
       if (existingId) {
@@ -283,7 +352,7 @@ export function claimNextInboxMessage(): InboxMessage | null {
     WHERE id = (
       SELECT id FROM inbox_messages
       WHERE status = 'pending'
-      ORDER BY created_at ASC
+      ORDER BY priority ASC, created_at ASC
       LIMIT 1
     )
     RETURNING *
@@ -311,7 +380,7 @@ export function completeInboxMessage(id: string, error?: string): void {
 // --- Outbox operations ---
 
 export interface OutboxInsertInput {
-  source: string;
+  channel?: string;
   topicKey: string;
   text: string;
   payload?: Record<string, unknown>;
@@ -319,7 +388,7 @@ export interface OutboxInsertInput {
 
 export interface OutboxMessage {
   id: string;
-  source: string;
+  channel: string;
   topic_key: string;
   text: string;
   payload_json: string | null;
@@ -340,20 +409,21 @@ export function enqueueOutboxMessage(input: OutboxInsertInput): string {
   const database = getDatabase();
   const id = `out_${crypto.randomUUID()}`;
   const now = Date.now();
+  const channel = input.channel ?? "silent";
 
   const stmt = database.prepare(`
     INSERT INTO outbox_messages (
-      id, source, topic_key, text, payload_json,
+      id, channel, topic_key, text, payload_json,
       status, attempts, next_attempt_at, created_at, updated_at
     ) VALUES (
-      $id, $source, $topicKey, $text, $payloadJson,
+      $id, $channel, $topicKey, $text, $payloadJson,
       'pending', 0, $now, $now, $now
     )
   `);
 
   stmt.run({
     $id: id,
-    $source: input.source,
+    $channel: channel,
     $topicKey: input.topicKey,
     $text: input.text,
     $payloadJson: input.payload ? JSON.stringify(input.payload) : null,
@@ -406,9 +476,9 @@ export interface OutboxPollResult {
 }
 
 /**
- * Atomically claim outbox messages for a connector source.
+ * Atomically claim outbox messages for a connector channel.
  *
- * Eligible rows: matching source, next_attempt_at <= now, and either
+ * Eligible rows: matching channel, next_attempt_at <= now, and either
  * status='pending' OR (status='leased' AND lease_expires_at <= now).
  *
  * For each eligible row:
@@ -420,7 +490,7 @@ export interface OutboxPollResult {
  * Returns only successfully leased messages (not dead-lettered ones).
  */
 export function pollOutboxMessages(
-  source: string,
+  channel: string,
   max: number,
   leaseSeconds: number,
   maxAttempts: number,
@@ -438,14 +508,14 @@ export function pollOutboxMessages(
     const eligible = database
       .prepare(
         `SELECT id, attempts FROM outbox_messages
-         WHERE source = $source
+         WHERE channel = $channel
            AND next_attempt_at <= $now
            AND (status = 'pending' OR (status = 'leased' AND lease_expires_at <= $now))${topicFilter}
          ORDER BY next_attempt_at ASC, created_at ASC
          LIMIT $max`,
       )
       .all({
-        $source: source,
+        $channel: channel,
         $now: now,
         $max: max,
         ...(topicKey ? { $topicKey: topicKey } : {}),
@@ -872,43 +942,44 @@ export function upsertTopicSummary(topicKey: string, summary: string): void {
     .run({ $topicKey: topicKey, $summary: summary, $now: Date.now() });
 }
 
-// --- Telegram state operations ---
+// --- Receptor cursor operations ---
 
 /**
- * Get the saved Telegram update offset.
- * Returns null when no offset exists or the stored value is invalid.
+ * Get the receptor cursor for a channel.
+ * Returns null when no cursor exists for this channel.
  */
-function telegramOffsetKey(botToken?: string): string {
-  if (!botToken) return "offset";
-  return `offset:${Bun.hash(botToken).toString(16)}`;
-}
-
-export function getTelegramOffset(botToken?: string): number | null {
+export function getReceptorCursor(
+  channel: string,
+): { cursorValue: string; lastSyncedAt: number } | null {
   const database = getDatabase();
-  const key = telegramOffsetKey(botToken);
   const row = database
-    .prepare("SELECT value FROM telegram_state WHERE key = $key")
-    .get({ $key: key }) as { value: string } | null;
+    .prepare(
+      "SELECT cursor_value, last_synced_at FROM receptor_cursors WHERE channel = $channel",
+    )
+    .get({ $channel: channel }) as {
+    cursor_value: string;
+    last_synced_at: number;
+  } | null;
 
   if (!row) return null;
-  if (!/^-?\d+$/.test(row.value)) return null;
-
-  const parsed = Number(row.value);
-  return Number.isSafeInteger(parsed) ? parsed : null;
+  return { cursorValue: row.cursor_value, lastSyncedAt: row.last_synced_at };
 }
 
 /**
- * Upsert the saved Telegram update offset.
+ * Upsert the receptor cursor for a channel.
  */
-export function setTelegramOffset(offset: number, botToken?: string): void {
+export function upsertReceptorCursor(
+  channel: string,
+  cursorValue: string,
+): void {
   const database = getDatabase();
-  const key = telegramOffsetKey(botToken);
+  const now = Date.now();
   database
     .prepare(
-      `INSERT INTO telegram_state (key, value)
-       VALUES ($key, $offset)
-       ON CONFLICT(key) DO UPDATE
-       SET value = $offset`,
+      `INSERT INTO receptor_cursors (channel, cursor_value, last_synced_at, updated_at)
+       VALUES ($channel, $cursorValue, $now, $now)
+       ON CONFLICT(channel) DO UPDATE
+       SET cursor_value = $cursorValue, last_synced_at = $now, updated_at = $now`,
     )
-    .run({ $key: key, $offset: String(offset) });
+    .run({ $channel: channel, $cursorValue: cursorValue, $now: now });
 }

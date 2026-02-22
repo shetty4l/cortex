@@ -52,7 +52,7 @@ function requireAuth(req: Request, config: CortexConfig): Response | null {
 // --- Route handlers ---
 
 interface IngestRequestBody {
-  source?: string;
+  channel?: string;
   externalMessageId?: string;
   idempotencyKey?: string;
   topicKey?: string;
@@ -68,7 +68,7 @@ function validateIngestBody(body: IngestRequestBody): string[] {
     key: keyof IngestRequestBody;
     label: string;
   }> = [
-    { key: "source", label: "source" },
+    { key: "channel", label: "channel" },
     { key: "externalMessageId", label: "externalMessageId" },
     { key: "idempotencyKey", label: "idempotencyKey" },
     { key: "topicKey", label: "topicKey" },
@@ -136,14 +136,14 @@ async function handleIngest(
   }
 
   // Dedup check (optimistic — avoids insert overhead in common case)
-  const existingId = findInboxDuplicate(body.source!, body.externalMessageId!);
+  const existingId = findInboxDuplicate(body.channel!, body.externalMessageId!);
   if (existingId) {
     return jsonOk({ eventId: existingId, status: "duplicate_ignored" }, 200);
   }
 
   // Enqueue (catches UNIQUE constraint race if concurrent duplicate slips past)
   const result = enqueueInboxMessage({
-    source: body.source!,
+    channel: body.channel!,
     externalMessageId: body.externalMessageId!,
     topicKey: body.topicKey!,
     userId: body.userId!,
@@ -166,7 +166,7 @@ async function handleIngest(
 // --- Outbox poll/ack handlers ---
 
 interface PollRequestBody {
-  source?: string;
+  channel?: string;
   topicKey?: string;
   max?: number;
   leaseSeconds?: number;
@@ -175,10 +175,10 @@ interface PollRequestBody {
 function validatePollBody(body: PollRequestBody): string[] {
   const details: string[] = [];
 
-  if (body.source === undefined || body.source === null) {
-    details.push("source is required");
-  } else if (typeof body.source !== "string" || body.source.length === 0) {
-    details.push("source must be a non-empty string");
+  if (body.channel === undefined || body.channel === null) {
+    details.push("channel is required");
+  } else if (typeof body.channel !== "string" || body.channel.length === 0) {
+    details.push("channel must be a non-empty string");
   }
 
   if (
@@ -250,7 +250,7 @@ async function handleOutboxPoll(
   const leaseSeconds = body.leaseSeconds ?? config.outboxLeaseSeconds;
 
   const messages = pollOutboxMessages(
-    body.source!,
+    body.channel!,
     max,
     leaseSeconds,
     config.outboxMaxAttempts,

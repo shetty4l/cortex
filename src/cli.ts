@@ -214,7 +214,7 @@ function cmdInbox(_args: string[], json: boolean): number {
   }
 
   console.log(
-    `\n${"STATUS".padEnd(12)}${"SOURCE".padEnd(14)}${"TOPIC".padEnd(28)}${"TEXT".padEnd(32)}TIMESTAMP`,
+    `\n${"STATUS".padEnd(12)}${"CHANNEL".padEnd(14)}${"TOPIC".padEnd(28)}${"TEXT".padEnd(32)}TIMESTAMP`,
   );
   console.log("-".repeat(100));
 
@@ -227,7 +227,7 @@ function cmdInbox(_args: string[], json: boolean): number {
         : msg.topic_key;
     const time = new Date(msg.created_at).toISOString().slice(0, 19);
     console.log(
-      `${msg.status.padEnd(12)}${msg.source.padEnd(14)}${topic.padEnd(28)}${text.padEnd(32)}${time}`,
+      `${msg.status.padEnd(12)}${msg.channel.padEnd(14)}${topic.padEnd(28)}${text.padEnd(32)}${time}`,
     );
   }
 
@@ -249,7 +249,7 @@ function cmdOutbox(_args: string[], json: boolean): number {
   }
 
   console.log(
-    `\n${"STATUS".padEnd(12)}${"SOURCE".padEnd(14)}${"TOPIC".padEnd(28)}${"TEXT".padEnd(32)}${"ATT".padEnd(5)}ERROR`,
+    `\n${"STATUS".padEnd(12)}${"CHANNEL".padEnd(14)}${"TOPIC".padEnd(28)}${"TEXT".padEnd(32)}${"ATT".padEnd(5)}ERROR`,
   );
   console.log("-".repeat(110));
 
@@ -266,7 +266,7 @@ function cmdOutbox(_args: string[], json: boolean): number {
         : msg.last_error
       : "-";
     console.log(
-      `${msg.status.padEnd(12)}${msg.source.padEnd(14)}${topic.padEnd(28)}${text.padEnd(32)}${String(msg.attempts).padEnd(5)}${error}`,
+      `${msg.status.padEnd(12)}${msg.channel.padEnd(14)}${topic.padEnd(28)}${text.padEnd(32)}${String(msg.attempts).padEnd(5)}${error}`,
     );
   }
 

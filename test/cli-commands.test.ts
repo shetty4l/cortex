@@ -21,7 +21,7 @@ describe("list and purge operations", () => {
   function seedInbox(text: string): string {
     const id = crypto.randomUUID().slice(0, 8);
     const result = enqueueInboxMessage({
-      source: "telegram",
+      channel: "telegram",
       externalMessageId: `msg-${id}`,
       topicKey: "topic-1",
       userId: "user-1",
@@ -34,7 +34,7 @@ describe("list and purge operations", () => {
 
   function seedOutbox(text: string): string {
     return enqueueOutboxMessage({
-      source: "telegram",
+      channel: "telegram",
       topicKey: "topic-1",
       text,
     });
@@ -82,7 +82,7 @@ describe("list and purge operations", () => {
       expect(messages).toHaveLength(1);
       const msg = messages[0];
       expect(msg.id).toMatch(/^evt_/);
-      expect(msg.source).toBe("telegram");
+      expect(msg.channel).toBe("telegram");
       expect(msg.topic_key).toBe("topic-1");
       expect(msg.user_id).toBe("user-1");
       expect(msg.text).toBe("Hello");
@@ -131,7 +131,7 @@ describe("list and purge operations", () => {
       expect(messages).toHaveLength(1);
       const msg = messages[0];
       expect(msg.id).toMatch(/^out_/);
-      expect(msg.source).toBe("telegram");
+      expect(msg.channel).toBe("telegram");
       expect(msg.topic_key).toBe("topic-1");
       expect(msg.text).toBe("Reply");
       expect(msg.status).toBe("pending");

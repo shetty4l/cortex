@@ -130,7 +130,7 @@ function openaiResponse(content: string) {
 
 function ingestMessage(
   overrides: Partial<{
-    source: string;
+    channel: string;
     externalMessageId: string;
     topicKey: string;
     userId: string;
@@ -139,7 +139,7 @@ function ingestMessage(
 ) {
   const id = crypto.randomUUID().slice(0, 8);
   return enqueueInboxMessage({
-    source: overrides.source ?? "test",
+    channel: overrides.channel ?? "test",
     externalMessageId: overrides.externalMessageId ?? `msg-${id}`,
     topicKey: overrides.topicKey ?? "topic-1",
     userId: overrides.userId ?? "user-1",
@@ -213,7 +213,7 @@ describe("processing loop", () => {
     const outbox = listOutboxMessagesByTopic("topic-1");
     expect(outbox).toHaveLength(1);
     expect(outbox[0].text).toBe("Hi there!");
-    expect(outbox[0].source).toBe("test");
+    expect(outbox[0].channel).toBe("test");
     expect(outbox[0].status).toBe("pending");
   });
 

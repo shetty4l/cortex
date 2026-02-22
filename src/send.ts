@@ -10,7 +10,7 @@ import { err, ok } from "@shetty4l/core/result";
 
 const POLL_INTERVAL_MS = 500;
 const POLL_TIMEOUT_MS = 30_000;
-const SEND_SOURCE = "cli";
+const SEND_CHANNEL = "cli";
 
 export interface SendOptions {
   baseUrl: string;
@@ -24,8 +24,8 @@ export interface SendOptions {
 /**
  * Send a message to Cortex and wait for the assistant's response.
  *
- * 1. POST /ingest with source="cli"
- * 2. Poll /outbox/poll for source="cli" until response appears
+ * 1. POST /ingest with channel="cli"
+ * 2. Poll /outbox/poll for channel="cli" until response appears
  * 3. Ack via /outbox/ack
  * 4. Return response text
  *
@@ -52,7 +52,7 @@ export async function sendMessage(
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        source: SEND_SOURCE,
+        channel: SEND_CHANNEL,
         externalMessageId,
         idempotencyKey: `cli:${externalMessageId}`,
         topicKey,
@@ -87,7 +87,7 @@ export async function sendMessage(
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          source: SEND_SOURCE,
+          channel: SEND_CHANNEL,
           topicKey,
           max: 1,
           leaseSeconds: 30,

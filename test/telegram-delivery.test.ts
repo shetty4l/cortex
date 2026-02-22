@@ -111,7 +111,7 @@ describe("telegram delivery helpers", () => {
 describe("telegram delivery loop", () => {
   test("delivers text with MarkdownV2 parse mode and then acks", async () => {
     const messageId = enqueueOutboxMessage({
-      source: "telegram",
+      channel: "telegram",
       topicKey: "-100:7",
       text: "hello **world**",
     });
@@ -149,7 +149,7 @@ describe("telegram delivery loop", () => {
   test("does not ack when any chunk fails", async () => {
     const text = `${"hello ".repeat(800)}\n\n${"world ".repeat(800)}`;
     const messageId = enqueueOutboxMessage({
-      source: "telegram",
+      channel: "telegram",
       topicKey: "-200",
       text,
     });
@@ -189,7 +189,7 @@ describe("telegram delivery loop", () => {
   test("delivers long MarkdownV2 content without chunk parse errors", async () => {
     const text = `${"snake_case_value ".repeat(260)}\n\n${"more_text_with_underscores ".repeat(260)}`;
     const messageId = enqueueOutboxMessage({
-      source: "telegram",
+      channel: "telegram",
       topicKey: "-201",
       text,
     });
@@ -234,7 +234,7 @@ describe("telegram delivery loop", () => {
 
   test("logs lease_conflict when ack fails due to expired lease", async () => {
     const messageId = enqueueOutboxMessage({
-      source: "telegram",
+      channel: "telegram",
       topicKey: "-300",
       text: "test message",
     });

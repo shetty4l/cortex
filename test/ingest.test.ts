@@ -38,7 +38,7 @@ function makeConfig(): CortexConfig {
 
 function validEvent(overrides?: Record<string, unknown>) {
   return {
-    source: "telegram",
+    channel: "telegram",
     externalMessageId: `msg-${crypto.randomUUID()}`,
     idempotencyKey: `tg:${crypto.randomUUID()}`,
     topicKey: "chat-42:thread-root",
@@ -147,7 +147,7 @@ describe("POST /ingest", () => {
     };
     expect(body.error).toBe("invalid_request");
     expect(body.details.length).toBeGreaterThan(0);
-    expect(body.details.some((d: string) => d.includes("source"))).toBe(true);
+    expect(body.details.some((d: string) => d.includes("channel"))).toBe(true);
   });
 
   test("returns 400 for empty required fields", async () => {
@@ -173,7 +173,7 @@ describe("POST /ingest", () => {
       .get({ $id: eventId }) as Record<string, unknown>;
 
     expect(row).not.toBeNull();
-    expect(row.source).toBe(event.source);
+    expect(row.channel).toBe(event.channel);
     expect(row.external_message_id).toBe(event.externalMessageId);
     expect(row.topic_key).toBe(event.topicKey);
     expect(row.user_id).toBe(event.userId);
@@ -209,25 +209,25 @@ describe("POST /ingest", () => {
     const db = getDatabase();
     const count = db
       .prepare(
-        "SELECT COUNT(*) as cnt FROM inbox_messages WHERE source = $source AND external_message_id = $eid",
+        "SELECT COUNT(*) as cnt FROM inbox_messages WHERE channel = $channel AND external_message_id = $eid",
       )
       .get({
-        $source: event.source,
+        $channel: event.channel,
         $eid: event.externalMessageId,
       }) as { cnt: number };
 
     expect(count.cnt).toBe(1);
   });
 
-  test("different source with same externalMessageId creates separate rows", async () => {
+  test("different channel with same externalMessageId creates separate rows", async () => {
     const sharedMsgId = `msg-${crypto.randomUUID()}`;
 
     const resp1 = await post(
-      validEvent({ source: "telegram", externalMessageId: sharedMsgId }),
+      validEvent({ channel: "telegram", externalMessageId: sharedMsgId }),
       API_KEY,
     );
     const resp2 = await post(
-      validEvent({ source: "slack", externalMessageId: sharedMsgId }),
+      validEvent({ channel: "slack", externalMessageId: sharedMsgId }),
       API_KEY,
     );
 

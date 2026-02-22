@@ -85,7 +85,7 @@ describe("POST /outbox/ack", () => {
   /** Seed an outbox message and claim it, returning messageId + leaseToken. */
   function seedAndClaim(): { messageId: string; leaseToken: string } {
     const outboxId = enqueueOutboxMessage({
-      source: "telegram",
+      channel: "telegram",
       topicKey: "topic-1",
       text: "Hello",
     });
