@@ -283,4 +283,62 @@ describe("telegram delivery loop", () => {
     expect(row!.status).toBe("leased");
     expect(row!.attempts).toBeGreaterThanOrEqual(1);
   });
+
+  test("delivers to fallback private chat for non-numeric topic keys", async () => {
+    const messageId = enqueueOutboxMessage({
+      channel: "telegram",
+      topicKey: "manchester-united-football-matches",
+      text: "Upcoming match tomorrow",
+    });
+
+    const requests: Array<Record<string, unknown>> = [];
+    globalThis.fetch = withGetUpdatesStub(async (_url, init) => {
+      const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(payload);
+      return Response.json({
+        ok: true,
+        result: { message_id: 1, date: 1700000000, chat: { id: 6052033650 } },
+      });
+    });
+
+    const loop = startTelegramDeliveryLoop(
+      testConfig({ telegramAllowedUserIds: [6052033650] }),
+      { maxBatch: 1, onErrorDelayMs: 1, onEmptyDelayMs: 1 },
+    );
+
+    await waitFor(() => getOutboxMessage(messageId)?.status === "delivered");
+    await loop.stop();
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].chat_id).toBe(6052033650);
+    expect(requests[0].message_thread_id).toBeUndefined();
+  });
+
+  test("fails delivery when no fallback user ID and non-numeric topic key", async () => {
+    const messageId = enqueueOutboxMessage({
+      channel: "telegram",
+      topicKey: "some-semantic-topic",
+      text: "This should fail",
+    });
+
+    globalThis.fetch = withGetUpdatesStub(async () => {
+      return Response.json({
+        ok: true,
+        result: { message_id: 1, date: 1700000000, chat: { id: 1 } },
+      });
+    });
+
+    const loop = startTelegramDeliveryLoop(
+      testConfig({ telegramAllowedUserIds: [] }),
+      { maxBatch: 1, onErrorDelayMs: 1, onEmptyDelayMs: 1 },
+    );
+
+    // Wait briefly — message should NOT be delivered (no fallback)
+    await Bun.sleep(100);
+    await loop.stop();
+
+    const row = getOutboxMessage(messageId);
+    expect(row).not.toBeNull();
+    expect(row!.status).not.toBe("delivered");
+  });
 });

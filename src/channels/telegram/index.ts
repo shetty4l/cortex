@@ -261,11 +261,19 @@ export class TelegramChannel implements Channel {
 
         for (const message of messages) {
           try {
-            const topic = parseTelegramTopicKey(message.topicKey);
+            let topic = parseTelegramTopicKey(message.topicKey);
             if (!topic) {
-              throw new Error(
-                `Invalid telegram topic key: ${message.topicKey}`,
-              );
+              // TODO(topics): Temporary fallback — sends all non-Telegram topic keys
+              // to the user's private chat. Once topic management (cortex#66) is built
+              // out, resolve topic_key → telegram_thread_id via the topics table (which
+              // already has a telegram_thread_id column) before falling back here.
+              const fallbackUserId = this.config.telegramAllowedUserIds?.[0];
+              if (!fallbackUserId) {
+                throw new Error(
+                  `Cannot deliver: no fallback chat ID for topic "${message.topicKey}"`,
+                );
+              }
+              topic = { chatId: fallbackUserId };
             }
 
             const convertedText = formatForTelegram(message.text);
