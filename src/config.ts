@@ -63,6 +63,10 @@ export interface CortexConfig {
 
   // Synapse
   synapseTimeoutMs: number;
+
+  // Thalamus
+  thalamusModel: string;
+  thalamusSyncIntervalMs: number;
 }
 
 // --- Defaults ---
@@ -90,6 +94,8 @@ const DEFAULTS: Omit<
   toolTimeoutMs: 20000,
   maxToolRounds: 8,
   synapseTimeoutMs: 60_000,
+  thalamusModel: "gpt-oss:20b",
+  thalamusSyncIntervalMs: 21_600_000,
 };
 
 // --- Validation ---
@@ -143,6 +149,7 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "extractionModel", label: "extractionModel" },
     { key: "telegramBotToken", label: "telegramBotToken" },
     { key: "systemPromptFile", label: "systemPromptFile" },
+    { key: "thalamusModel", label: "thalamusModel" },
   ];
 
   for (const field of stringFields) {
@@ -198,6 +205,7 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "toolTimeoutMs", min: 1000 },
     { key: "maxToolRounds", min: 1, max: 20 },
     { key: "synapseTimeoutMs", min: 5_000 },
+    { key: "thalamusSyncIntervalMs", min: 60_000 },
   ];
 
   for (const field of numericFields) {

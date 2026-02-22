@@ -34,6 +34,8 @@ function makeConfig(): CortexConfig {
     toolTimeoutMs: 20000,
     maxToolRounds: 8,
     synapseTimeoutMs: 60_000,
+    thalamusModel: "test-model",
+    thalamusSyncIntervalMs: 21_600_000,
   };
 }
 
@@ -357,5 +359,59 @@ describe("POST /receive", () => {
     const body = (await response.json()) as { eventId: string; status: string };
     expect(body.status).toBe("queued");
     expect(body.eventId).toMatch(/^evt_/);
+  });
+});
+
+describe("POST /thalamus/sync", () => {
+  let server: { port: number; stop: () => void };
+  let baseUrl: string;
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeAll(() => {
+    savedEnv.CORTEX_CONFIG_PATH = process.env.CORTEX_CONFIG_PATH;
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    initDatabase(":memory:");
+    // Thalamus without config — sync methods will be no-ops but won't crash
+    const thalamus = new Thalamus();
+    server = startServer(makeConfig(), thalamus);
+    baseUrl = `http://localhost:${server.port}`;
+  });
+
+  afterAll(() => {
+    server.stop();
+    closeDatabase();
+    for (const [key, val] of Object.entries(savedEnv)) {
+      if (val === undefined) delete process.env[key];
+      else process.env[key] = val;
+    }
+  });
+
+  test("POST /thalamus/sync returns 200 ok", async () => {
+    const response = await fetch(`${baseUrl}/thalamus/sync`, {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { ok: boolean };
+    expect(body.ok).toBe(true);
+  });
+
+  test("POST /thalamus/sync?channel=calendar returns 200 ok", async () => {
+    const response = await fetch(`${baseUrl}/thalamus/sync?channel=calendar`, {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { ok: boolean };
+    expect(body.ok).toBe(true);
+  });
+
+  test("does not require authentication", async () => {
+    // No auth header — should still work
+    const response = await fetch(`${baseUrl}/thalamus/sync`, {
+      method: "POST",
+    });
+
+    expect(response.status).toBe(200);
   });
 });

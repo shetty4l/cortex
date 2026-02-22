@@ -71,7 +71,12 @@ export async function startCortexRuntime(
   registry: SkillRegistry,
   deps: RuntimeDeps = DEFAULT_RUNTIME_DEPS,
 ): Promise<CortexRuntime> {
-  const thalamus = new Thalamus();
+  const thalamus = new Thalamus({
+    synapseUrl: config.synapseUrl,
+    thalamusModel: config.thalamusModel,
+    synapseTimeoutMs: config.synapseTimeoutMs,
+    syncIntervalMs: config.thalamusSyncIntervalMs,
+  });
 
   const server = deps.startServer(config, thalamus);
   deps.log(`listening on http://${config.host}:${config.port}`);
@@ -81,6 +86,8 @@ export async function startCortexRuntime(
 
   const channels = deps.createChannelRegistry(config, thalamus);
   await channels.startAll();
+
+  await thalamus.start();
 
   const tick = new Tick();
   const hippocampus = new Hippocampus();

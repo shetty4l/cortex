@@ -65,6 +65,8 @@ function testConfig(port: number): CortexConfig {
     toolTimeoutMs: 20000,
     maxToolRounds: 8,
     synapseTimeoutMs: 60_000,
+    thalamusModel: "test-model",
+    thalamusSyncIntervalMs: 21_600_000,
   };
 }
 
