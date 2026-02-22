@@ -55,6 +55,13 @@ function getChannelPriority(channel: string): number {
   return CHANNEL_PRIORITY[channel] ?? DEFAULT_PRIORITY;
 }
 
+export interface SyncResult {
+  ok: boolean;
+  groups: number;
+  buffers: number;
+  error?: string;
+}
+
 // --- Thalamus ---
 
 export class Thalamus {
@@ -82,51 +89,53 @@ export class Thalamus {
     log("thalamus stopped");
   }
 
-  async syncAll(): Promise<void> {
+  async syncAll(): Promise<SyncResult> {
     if (!this.config) {
       log("thalamus syncAll: no config, skipping");
-      return;
+      return { ok: true, groups: 0, buffers: 0 };
     }
 
     try {
       const buffers = getUnprocessedBuffers();
       if (buffers.length === 0) {
         log("thalamus syncAll: no buffered data");
-        return;
+        return { ok: true, groups: 0, buffers: 0 };
       }
 
-      await this.processBuffers(buffers);
+      const groups = await this.processBuffers(buffers);
+      return { ok: true, groups, buffers: buffers.length };
     } catch (e) {
-      log(
-        `thalamus syncAll error: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      const error = e instanceof Error ? e.message : String(e);
+      log(`thalamus syncAll error: ${error}`);
+      return { ok: false, groups: 0, buffers: 0, error };
     }
   }
 
-  async syncChannel(channelName: string): Promise<void> {
+  async syncChannel(channelName: string): Promise<SyncResult> {
     if (!this.config) {
       log(`thalamus syncChannel(${channelName}): no config, skipping`);
-      return;
+      return { ok: true, groups: 0, buffers: 0 };
     }
 
     try {
       const buffers = getUnprocessedBuffers({ channel: channelName });
       if (buffers.length === 0) {
         log(`thalamus syncChannel(${channelName}): no buffered data`);
-        return;
+        return { ok: true, groups: 0, buffers: 0 };
       }
 
-      await this.processBuffers(buffers);
+      const groups = await this.processBuffers(buffers);
+      return { ok: true, groups, buffers: buffers.length };
     } catch (e) {
-      log(
-        `thalamus syncChannel(${channelName}) error: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      const error = e instanceof Error ? e.message : String(e);
+      log(`thalamus syncChannel(${channelName}) error: ${error}`);
+      return { ok: false, groups: 0, buffers: 0, error };
     }
   }
 
   private async processBuffers(
     buffers: ReturnType<typeof getUnprocessedBuffers>,
-  ): Promise<void> {
+  ): Promise<number> {
     const config = this.config!;
 
     // Group buffers by channel
@@ -193,7 +202,7 @@ export class Thalamus {
 
     // Create inbox messages for each triaged group
     for (const item of items) {
-      const idempotencyHash = item.rawBufferIds.sort().join(",");
+      const idempotencyHash = [...item.rawBufferIds].sort().join(",");
       const idempotencyKey = `thalamus-sync:${idempotencyHash}`;
 
       enqueueInboxMessage({
@@ -224,6 +233,8 @@ export class Thalamus {
     log(
       `thalamus sync complete: ${items.length} groups created from ${buffers.length} buffers`,
     );
+
+    return items.length;
   }
 
   /**

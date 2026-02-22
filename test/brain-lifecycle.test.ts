@@ -16,14 +16,20 @@ describe("brain stub lifecycle", () => {
       await expect(t.stop()).resolves.toBeUndefined();
     });
 
-    test("syncAll does not throw", async () => {
+    test("syncAll returns result", async () => {
       const t = new Thalamus();
-      await expect(t.syncAll()).resolves.toBeUndefined();
+      const result = await t.syncAll();
+      expect(result.ok).toBe(true);
+      expect(result.groups).toBe(0);
+      expect(result.buffers).toBe(0);
     });
 
-    test("syncChannel does not throw", async () => {
+    test("syncChannel returns result", async () => {
       const t = new Thalamus();
-      await expect(t.syncChannel("telegram")).resolves.toBeUndefined();
+      const result = await t.syncChannel("telegram");
+      expect(result.ok).toBe(true);
+      expect(result.groups).toBe(0);
+      expect(result.buffers).toBe(0);
     });
   });
 
