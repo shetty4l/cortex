@@ -3,9 +3,9 @@ import type { CortexConfig } from "./config";
 import {
   ackOutboxMessage,
   enqueueInboxMessage,
-  getTelegramOffset,
+  getReceptorCursor,
   pollOutboxMessages,
-  setTelegramOffset,
+  upsertReceptorCursor,
 } from "./db";
 import { chunkMarkdownV2 } from "./telegram-chunker";
 import { formatForTelegram } from "./telegram-format";
@@ -329,7 +329,13 @@ export function startTelegramIngestionLoop(
   const onEmptyDelayMs = options?.onEmptyDelayMs ?? 250;
 
   let running = true;
-  let offset = getTelegramOffset(botToken) ?? undefined;
+  const cursorRow = getReceptorCursor("telegram");
+  let offset: number | undefined = cursorRow
+    ? Number(cursorRow.cursorValue)
+    : undefined;
+  if (offset !== undefined && !Number.isSafeInteger(offset)) {
+    offset = undefined;
+  }
   const abortController = new AbortController();
 
   const done = (async () => {
@@ -388,7 +394,7 @@ export function startTelegramIngestionLoop(
 
           try {
             enqueueInboxMessage({
-              source: "telegram",
+              channel: "telegram",
               externalMessageId,
               topicKey,
               userId: String(fromId),
@@ -415,7 +421,7 @@ export function startTelegramIngestionLoop(
 
         if (maxHandledUpdateId >= 0) {
           offset = maxHandledUpdateId + 1;
-          setTelegramOffset(offset, botToken);
+          upsertReceptorCursor("telegram", String(offset));
         }
       } catch (err) {
         const isExpectedStopCancellation =

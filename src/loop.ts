@@ -229,7 +229,7 @@ export function startProcessingLoop(
 
             // 8. Write to outbox
             enqueueOutboxMessage({
-              source: message.source,
+              channel: message.channel,
               topicKey: message.topic_key,
               text: responseText,
             });

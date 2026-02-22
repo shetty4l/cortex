@@ -3,12 +3,20 @@ import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
   getDatabase,
-  getTelegramOffset,
+  getReceptorCursor,
   initDatabase,
 } from "../src/db";
 import { startTelegramIngestionLoop } from "../src/telegram";
 
 const originalFetch = globalThis.fetch;
+
+/** Helper to read the Telegram cursor as a number (matching old getTelegramOffset API). */
+function getTelegramCursor(): number | null {
+  const row = getReceptorCursor("telegram");
+  if (!row) return null;
+  const parsed = Number(row.cursorValue);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
 
 function testConfig(overrides: Partial<CortexConfig> = {}): CortexConfig {
   return {
@@ -104,16 +112,16 @@ describe("telegram ingestion loop", () => {
       { onErrorDelayMs: 1 },
     );
 
-    await waitFor(() => getTelegramOffset("123:abc") === 103);
+    await waitFor(() => getTelegramCursor() === 103);
     await loop.stop();
 
     const db = getDatabase();
     const rows = db
       .prepare(
-        "SELECT source, external_message_id, topic_key, user_id, idempotency_key, text, occurred_at FROM inbox_messages ORDER BY created_at ASC",
+        "SELECT channel, external_message_id, topic_key, user_id, idempotency_key, text, occurred_at FROM inbox_messages ORDER BY created_at ASC",
       )
       .all() as Array<{
-      source: string;
+      channel: string;
       external_message_id: string;
       topic_key: string;
       user_id: string;
@@ -123,7 +131,7 @@ describe("telegram ingestion loop", () => {
     }>;
 
     expect(rows).toHaveLength(1);
-    expect(rows[0].source).toBe("telegram");
+    expect(rows[0].channel).toBe("telegram");
     expect(rows[0].external_message_id).toBe("101:2");
     expect(rows[0].topic_key).toBe("-42:9");
     expect(rows[0].user_id).toBe("222");
@@ -163,7 +171,7 @@ describe("telegram ingestion loop", () => {
       },
     );
 
-    await waitFor(() => getTelegramOffset("123:abc") === 8);
+    await waitFor(() => getTelegramCursor() === 8);
     await loop.stop();
 
     const db = getDatabase();
@@ -206,7 +214,7 @@ describe("telegram ingestion loop", () => {
       { onErrorDelayMs: 1 },
     );
 
-    await waitFor(() => getTelegramOffset("123:abc") === 202);
+    await waitFor(() => getTelegramCursor() === 202);
     await firstLoop.stop();
 
     let restartFetchCalls = 0;
@@ -274,7 +282,7 @@ describe("telegram ingestion loop", () => {
       { onErrorDelayMs: 1 },
     );
 
-    await waitFor(() => getTelegramOffset("123:abc") === 502);
+    await waitFor(() => getTelegramCursor() === 502);
     await loop.stop();
 
     const db = getDatabase();
@@ -289,7 +297,7 @@ describe("telegram ingestion loop", () => {
     expect(rows[0].idempotency_key).toBe("501:77");
   });
 
-  test("does not reuse cursor when bot token changes", async () => {
+  test("shares cursor across restarts (channel-based, not bot-token-based)", async () => {
     let botAFetchCalls = 0;
     globalThis.fetch = (async () => {
       botAFetchCalls++;
@@ -324,8 +332,11 @@ describe("telegram ingestion loop", () => {
 
     let botBLoop: ReturnType<typeof startTelegramIngestionLoop> | null = null;
     try {
-      await waitFor(() => getTelegramOffset("token-a") === 301);
+      await waitFor(() => getTelegramCursor() === 301);
       await botALoop.stop();
+
+      // Cursor should be persisted for channel "telegram"
+      expect(getTelegramCursor()).toBe(301);
 
       let firstBody: Record<string, unknown> | null = null;
       globalThis.fetch = (async (_url: any, init: any) => {
@@ -335,6 +346,7 @@ describe("telegram ingestion loop", () => {
         return Response.json({ ok: true, result: [] });
       }) as unknown as typeof fetch;
 
+      // Restart with different bot token — should still use same cursor
       botBLoop = startTelegramIngestionLoop(
         testConfig({
           telegramBotToken: "token-b",
@@ -345,9 +357,8 @@ describe("telegram ingestion loop", () => {
 
       await waitFor(() => firstBody !== null);
 
-      expect(firstBody).not.toHaveProperty("offset");
-      expect(getTelegramOffset("token-a")).toBe(301);
-      expect(getTelegramOffset("token-b")).toBeNull();
+      // New loop should resume from persisted cursor
+      expect(firstBody!.offset).toBe(301);
     } finally {
       if (botBLoop) {
         await botBLoop.stop();
@@ -492,7 +503,7 @@ describe("telegram ingestion loop", () => {
       { onErrorDelayMs: 1 },
     );
 
-    await waitFor(() => getTelegramOffset("123:abc") === 603);
+    await waitFor(() => getTelegramCursor() === 603);
     await loop.stop();
 
     const rows = db
@@ -509,6 +520,6 @@ describe("telegram ingestion loop", () => {
     expect(rows[2].external_message_id).toBe("602:3");
     expect(rows[2].text).toBe("third message");
     expect(offsets).toContain(601);
-    expect(getTelegramOffset("123:abc")).toBe(603);
+    expect(getTelegramCursor()).toBe(603);
   });
 });

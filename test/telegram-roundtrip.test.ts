@@ -11,7 +11,7 @@ import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
   getDatabase,
-  getTelegramOffset,
+  getReceptorCursor,
   initDatabase,
 } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
@@ -22,6 +22,14 @@ import {
 } from "../src/telegram";
 
 const originalFetch = globalThis.fetch;
+
+/** Helper to read the Telegram cursor as a number. */
+function getTelegramCursor(): number | null {
+  const row = getReceptorCursor("telegram");
+  if (!row) return null;
+  const parsed = Number(row.cursorValue);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
 
 let mockSynapse: ReturnType<typeof Bun.serve>;
 let mockEngram: ReturnType<typeof Bun.serve>;
@@ -197,17 +205,17 @@ describe("telegram roundtrip", () => {
         const db = getDatabase();
         const inboxRow = db
           .prepare(
-            "SELECT status FROM inbox_messages WHERE source = 'telegram' AND external_message_id = '900:11'",
+            "SELECT status FROM inbox_messages WHERE channel = 'telegram' AND external_message_id = '900:11'",
           )
           .get() as { status: string } | null;
         const outboxRow = db
           .prepare(
-            "SELECT status FROM outbox_messages WHERE source = 'telegram' AND topic_key = '-42:9' ORDER BY created_at DESC LIMIT 1",
+            "SELECT status FROM outbox_messages WHERE channel = 'telegram' AND topic_key = '-42:9' ORDER BY created_at DESC LIMIT 1",
           )
           .get() as { status: string } | null;
 
         return (
-          getTelegramOffset("123:abc") === 901 &&
+          getTelegramCursor() === 901 &&
           inboxRow?.status === "done" &&
           outboxRow?.status === "delivered" &&
           sentPayloads.length === 1

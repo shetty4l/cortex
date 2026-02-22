@@ -128,13 +128,13 @@ describe("POST /outbox/poll", () => {
 
   function seedOutbox(
     overrides: Partial<{
-      source: string;
+      channel: string;
       topicKey: string;
       text: string;
     }> = {},
   ): string {
     return enqueueOutboxMessage({
-      source: overrides.source ?? "telegram",
+      channel: overrides.channel ?? "telegram",
       topicKey: overrides.topicKey ?? "topic-1",
       text: overrides.text ?? "Hello from assistant",
     });
@@ -146,47 +146,47 @@ describe("POST /outbox/poll", () => {
     const response = await fetch(`${baseUrl}/outbox/poll`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source: "telegram" }),
+      body: JSON.stringify({ channel: "telegram" }),
     });
     expect(response.status).toBe(401);
   });
 
   test("returns 401 with wrong token", async () => {
-    const response = await post({ source: "telegram" }, "wrong-key");
+    const response = await post({ channel: "telegram" }, "wrong-key");
     expect(response.status).toBe(401);
   });
 
   // --- Validation ---
 
-  test("returns 400 when source is missing", async () => {
+  test("returns 400 when channel is missing", async () => {
     const response = await post({}, API_KEY);
     expect(response.status).toBe(400);
     const body = (await response.json()) as { details: string[] };
-    expect(body.details.some((d: string) => d.includes("source"))).toBe(true);
+    expect(body.details.some((d: string) => d.includes("channel"))).toBe(true);
   });
 
-  test("returns 400 when source is empty string", async () => {
-    const response = await post({ source: "" }, API_KEY);
+  test("returns 400 when channel is empty string", async () => {
+    const response = await post({ channel: "" }, API_KEY);
     expect(response.status).toBe(400);
     const body = (await response.json()) as { details: string[] };
-    expect(body.details.some((d: string) => d.includes("source"))).toBe(true);
+    expect(body.details.some((d: string) => d.includes("channel"))).toBe(true);
   });
 
   test("returns 400 when max is out of range", async () => {
-    const response = await post({ source: "telegram", max: 200 }, API_KEY);
+    const response = await post({ channel: "telegram", max: 200 }, API_KEY);
     expect(response.status).toBe(400);
     const body = (await response.json()) as { details: string[] };
     expect(body.details.some((d: string) => d.includes("max"))).toBe(true);
   });
 
   test("returns 400 when max is zero", async () => {
-    const response = await post({ source: "telegram", max: 0 }, API_KEY);
+    const response = await post({ channel: "telegram", max: 0 }, API_KEY);
     expect(response.status).toBe(400);
   });
 
   test("returns 400 when leaseSeconds is out of range", async () => {
     const response = await post(
-      { source: "telegram", leaseSeconds: 5 },
+      { channel: "telegram", leaseSeconds: 5 },
       API_KEY,
     );
     expect(response.status).toBe(400);
@@ -216,7 +216,7 @@ describe("POST /outbox/poll", () => {
   // --- Empty results ---
 
   test("returns empty messages array when no outbox messages exist", async () => {
-    const response = await post({ source: "telegram" }, API_KEY);
+    const response = await post({ channel: "telegram" }, API_KEY);
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
       messages: unknown[];
@@ -224,10 +224,10 @@ describe("POST /outbox/poll", () => {
     expect(body.messages).toHaveLength(0);
   });
 
-  test("returns empty when source does not match", async () => {
-    seedOutbox({ source: "telegram" });
+  test("returns empty when channel does not match", async () => {
+    seedOutbox({ channel: "telegram" });
 
-    const response = await post({ source: "slack" }, API_KEY);
+    const response = await post({ channel: "slack" }, API_KEY);
     expect(response.status).toBe(200);
     const body = (await response.json()) as { messages: unknown[] };
     expect(body.messages).toHaveLength(0);
@@ -238,7 +238,7 @@ describe("POST /outbox/poll", () => {
   test("claims a single pending outbox message", async () => {
     const outboxId = seedOutbox();
 
-    const response = await post({ source: "telegram" }, API_KEY);
+    const response = await post({ channel: "telegram" }, API_KEY);
     expect(response.status).toBe(200);
 
     const body = (await response.json()) as {
@@ -263,7 +263,7 @@ describe("POST /outbox/poll", () => {
     seedOutbox({ text: "msg 2" });
     seedOutbox({ text: "msg 3" });
 
-    const response = await post({ source: "telegram", max: 2 }, API_KEY);
+    const response = await post({ channel: "telegram", max: 2 }, API_KEY);
     const body = (await response.json()) as {
       messages: Array<{ text: string }>;
     };
@@ -273,7 +273,7 @@ describe("POST /outbox/poll", () => {
   test("sets lease fields on claimed message", async () => {
     const outboxId = seedOutbox();
 
-    await post({ source: "telegram", leaseSeconds: 30 }, API_KEY);
+    await post({ channel: "telegram", leaseSeconds: 30 }, API_KEY);
 
     const row = getOutboxMessage(outboxId);
     expect(row).not.toBeNull();
@@ -287,10 +287,10 @@ describe("POST /outbox/poll", () => {
     seedOutbox();
 
     // First poll claims the message
-    await post({ source: "telegram", leaseSeconds: 60 }, API_KEY);
+    await post({ channel: "telegram", leaseSeconds: 60 }, API_KEY);
 
     // Second poll should find nothing (lease is active)
-    const response = await post({ source: "telegram" }, API_KEY);
+    const response = await post({ channel: "telegram" }, API_KEY);
     const body = (await response.json()) as { messages: unknown[] };
     expect(body.messages).toHaveLength(0);
   });
@@ -299,7 +299,7 @@ describe("POST /outbox/poll", () => {
     const outboxId = seedOutbox();
 
     // Claim with very short lease, then manually expire it
-    await post({ source: "telegram", leaseSeconds: 10 }, API_KEY);
+    await post({ channel: "telegram", leaseSeconds: 10 }, API_KEY);
 
     // Manually expire the lease by backdating lease_expires_at and next_attempt_at
     const db = getDatabase();
@@ -309,7 +309,7 @@ describe("POST /outbox/poll", () => {
     ).run({ $past: past, $id: outboxId });
 
     // Now poll again — should reclaim
-    const response = await post({ source: "telegram" }, API_KEY);
+    const response = await post({ channel: "telegram" }, API_KEY);
     const body = (await response.json()) as {
       messages: Array<{ messageId: string }>;
     };
@@ -334,7 +334,7 @@ describe("POST /outbox/poll", () => {
     ).run({ $past: past, $id: outboxId });
 
     // Poll should DLQ it, not return it
-    const response = await post({ source: "telegram" }, API_KEY);
+    const response = await post({ channel: "telegram" }, API_KEY);
     const body = (await response.json()) as { messages: unknown[] };
     expect(body.messages).toHaveLength(0);
 
@@ -351,7 +351,7 @@ describe("POST /outbox/poll", () => {
     const outboxId = seedOutbox();
 
     const before = Date.now();
-    await post({ source: "telegram" }, API_KEY);
+    await post({ channel: "telegram" }, API_KEY);
 
     const row = getOutboxMessage(outboxId);
     expect(row).not.toBeNull();
@@ -363,13 +363,13 @@ describe("POST /outbox/poll", () => {
 
   test("returns parsed payload from outbox message", async () => {
     enqueueOutboxMessage({
-      source: "telegram",
+      channel: "telegram",
       topicKey: "topic-1",
       text: "text with payload",
       payload: { buttons: [{ label: "Yes" }] },
     });
 
-    const response = await post({ source: "telegram" }, API_KEY);
+    const response = await post({ channel: "telegram" }, API_KEY);
     const body = (await response.json()) as {
       messages: Array<{ payload: { buttons: Array<{ label: string }> } }>;
     };
@@ -383,8 +383,8 @@ describe("POST /outbox/poll", () => {
   test("uses config defaults when max and leaseSeconds are omitted", async () => {
     seedOutbox();
 
-    // Should work with just source, using outboxPollDefaultBatch and outboxLeaseSeconds from config
-    const response = await post({ source: "telegram" }, API_KEY);
+    // Should work with just channel, using outboxPollDefaultBatch and outboxLeaseSeconds from config
+    const response = await post({ channel: "telegram" }, API_KEY);
     expect(response.status).toBe(200);
     const body = (await response.json()) as { messages: unknown[] };
     expect(body.messages).toHaveLength(1);
