@@ -5,7 +5,7 @@ import {
   escapeMarkdownV2LinkUrl,
   escapeMarkdownV2Text,
   formatForTelegram,
-} from "../src/telegram-format";
+} from "../src/channels/telegram/format";
 
 describe("escapeMarkdownV2Text", () => {
   test("escapes all special characters", () => {

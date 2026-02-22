@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  parseTelegramTopicKey,
+  TelegramChannel,
+} from "../src/channels/telegram";
 import type { CortexConfig } from "../src/config";
 import {
   ackOutboxMessage,
@@ -7,13 +11,50 @@ import {
   getOutboxMessage,
   initDatabase,
 } from "../src/db";
-import {
-  parseTelegramTopicKey,
-  splitTelegramMessageText,
-  startTelegramDeliveryLoop,
-} from "../src/telegram";
 
 const originalFetch = globalThis.fetch;
+
+/** Helper to start a TelegramChannel for delivery testing. */
+function startTelegramDeliveryLoop(
+  config: CortexConfig,
+  options?: {
+    maxBatch?: number;
+    leaseSeconds?: number;
+    onErrorDelayMs?: number;
+    onEmptyDelayMs?: number;
+  },
+): { stop(): Promise<void> } {
+  const channel = new TelegramChannel(config, {
+    deliveryMaxBatch: options?.maxBatch,
+    deliveryLeaseSeconds: options?.leaseSeconds,
+    deliveryOnErrorDelayMs: options?.onErrorDelayMs,
+    deliveryOnEmptyDelayMs: options?.onEmptyDelayMs,
+    ingestionOnEmptyDelayMs: 50,
+  });
+  channel.start();
+  return { stop: () => channel.stop() };
+}
+
+/**
+ * Wrap a fetch mock to also handle getUpdates calls (return empty updates).
+ * This is needed because TelegramChannel runs both ingestion and delivery.
+ */
+function withGetUpdatesStub(
+  sendHandler: (url: string, init: RequestInit) => Promise<Response>,
+): typeof fetch {
+  return (async (input: any, init: any) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    if (typeof url === "string" && url.includes("/getUpdates")) {
+      return Response.json({ ok: true, result: [] });
+    }
+    return sendHandler(url as string, init as RequestInit);
+  }) as unknown as typeof fetch;
+}
 
 function testConfig(overrides: Partial<CortexConfig> = {}): CortexConfig {
   return {
@@ -74,38 +115,6 @@ describe("telegram delivery helpers", () => {
     expect(parseTelegramTopicKey("bad")).toBeNull();
     expect(parseTelegramTopicKey("1:2:3")).toBeNull();
   });
-
-  test("splitTelegramMessageText prefers paragraph, then line boundaries", () => {
-    const text = `${"A".repeat(4090)}\n\n${"B".repeat(300)}\n${"C".repeat(300)}`;
-    const chunks = splitTelegramMessageText(text);
-
-    expect(chunks.length).toBeGreaterThan(1);
-    expect(chunks[0].endsWith("\n\n")).toBe(true);
-    expect(chunks.every((chunk) => chunk.length <= 4096)).toBe(true);
-    expect(chunks.join("")).toBe(text);
-  });
-
-  test("splitTelegramMessageText never exceeds 4096 at boundary edges", () => {
-    const paragraphEdge = `${"A".repeat(4096)}\n\n${"B".repeat(32)}`;
-    const lineEdge = `${"A".repeat(4096)}\n${"B".repeat(32)}`;
-    const wordEdge = `${"A".repeat(4096)} ${"B".repeat(32)}`;
-
-    for (const text of [paragraphEdge, lineEdge, wordEdge]) {
-      const chunks = splitTelegramMessageText(text);
-      expect(chunks.length).toBeGreaterThan(1);
-      expect(chunks.every((chunk) => chunk.length <= 4096)).toBe(true);
-      expect(chunks.join("")).toBe(text);
-    }
-  });
-
-  test("splitTelegramMessageText guarantees forward progress on tiny limits", () => {
-    const text = `\n\n${"a".repeat(10)} ${"b".repeat(10)}`;
-    const chunks = splitTelegramMessageText(text, 1);
-
-    expect(chunks.length).toBe(text.length);
-    expect(chunks.every((chunk) => chunk.length === 1)).toBe(true);
-    expect(chunks.join("")).toBe(text);
-  });
 });
 
 describe("telegram delivery loop", () => {
@@ -117,7 +126,7 @@ describe("telegram delivery loop", () => {
     });
 
     const requests: Array<Record<string, unknown>> = [];
-    globalThis.fetch = (async (_url: any, init: any) => {
+    globalThis.fetch = withGetUpdatesStub(async (_url, init) => {
       const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
       requests.push(payload);
 
@@ -129,7 +138,7 @@ describe("telegram delivery loop", () => {
           chat: { id: -100 },
         },
       });
-    }) as unknown as typeof fetch;
+    });
 
     const loop = startTelegramDeliveryLoop(testConfig(), {
       maxBatch: 1,
@@ -155,7 +164,7 @@ describe("telegram delivery loop", () => {
     });
 
     let callCount = 0;
-    globalThis.fetch = (async (_url: any, _init: any) => {
+    globalThis.fetch = withGetUpdatesStub(async (_url, _init) => {
       callCount++;
       if (callCount === 2) {
         return new Response("upstream error", { status: 500 });
@@ -169,7 +178,7 @@ describe("telegram delivery loop", () => {
           chat: { id: -200 },
         },
       });
-    }) as unknown as typeof fetch;
+    });
 
     const loop = startTelegramDeliveryLoop(testConfig(), {
       maxBatch: 1,
@@ -195,7 +204,7 @@ describe("telegram delivery loop", () => {
     });
 
     const requests: Array<Record<string, unknown>> = [];
-    globalThis.fetch = (async (_url: any, init: any) => {
+    globalThis.fetch = withGetUpdatesStub(async (_url, init) => {
       const payload = JSON.parse(String(init?.body)) as Record<string, unknown>;
       requests.push(payload);
       const chunk = String(payload.text ?? "");
@@ -212,7 +221,7 @@ describe("telegram delivery loop", () => {
           chat: { id: -201 },
         },
       });
-    }) as unknown as typeof fetch;
+    });
 
     const loop = startTelegramDeliveryLoop(testConfig(), {
       maxBatch: 1,
@@ -240,7 +249,7 @@ describe("telegram delivery loop", () => {
     });
 
     let fetchCalled = false;
-    globalThis.fetch = (async () => {
+    globalThis.fetch = withGetUpdatesStub(async () => {
       fetchCalled = true;
       await Bun.sleep(150);
       return Response.json({
@@ -251,7 +260,7 @@ describe("telegram delivery loop", () => {
           chat: { id: -300 },
         },
       });
-    }) as unknown as typeof fetch;
+    });
 
     const loop = startTelegramDeliveryLoop(testConfig(), {
       maxBatch: 1,

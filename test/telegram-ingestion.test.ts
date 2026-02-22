@@ -1,4 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import {
+  TelegramChannel,
+  type TelegramChannelOptions,
+} from "../src/channels/telegram";
 import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
@@ -6,7 +10,6 @@ import {
   getReceptorCursor,
   initDatabase,
 } from "../src/db";
-import { startTelegramIngestionLoop } from "../src/telegram";
 
 const originalFetch = globalThis.fetch;
 
@@ -16,6 +19,23 @@ function getTelegramCursor(): number | null {
   if (!row) return null;
   const parsed = Number(row.cursorValue);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+/** Helper to start a TelegramChannel, returning a stop handle compatible with old tests. */
+function startTelegramIngestionLoop(
+  config: CortexConfig,
+  options?: {
+    onErrorDelayMs?: number;
+    onEmptyDelayMs?: number;
+  },
+): { stop(): Promise<void> } {
+  const channel = new TelegramChannel(config, {
+    ingestionOnErrorDelayMs: options?.onErrorDelayMs,
+    ingestionOnEmptyDelayMs: options?.onEmptyDelayMs,
+    deliveryOnEmptyDelayMs: 50,
+  });
+  channel.start();
+  return { stop: () => channel.stop() };
 }
 
 function testConfig(overrides: Partial<CortexConfig> = {}): CortexConfig {
