@@ -1213,7 +1213,7 @@ export interface CortexStats {
   receptors: {
     calendar_last_sync_at: number | null;
     calendar_buffer_pending: number;
-    thalamus_last_sync_at: number | null;
+    thalamus_last_run_at: number | null;
   };
   processing: {
     p50_ms: number | null;
@@ -1228,12 +1228,17 @@ function percentile(sorted: number[], p: number): number {
   return sorted[Math.max(0, idx)];
 }
 
+/** Minimal interface for thalamus dependency in getStats(). */
+interface ThalamusSyncInfo {
+  getLastSyncAt(): number | null;
+}
+
 /**
  * Get aggregated stats for the /stats API endpoint.
  * Returns inbox/outbox counts, receptor sync timestamps, and processing latency percentiles.
  * Time-based metrics use a 1-hour sliding window.
  */
-export function getStats(): CortexStats {
+export function getStats(thalamus?: ThalamusSyncInfo): CortexStats {
   const database = getDatabase();
   const oneHourAgo = Date.now() - 3_600_000;
 
@@ -1319,7 +1324,7 @@ export function getStats(): CortexStats {
     receptors: {
       calendar_last_sync_at: cursorByChannel.calendar ?? null,
       calendar_buffer_pending: bufferByChannel.calendar ?? 0,
-      thalamus_last_sync_at: cursorByChannel.thalamus ?? null,
+      thalamus_last_run_at: thalamus?.getLastSyncAt() ?? null,
     },
     processing: {
       p50_ms: hasLatency ? percentile(latencies, 50) : null,

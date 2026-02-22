@@ -358,7 +358,7 @@ export function startServer(
       let response: Response | null = null;
 
       if (req.method === "GET" && url.pathname === "/stats") {
-        response = jsonOk(getStats());
+        response = jsonOk(getStats(thalamus));
       } else if (req.method === "POST" && url.pathname === "/ingest") {
         response = handleIngestDeprecated();
       } else if (req.method === "POST" && url.pathname === "/receive") {
