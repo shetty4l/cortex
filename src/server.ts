@@ -67,6 +67,7 @@ interface ReceiveRequestBody {
   data?: unknown;
   occurredAt?: unknown;
   metadata?: unknown;
+  mode?: unknown;
 }
 
 function validateReceiveBody(body: ReceiveRequestBody): string[] {
@@ -158,6 +159,7 @@ async function handleReceive(
     data: body.data,
     occurredAt: body.occurredAt as string,
     metadata: body.metadata as Record<string, unknown> | undefined,
+    mode: body.mode as "realtime" | "buffered" | undefined,
   });
 
   if (result.duplicate) {

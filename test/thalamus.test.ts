@@ -212,3 +212,82 @@ describe("thalamus.receive()", () => {
     expect(row.idempotency_key).toBe("cli:my-ext-id");
   });
 });
+
+describe("thalamus.receive() with mode=buffered", () => {
+  let thalamus: Thalamus;
+
+  beforeEach(() => {
+    initDatabase(":memory:");
+    thalamus = new Thalamus();
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  test("writes to receptor_buffers table, NOT inbox", () => {
+    const result = thalamus.receive(
+      makePayload({ mode: "buffered", channel: "calendar" }),
+    );
+    expect(result.duplicate).toBe(false);
+
+    const db = getDatabase();
+    // Should be in receptor_buffers
+    const bufferRow = db
+      .prepare("SELECT id, channel FROM receptor_buffers WHERE id = $id")
+      .get({ $id: result.eventId }) as { id: string; channel: string } | null;
+    expect(bufferRow).not.toBeNull();
+    expect(bufferRow!.channel).toBe("calendar");
+
+    // Should NOT be in inbox
+    const inboxRow = db
+      .prepare("SELECT id FROM inbox_messages WHERE id = $id")
+      .get({ $id: result.eventId });
+    expect(inboxRow).toBeNull();
+  });
+
+  test("returns eventId and duplicate=false for new entry", () => {
+    const result = thalamus.receive(
+      makePayload({ mode: "buffered", channel: "calendar" }),
+    );
+    expect(result.eventId).toMatch(/^rb_/);
+    expect(result.duplicate).toBe(false);
+  });
+
+  test("detects duplicates (same channel+externalId)", () => {
+    const payload = makePayload({ mode: "buffered", channel: "calendar" });
+
+    const first = thalamus.receive(payload);
+    expect(first.duplicate).toBe(false);
+
+    const second = thalamus.receive(payload);
+    expect(second.duplicate).toBe(true);
+    expect(second.eventId).toBe(first.eventId);
+  });
+
+  test("mode=realtime still goes to inbox", () => {
+    const result = thalamus.receive(
+      makePayload({ mode: "realtime", channel: "telegram" }),
+    );
+    expect(result.duplicate).toBe(false);
+    expect(result.eventId).toMatch(/^evt_/);
+
+    const db = getDatabase();
+    const inboxRow = db
+      .prepare("SELECT id FROM inbox_messages WHERE id = $id")
+      .get({ $id: result.eventId });
+    expect(inboxRow).not.toBeNull();
+  });
+
+  test("mode omitted still goes to inbox (backward compat)", () => {
+    const result = thalamus.receive(makePayload());
+    expect(result.duplicate).toBe(false);
+    expect(result.eventId).toMatch(/^evt_/);
+
+    const db = getDatabase();
+    const inboxRow = db
+      .prepare("SELECT id FROM inbox_messages WHERE id = $id")
+      .get({ $id: result.eventId });
+    expect(inboxRow).not.toBeNull();
+  });
+});

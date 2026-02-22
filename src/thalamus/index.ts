@@ -1,5 +1,9 @@
 import { createLogger } from "@shetty4l/core/log";
-import { type EnqueueResult, enqueueInboxMessage } from "../db";
+import {
+  type EnqueueResult,
+  enqueueInboxMessage,
+  insertReceptorBuffer,
+} from "../db";
 import { formatChannelData } from "./formatters";
 
 const log = createLogger("cortex");
@@ -12,6 +16,7 @@ export interface ReceivePayload {
   data: unknown;
   occurredAt: string;
   metadata?: Record<string, unknown>;
+  mode?: "realtime" | "buffered";
 }
 
 export interface ReceiveResult {
@@ -61,8 +66,22 @@ export class Thalamus {
    * Will be replaced by real LLM reasoning when cortex#65 ships.
    */
   receive(payload: ReceivePayload): ReceiveResult {
-    const { channel, externalId, data, occurredAt, metadata } = payload;
+    const { channel, externalId, data, occurredAt, metadata, mode } = payload;
 
+    // Buffered mode: write to receptor_buffers, skip inbox
+    if (mode === "buffered") {
+      const text = formatChannelData(channel, data);
+      const result = insertReceptorBuffer({
+        channel,
+        externalId,
+        content: text,
+        metadataJson: metadata ? JSON.stringify(metadata) : null,
+        occurredAt: new Date(occurredAt).getTime(),
+      });
+      return { eventId: result.id, duplicate: result.duplicate };
+    }
+
+    // Realtime mode (default): existing inbox path
     const priority = getChannelPriority(channel);
     const text = formatChannelData(channel, data);
     const idempotencyKey = `${channel}:${externalId}`;

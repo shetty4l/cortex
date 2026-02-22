@@ -983,3 +983,135 @@ export function upsertReceptorCursor(
     )
     .run({ $channel: channel, $cursorValue: cursorValue, $now: now });
 }
+
+// --- Receptor buffer operations ---
+
+export interface ReceptorBuffer {
+  id: string;
+  channel: string;
+  externalId: string;
+  content: string;
+  metadataJson: string | null;
+  occurredAt: number;
+  createdAt: number;
+}
+
+export interface InsertReceptorBufferInput {
+  channel: string;
+  externalId: string;
+  content: string;
+  metadataJson?: string | null;
+  occurredAt: number;
+}
+
+/**
+ * Insert a receptor buffer row. Deduplicates on (channel, external_id).
+ * Returns the id and whether the row was a duplicate.
+ */
+export function insertReceptorBuffer(input: InsertReceptorBufferInput): {
+  id: string;
+  duplicate: boolean;
+} {
+  const database = getDatabase();
+  const id = `rb_${crypto.randomUUID()}`;
+  const now = Date.now();
+
+  const result = database
+    .prepare(
+      `INSERT OR IGNORE INTO receptor_buffers (id, channel, external_id, content, metadata_json, occurred_at, created_at)
+       VALUES ($id, $channel, $externalId, $content, $metadataJson, $occurredAt, $now)`,
+    )
+    .run({
+      $id: id,
+      $channel: input.channel,
+      $externalId: input.externalId,
+      $content: input.content,
+      $metadataJson: input.metadataJson ?? null,
+      $occurredAt: input.occurredAt,
+      $now: now,
+    });
+
+  if (result.changes === 0) {
+    // Duplicate — fetch the existing row's id
+    const existing = database
+      .prepare(
+        "SELECT id FROM receptor_buffers WHERE channel = $channel AND external_id = $externalId",
+      )
+      .get({ $channel: input.channel, $externalId: input.externalId }) as {
+      id: string;
+    };
+    return { id: existing.id, duplicate: true };
+  }
+
+  return { id, duplicate: false };
+}
+
+/**
+ * Get unprocessed receptor buffers, ordered by occurred_at ASC.
+ * Optionally filter by channel and/or a minimum created_at timestamp.
+ */
+export function getUnprocessedBuffers(opts?: {
+  channel?: string;
+  since?: number;
+}): ReceptorBuffer[] {
+  const database = getDatabase();
+  const conditions: string[] = [];
+  const params: Record<string, string | number> = {};
+
+  if (opts?.channel) {
+    conditions.push("channel = $channel");
+    params.$channel = opts.channel;
+  }
+  if (opts?.since !== undefined) {
+    conditions.push("created_at > $since");
+    params.$since = opts.since;
+  }
+
+  const where =
+    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = database
+    .prepare(
+      `SELECT id, channel, external_id, content, metadata_json, occurred_at, created_at
+       FROM receptor_buffers ${where} ORDER BY occurred_at ASC`,
+    )
+    .all(params) as Array<{
+    id: string;
+    channel: string;
+    external_id: string;
+    content: string;
+    metadata_json: string | null;
+    occurred_at: number;
+    created_at: number;
+  }>;
+
+  return rows.map((row) => ({
+    id: row.id,
+    channel: row.channel,
+    externalId: row.external_id,
+    content: row.content,
+    metadataJson: row.metadata_json,
+    occurredAt: row.occurred_at,
+    createdAt: row.created_at,
+  }));
+}
+
+/**
+ * Delete processed receptor buffer rows by their IDs.
+ * Returns the number of rows deleted.
+ */
+export function deleteProcessedBuffers(ids: string[]): number {
+  if (ids.length === 0) return 0;
+
+  const database = getDatabase();
+  const placeholders = ids.map((_, i) => `$id${i}`).join(", ");
+  const params: Record<string, string> = {};
+  for (let i = 0; i < ids.length; i++) {
+    params[`$id${i}`] = ids[i];
+  }
+
+  const result = database
+    .prepare(`DELETE FROM receptor_buffers WHERE id IN (${placeholders})`)
+    .run(params);
+
+  return result.changes;
+}
