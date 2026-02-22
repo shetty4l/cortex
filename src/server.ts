@@ -2,11 +2,12 @@
  * HTTP server for Cortex.
  *
  * Routes:
- *   GET  /health      — health check (handled by core)
- *   POST /ingest      — DEPRECATED (returns 410 Gone)
- *   POST /receive     — thalamus-gated event ingress
- *   POST /outbox/poll — connector delivery claim
- *   POST /outbox/ack  — connector delivery acknowledgement
+ *   GET  /health         — health check (handled by core)
+ *   POST /ingest         — DEPRECATED (returns 410 Gone)
+ *   POST /receive        — thalamus-gated event ingress
+ *   POST /outbox/poll    — connector delivery claim
+ *   POST /outbox/ack     — connector delivery acknowledgement
+ *   POST /thalamus/sync  — trigger thalamus sync (optional ?channel=X)
  */
 
 import {
@@ -366,6 +367,23 @@ export function startServer(
         response = await handleOutboxPoll(req, config);
       } else if (req.method === "POST" && url.pathname === "/outbox/ack") {
         response = await handleOutboxAck(req, config);
+      } else if (req.method === "POST" && url.pathname === "/thalamus/sync") {
+        if (!thalamus) {
+          response = jsonError(503, "Thalamus not initialized");
+        } else {
+          const channel = url.searchParams.get("channel");
+          try {
+            if (channel) {
+              await thalamus.syncChannel(channel);
+            } else {
+              await thalamus.syncAll();
+            }
+            response = jsonOk({ ok: true });
+          } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            response = jsonOk({ ok: false, error: message }, 500);
+          }
+        }
       }
 
       if (response) {
