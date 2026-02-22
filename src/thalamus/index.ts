@@ -67,8 +67,14 @@ export interface SyncResult {
 
 export class Thalamus {
   private syncTimer: ReturnType<typeof setInterval> | null = null;
+  private lastSyncAt: number | null = null;
 
   constructor(private config?: ThalamusConfig) {}
+
+  /** Returns the timestamp of the last syncAll() run, or null if never run. */
+  getLastSyncAt(): number | null {
+    return this.lastSyncAt;
+  }
 
   async start(): Promise<void> {
     if (!this.config) {
@@ -91,6 +97,8 @@ export class Thalamus {
   }
 
   async syncAll(): Promise<SyncResult> {
+    this.lastSyncAt = Date.now();
+
     if (!this.config) {
       log("thalamus syncAll: no config, skipping");
       return { ok: true, groups: 0, buffers: 0 };

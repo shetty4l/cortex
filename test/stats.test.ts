@@ -80,12 +80,26 @@ describe("stats API", () => {
       // Receptors
       expect(stats.receptors.calendar_last_sync_at).toBeNull();
       expect(stats.receptors.calendar_buffer_pending).toBe(0);
-      expect(stats.receptors.thalamus_last_sync_at).toBeNull();
+      expect(stats.receptors.thalamus_last_run_at).toBeNull();
 
       // Processing latencies
       expect(stats.processing.p50_ms).toBeNull();
       expect(stats.processing.p95_ms).toBeNull();
       expect(stats.processing.p99_ms).toBeNull();
+    });
+
+    test("includes thalamus_last_run_at when thalamus provided", () => {
+      const mockThalamus = {
+        getLastSyncAt: () => 1234567890,
+      };
+
+      const stats = getStats(mockThalamus);
+      expect(stats.receptors.thalamus_last_run_at).toBe(1234567890);
+    });
+
+    test("thalamus_last_run_at is null when thalamus not provided", () => {
+      const stats = getStats();
+      expect(stats.receptors.thalamus_last_run_at).toBeNull();
     });
 
     test("counts inbox messages by status", () => {
@@ -303,8 +317,8 @@ describe("stats API", () => {
       ).toBe(true);
       expect(typeof data.receptors.calendar_buffer_pending).toBe("number");
       expect(
-        data.receptors.thalamus_last_sync_at === null ||
-          typeof data.receptors.thalamus_last_sync_at === "number",
+        data.receptors.thalamus_last_run_at === null ||
+          typeof data.receptors.thalamus_last_run_at === "number",
       ).toBe(true);
 
       // Processing shape
