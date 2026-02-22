@@ -1202,12 +1202,12 @@ export interface CortexStats {
   inbox: {
     pending: number;
     processing: number;
-    done_1h: number;
-    failed_1h: number;
+    done_24h: number;
+    failed_24h: number;
   };
   outbox: {
     pending: number;
-    delivered_1h: number;
+    delivered_24h: number;
     dead_total: number;
   };
   receptors: {
@@ -1236,40 +1236,40 @@ interface ThalamusSyncInfo {
 /**
  * Get aggregated stats for the /stats API endpoint.
  * Returns inbox/outbox counts, receptor sync timestamps, and processing latency percentiles.
- * Time-based metrics use a 1-hour sliding window.
+ * Time-based metrics use a 24-hour sliding window.
  */
 export function getStats(thalamus?: ThalamusSyncInfo): CortexStats {
   const database = getDatabase();
-  const oneHourAgo = Date.now() - 3_600_000;
+  const oneDayAgo = Date.now() - 86_400_000;
 
-  // Inbox stats: pending/processing (all time) + done/failed (last hour)
+  // Inbox stats: pending/processing (all time) + done/failed (last 24h)
   const inboxRows = database
     .prepare(
       `
       SELECT status, COUNT(*) as count FROM inbox_messages
       WHERE status IN ('pending', 'processing')
-         OR (status IN ('done', 'failed') AND updated_at > $oneHourAgo)
+         OR (status IN ('done', 'failed') AND updated_at > $oneDayAgo)
       GROUP BY status
     `,
     )
-    .all({ $oneHourAgo: oneHourAgo }) as { status: string; count: number }[];
+    .all({ $oneDayAgo: oneDayAgo }) as { status: string; count: number }[];
 
   const inboxByStatus = Object.fromEntries(
     inboxRows.map((r) => [r.status, r.count]),
   );
 
-  // Outbox stats: pending (all time) + delivered (last hour) + dead (all time)
+  // Outbox stats: pending (all time) + delivered (last 24h) + dead (all time)
   const outboxRows = database
     .prepare(
       `
       SELECT status, COUNT(*) as count FROM outbox_messages
       WHERE status = 'pending'
-         OR (status = 'delivered' AND updated_at > $oneHourAgo)
+         OR (status = 'delivered' AND updated_at > $oneDayAgo)
          OR status = 'dead'
       GROUP BY status
     `,
     )
-    .all({ $oneHourAgo: oneHourAgo }) as { status: string; count: number }[];
+    .all({ $oneDayAgo: oneDayAgo }) as { status: string; count: number }[];
 
   const outboxByStatus = Object.fromEntries(
     outboxRows.map((r) => [r.status, r.count]),
@@ -1295,16 +1295,16 @@ export function getStats(thalamus?: ThalamusSyncInfo): CortexStats {
     bufferRows.map((r) => [r.channel, r.count]),
   );
 
-  // Processing latencies (p50, p95, p99) from done messages in last hour
+  // Processing latencies (p50, p95, p99) from done messages in last 24h
   const latencyRows = database
     .prepare(
       `
       SELECT processing_ms FROM inbox_messages
-      WHERE status = 'done' AND updated_at > $oneHourAgo AND processing_ms IS NOT NULL
+      WHERE status = 'done' AND updated_at > $oneDayAgo AND processing_ms IS NOT NULL
       ORDER BY processing_ms
     `,
     )
-    .all({ $oneHourAgo: oneHourAgo }) as { processing_ms: number }[];
+    .all({ $oneDayAgo: oneDayAgo }) as { processing_ms: number }[];
 
   const latencies = latencyRows.map((r) => r.processing_ms);
   const hasLatency = latencies.length > 0;
@@ -1313,12 +1313,12 @@ export function getStats(thalamus?: ThalamusSyncInfo): CortexStats {
     inbox: {
       pending: inboxByStatus.pending ?? 0,
       processing: inboxByStatus.processing ?? 0,
-      done_1h: inboxByStatus.done ?? 0,
-      failed_1h: inboxByStatus.failed ?? 0,
+      done_24h: inboxByStatus.done ?? 0,
+      failed_24h: inboxByStatus.failed ?? 0,
     },
     outbox: {
       pending: outboxByStatus.pending ?? 0,
-      delivered_1h: outboxByStatus.delivered ?? 0,
+      delivered_24h: outboxByStatus.delivered ?? 0,
       dead_total: outboxByStatus.dead ?? 0,
     },
     receptors: {
