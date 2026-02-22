@@ -13,6 +13,7 @@ import { startProcessingLoop } from "../src/loop";
 import { sendMessage } from "../src/send";
 import { startServer } from "../src/server";
 import { createEmptyRegistry } from "../src/skills";
+import { Thalamus } from "../src/thalamus";
 
 // --- Mock Synapse server ---
 
@@ -92,7 +93,8 @@ describe("sendMessage (end-to-end)", () => {
   beforeAll(() => {
     initDatabase(":memory:");
     config = testConfig(0);
-    cortexServer = startServer(config);
+    const thalamus = new Thalamus();
+    cortexServer = startServer(config, thalamus);
     baseUrl = `http://localhost:${cortexServer.port}`;
   });
 

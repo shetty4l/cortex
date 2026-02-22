@@ -28,11 +28,17 @@ const log = createLogger("cortex");
 interface RuntimeDeps {
   startServer: typeof startServer;
   startProcessingLoop: typeof startProcessingLoop;
-  createChannelRegistry: (config: CortexConfig) => ChannelRegistry;
+  createChannelRegistry: (
+    config: CortexConfig,
+    thalamus?: Thalamus,
+  ) => ChannelRegistry;
   log: (message: string) => void;
 }
 
-function defaultCreateChannelRegistry(config: CortexConfig): ChannelRegistry {
+function defaultCreateChannelRegistry(
+  config: CortexConfig,
+  thalamus?: Thalamus,
+): ChannelRegistry {
   const registry = new ChannelRegistry();
   if (config.telegramBotToken) {
     const allowedIds = config.telegramAllowedUserIds ?? [];
@@ -41,7 +47,7 @@ function defaultCreateChannelRegistry(config: CortexConfig): ChannelRegistry {
         "telegram channel enabled with empty allowedUserIds — all messages will be rejected",
       );
     }
-    registry.register(new TelegramChannel(config));
+    registry.register(new TelegramChannel(config, {}, thalamus));
   } else {
     log("telegram channel disabled (no token configured)");
   }
@@ -73,7 +79,7 @@ export async function startCortexRuntime(
   const loop = deps.startProcessingLoop(config, registry);
   deps.log("processing loop started");
 
-  const channels = deps.createChannelRegistry(config);
+  const channels = deps.createChannelRegistry(config, thalamus);
   await channels.startAll();
 
   const tick = new Tick();

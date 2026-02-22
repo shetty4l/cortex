@@ -2,11 +2,11 @@ import { createLogger } from "@shetty4l/core/log";
 import type { CortexConfig } from "../../config";
 import {
   ackOutboxMessage,
-  enqueueInboxMessage,
   getReceptorCursor,
   pollOutboxMessages,
   upsertReceptorCursor,
 } from "../../db";
+import type { Thalamus } from "../../thalamus";
 import type { Channel } from "../index";
 import {
   getUpdates,
@@ -72,6 +72,7 @@ export class TelegramChannel implements Channel {
   constructor(
     private config: CortexConfig,
     private options: TelegramChannelOptions = {},
+    private thalamus?: Thalamus,
   ) {}
 
   async start(): Promise<void> {
@@ -165,15 +166,32 @@ export class TelegramChannel implements Channel {
               : String(chatId);
 
           try {
-            enqueueInboxMessage({
-              channel: "telegram",
-              externalMessageId,
-              topicKey,
-              userId: String(fromId),
-              text,
-              occurredAt: message.date * 1000,
-              idempotencyKey: externalMessageId,
-            });
+            if (this.thalamus) {
+              this.thalamus.receive({
+                channel: "telegram",
+                externalId: externalMessageId,
+                data: {
+                  text,
+                  topicKey,
+                  userId: String(fromId),
+                  messageId: message.message_id,
+                  chatId,
+                },
+                occurredAt: new Date(message.date * 1000).toISOString(),
+              });
+            } else {
+              // Fallback: direct enqueue (should not happen in production)
+              const { enqueueInboxMessage } = await import("../../db");
+              enqueueInboxMessage({
+                channel: "telegram",
+                externalMessageId,
+                topicKey,
+                userId: String(fromId),
+                text,
+                occurredAt: message.date * 1000,
+                idempotencyKey: externalMessageId,
+              });
+            }
 
             const preview = text.length > 60 ? `${text.slice(0, 57)}...` : text;
             log(`enqueued inbox [${topicKey}]: ${preview}`);

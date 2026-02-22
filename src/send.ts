@@ -1,7 +1,7 @@
 /**
  * Send a message through Cortex and wait for the response.
  *
- * Acts as a mini-connector: POST /ingest → poll /outbox/poll → ack /outbox/ack.
+ * Acts as a mini-connector: POST /receive → poll /outbox/poll → ack /outbox/ack.
  * Used by `cortex send` CLI command and tests.
  */
 
@@ -24,7 +24,7 @@ export interface SendOptions {
 /**
  * Send a message to Cortex and wait for the assistant's response.
  *
- * 1. POST /ingest with channel="cli"
+ * 1. POST /receive with channel="cli"
  * 2. Poll /outbox/poll for channel="cli" until response appears
  * 3. Ack via /outbox/ack
  * 4. Return response text
@@ -40,12 +40,12 @@ export async function sendMessage(
   const pollTimeout = options.pollTimeoutMs ?? POLL_TIMEOUT_MS;
 
   const topicKey = options.topicKey ?? `cli:${crypto.randomUUID()}`;
-  const externalMessageId = `cli-${crypto.randomUUID()}`;
+  const externalId = `cli-${crypto.randomUUID()}`;
 
-  // 1. Ingest
-  let ingestResponse: Response;
+  // 1. Receive (via thalamus gate)
+  let receiveResponse: Response;
   try {
-    ingestResponse = await fetch(`${baseUrl}/ingest`, {
+    receiveResponse = await fetch(`${baseUrl}/receive`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -53,23 +53,24 @@ export async function sendMessage(
       },
       body: JSON.stringify({
         channel: SEND_CHANNEL,
-        externalMessageId,
-        idempotencyKey: `cli:${externalMessageId}`,
-        topicKey,
-        userId: "cli:local",
-        text,
+        externalId,
+        data: {
+          text,
+          topicKey,
+          userId: "cli:local",
+        },
         occurredAt: new Date().toISOString(),
       }),
     });
   } catch (e) {
     return err(
-      `Ingest connection failed: ${e instanceof Error ? e.message : String(e)}`,
+      `Receive connection failed: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
 
-  if (!ingestResponse.ok) {
-    const body = await ingestResponse.text();
-    return err(`Ingest failed (${ingestResponse.status}): ${body}`);
+  if (!receiveResponse.ok) {
+    const body = await receiveResponse.text();
+    return err(`Receive failed (${receiveResponse.status}): ${body}`);
   }
 
   // 2. Poll outbox
