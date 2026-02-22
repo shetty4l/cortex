@@ -35,6 +35,7 @@ const SCHEMA = `
     attempts INTEGER NOT NULL DEFAULT 0,
     next_attempt_at INTEGER NOT NULL DEFAULT 0,
     error TEXT,
+    processing_ms INTEGER,
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     -- Dedup is on (channel, external_message_id), NOT idempotency_key.
@@ -172,6 +173,15 @@ const dbManager = createDatabaseManager({
 
 const log = createLogger("cortex");
 
+// --- Migration helpers ---
+
+function hasColumn(database: Database, table: string, column: string): boolean {
+  const tableInfo = database.prepare(`PRAGMA table_info(${table})`).all() as {
+    name: string;
+  }[];
+  return tableInfo.some((col) => col.name === column);
+}
+
 /**
  * Initialize the database. Returns the Database instance on success.
  * Idempotent — returns existing instance if already open.
@@ -186,6 +196,11 @@ export function initDatabase(pathOverride?: string): Result<Database> {
     const db = dbManager.init(pathOverride);
     // Enable foreign keys (core sets WAL mode already)
     db.exec("PRAGMA foreign_keys = ON");
+
+    // Migration: add processing_ms column (Wave 3: stats API)
+    if (!hasColumn(db, "inbox_messages", "processing_ms")) {
+      db.exec("ALTER TABLE inbox_messages ADD COLUMN processing_ms INTEGER");
+    }
 
     // Recover inbox messages left in 'processing' from a prior crash.
     // Safe because the processing loop hasn't started yet at this point.
@@ -364,18 +379,29 @@ export function claimNextInboxMessage(): InboxMessage | null {
 
 /**
  * Mark an inbox message as done (or failed with an error reason).
+ * Optionally records the processing time in milliseconds.
  */
-export function completeInboxMessage(id: string, error?: string): void {
+export function completeInboxMessage(
+  id: string,
+  processingMs?: number,
+  error?: string,
+): void {
   const database = getDatabase();
   const now = Date.now();
   const status = error ? "failed" : "done";
 
   const stmt = database.prepare(`
     UPDATE inbox_messages
-    SET status = $status, error = $error, updated_at = $now
+    SET status = $status, error = $error, processing_ms = $processingMs, updated_at = $now
     WHERE id = $id
   `);
-  stmt.run({ $id: id, $status: status, $error: error ?? null, $now: now });
+  stmt.run({
+    $id: id,
+    $status: status,
+    $error: error ?? null,
+    $processingMs: processingMs ?? null,
+    $now: now,
+  });
 }
 
 /**
@@ -1168,4 +1194,137 @@ export function deleteProcessedBuffers(ids: string[]): number {
     .run(params);
 
   return result.changes;
+}
+
+// --- Stats API (Wave 3) ---
+
+export interface CortexStats {
+  inbox: {
+    pending: number;
+    processing: number;
+    done_1h: number;
+    failed_1h: number;
+  };
+  outbox: {
+    pending: number;
+    delivered_1h: number;
+    dead_total: number;
+  };
+  receptors: {
+    calendar_last_sync_at: number | null;
+    calendar_buffer_pending: number;
+    thalamus_last_sync_at: number | null;
+  };
+  processing: {
+    p50_ms: number | null;
+    p95_ms: number | null;
+    p99_ms: number | null;
+  };
+}
+
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, idx)];
+}
+
+/**
+ * Get aggregated stats for the /stats API endpoint.
+ * Returns inbox/outbox counts, receptor sync timestamps, and processing latency percentiles.
+ * Time-based metrics use a 1-hour sliding window.
+ */
+export function getStats(): CortexStats {
+  const database = getDatabase();
+  const oneHourAgo = Date.now() - 3_600_000;
+
+  // Inbox stats: pending/processing (all time) + done/failed (last hour)
+  const inboxRows = database
+    .prepare(
+      `
+      SELECT status, COUNT(*) as count FROM inbox_messages
+      WHERE status IN ('pending', 'processing')
+         OR (status IN ('done', 'failed') AND updated_at > $oneHourAgo)
+      GROUP BY status
+    `,
+    )
+    .all({ $oneHourAgo: oneHourAgo }) as { status: string; count: number }[];
+
+  const inboxByStatus = Object.fromEntries(
+    inboxRows.map((r) => [r.status, r.count]),
+  );
+
+  // Outbox stats: pending (all time) + delivered (last hour) + dead (all time)
+  const outboxRows = database
+    .prepare(
+      `
+      SELECT status, COUNT(*) as count FROM outbox_messages
+      WHERE status = 'pending'
+         OR (status = 'delivered' AND updated_at > $oneHourAgo)
+         OR status = 'dead'
+      GROUP BY status
+    `,
+    )
+    .all({ $oneHourAgo: oneHourAgo }) as { status: string; count: number }[];
+
+  const outboxByStatus = Object.fromEntries(
+    outboxRows.map((r) => [r.status, r.count]),
+  );
+
+  // Receptor cursors (last sync timestamps)
+  const cursorRows = database
+    .prepare(`SELECT channel, last_synced_at FROM receptor_cursors`)
+    .all() as { channel: string; last_synced_at: number }[];
+
+  const cursorByChannel = Object.fromEntries(
+    cursorRows.map((r) => [r.channel, r.last_synced_at]),
+  );
+
+  // Receptor buffers pending (count per channel)
+  const bufferRows = database
+    .prepare(
+      `SELECT channel, COUNT(*) as count FROM receptor_buffers GROUP BY channel`,
+    )
+    .all() as { channel: string; count: number }[];
+
+  const bufferByChannel = Object.fromEntries(
+    bufferRows.map((r) => [r.channel, r.count]),
+  );
+
+  // Processing latencies (p50, p95, p99) from done messages in last hour
+  const latencyRows = database
+    .prepare(
+      `
+      SELECT processing_ms FROM inbox_messages
+      WHERE status = 'done' AND updated_at > $oneHourAgo AND processing_ms IS NOT NULL
+      ORDER BY processing_ms
+    `,
+    )
+    .all({ $oneHourAgo: oneHourAgo }) as { processing_ms: number }[];
+
+  const latencies = latencyRows.map((r) => r.processing_ms);
+  const hasLatency = latencies.length > 0;
+
+  return {
+    inbox: {
+      pending: inboxByStatus.pending ?? 0,
+      processing: inboxByStatus.processing ?? 0,
+      done_1h: inboxByStatus.done ?? 0,
+      failed_1h: inboxByStatus.failed ?? 0,
+    },
+    outbox: {
+      pending: outboxByStatus.pending ?? 0,
+      delivered_1h: outboxByStatus.delivered ?? 0,
+      dead_total: outboxByStatus.dead ?? 0,
+    },
+    receptors: {
+      calendar_last_sync_at: cursorByChannel.calendar ?? null,
+      calendar_buffer_pending: bufferByChannel.calendar ?? 0,
+      thalamus_last_sync_at: cursorByChannel.thalamus ?? null,
+    },
+    processing: {
+      p50_ms: hasLatency ? percentile(latencies, 50) : null,
+      p95_ms: hasLatency ? percentile(latencies, 95) : null,
+      p99_ms: hasLatency ? percentile(latencies, 99) : null,
+    },
+  };
 }

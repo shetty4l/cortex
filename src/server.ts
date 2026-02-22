@@ -3,6 +3,7 @@
  *
  * Routes:
  *   GET  /health         — health check (handled by core)
+ *   GET  /stats          — aggregated stats (Wave 3)
  *   POST /ingest         — DEPRECATED (returns 410 Gone)
  *   POST /receive        — thalamus-gated event ingress
  *   POST /outbox/poll    — connector delivery claim
@@ -19,7 +20,7 @@ import {
 import { createLogger } from "@shetty4l/core/log";
 import { timingSafeEqual } from "crypto";
 import type { CortexConfig } from "./config";
-import { ackOutboxMessage, pollOutboxMessages } from "./db";
+import { ackOutboxMessage, getStats, pollOutboxMessages } from "./db";
 import type { Thalamus } from "./thalamus";
 import { VERSION } from "./version";
 
@@ -356,7 +357,9 @@ export function startServer(
       const start = performance.now();
       let response: Response | null = null;
 
-      if (req.method === "POST" && url.pathname === "/ingest") {
+      if (req.method === "GET" && url.pathname === "/stats") {
+        response = jsonOk(getStats());
+      } else if (req.method === "POST" && url.pathname === "/ingest") {
         response = handleIngestDeprecated();
       } else if (req.method === "POST" && url.pathname === "/receive") {
         if (!thalamus) {
