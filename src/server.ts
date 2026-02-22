@@ -354,12 +354,12 @@ export function startServer(
 
       if (req.method === "POST" && url.pathname === "/ingest") {
         response = handleIngestDeprecated();
-      } else if (
-        req.method === "POST" &&
-        url.pathname === "/receive" &&
-        thalamus
-      ) {
-        response = await handleReceive(req, config, thalamus);
+      } else if (req.method === "POST" && url.pathname === "/receive") {
+        if (!thalamus) {
+          response = jsonError(503, "Thalamus not initialized");
+        } else {
+          response = await handleReceive(req, config, thalamus);
+        }
       } else if (req.method === "POST" && url.pathname === "/outbox/poll") {
         response = await handleOutboxPoll(req, config);
       } else if (req.method === "POST" && url.pathname === "/outbox/ack") {
