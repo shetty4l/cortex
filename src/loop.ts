@@ -167,6 +167,7 @@ export function startProcessingLoop(
                 toolTimeoutMs: config.toolTimeoutMs,
                 maxToolRounds: config.maxToolRounds,
                 skillConfig: config.skillConfig,
+                synapseTimeoutMs: config.synapseTimeoutMs,
               },
             });
 
@@ -194,6 +195,8 @@ export function startProcessingLoop(
               messages,
               config.model,
               config.synapseUrl,
+              undefined,
+              config.synapseTimeoutMs,
             );
 
             if (result.ok) {

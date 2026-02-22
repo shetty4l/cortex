@@ -108,6 +108,7 @@ function testConfig(): CortexConfig {
     skillConfig: {},
     toolTimeoutMs: 20000,
     maxToolRounds: 8,
+    synapseTimeoutMs: 60_000,
   };
 }
 

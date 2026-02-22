@@ -60,6 +60,9 @@ export interface CortexConfig {
   skillConfig: Record<string, Record<string, unknown>>;
   toolTimeoutMs: number;
   maxToolRounds: number;
+
+  // Synapse
+  synapseTimeoutMs: number;
 }
 
 // --- Defaults ---
@@ -86,6 +89,7 @@ const DEFAULTS: Omit<
   skillConfig: {},
   toolTimeoutMs: 20000,
   maxToolRounds: 8,
+  synapseTimeoutMs: 60_000,
 };
 
 // --- Validation ---
@@ -193,6 +197,7 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "outboxMaxAttempts", min: 1 },
     { key: "toolTimeoutMs", min: 1000 },
     { key: "maxToolRounds", min: 1, max: 20 },
+    { key: "synapseTimeoutMs", min: 5_000 },
   ];
 
   for (const field of numericFields) {

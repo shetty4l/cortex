@@ -57,6 +57,7 @@ describe("config", () => {
     expect(config.skillDirs).toEqual([]);
     expect(config.toolTimeoutMs).toBe(20000);
     expect(config.maxToolRounds).toBe(8);
+    expect(config.synapseTimeoutMs).toBe(60_000);
     expect(config.ingestApiKey).toBeUndefined();
     expect(config.model).toBeUndefined();
     expect(config.extractionModel).toBeUndefined();
@@ -444,6 +445,62 @@ describe("config", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toContain("CORTEX_MAX_TOOL_ROUNDS");
+  });
+
+  // --- systemPromptFile tests ---
+
+  test("synapseTimeoutMs defaults to 60_000", () => {
+    process.env.CORTEX_CONFIG_PATH = "/nonexistent/config.json";
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.synapseTimeoutMs).toBe(60_000);
+  });
+
+  test("loads custom synapseTimeoutMs from config file", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(configPath, JSON.stringify({ synapseTimeoutMs: 90_000 }));
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.synapseTimeoutMs).toBe(90_000);
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("returns error when synapseTimeoutMs is below minimum (5_000)", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(configPath, JSON.stringify({ synapseTimeoutMs: 3_000 }));
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must be >= 5000");
+
+    rmSync(tmpDir, { recursive: true });
+  });
+
+  test("returns error when synapseTimeoutMs is not an integer", () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "cortex-test-"));
+    const configPath = join(tmpDir, "config.json");
+
+    writeFileSync(configPath, JSON.stringify({ synapseTimeoutMs: 10000.5 }));
+    process.env.CORTEX_CONFIG_PATH = configPath;
+
+    const result = loadConfig({ quiet: true, skipRequiredChecks: true });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toContain("must be an integer");
+
+    rmSync(tmpDir, { recursive: true });
   });
 
   // --- systemPromptFile tests ---
