@@ -69,12 +69,12 @@ describe("stats API", () => {
       // Inbox
       expect(stats.inbox.pending).toBe(0);
       expect(stats.inbox.processing).toBe(0);
-      expect(stats.inbox.done_1h).toBe(0);
-      expect(stats.inbox.failed_1h).toBe(0);
+      expect(stats.inbox.done_24h).toBe(0);
+      expect(stats.inbox.failed_24h).toBe(0);
 
       // Outbox
       expect(stats.outbox.pending).toBe(0);
-      expect(stats.outbox.delivered_1h).toBe(0);
+      expect(stats.outbox.delivered_24h).toBe(0);
       expect(stats.outbox.dead_total).toBe(0);
 
       // Receptors
@@ -144,7 +144,7 @@ describe("stats API", () => {
       completeInboxMessage(result.eventId, 500);
 
       const stats = getStats();
-      expect(stats.inbox.done_1h).toBe(1);
+      expect(stats.inbox.done_24h).toBe(1);
       expect(stats.inbox.pending).toBe(0);
     });
 
@@ -162,24 +162,24 @@ describe("stats API", () => {
       completeInboxMessage(result.eventId, 100, "some error");
 
       const stats = getStats();
-      expect(stats.inbox.failed_1h).toBe(1);
+      expect(stats.inbox.failed_24h).toBe(1);
     });
 
-    test("excludes old done/failed messages from 1h counts", () => {
+    test("excludes old done/failed messages from 24h counts", () => {
       // Manually insert a message with old updated_at
       const db = getDatabase();
-      const twoHoursAgo = Date.now() - 2 * 3600 * 1000;
+      const twoDaysAgo = Date.now() - 2 * 24 * 3600 * 1000;
       db.prepare(`
         INSERT INTO inbox_messages
         (id, channel, external_message_id, topic_key, user_id, text, occurred_at,
          idempotency_key, priority, status, attempts, next_attempt_at, created_at, updated_at)
         VALUES
         ('old_done', 'telegram', 'old1', 'topic:1', 'user1', 'test', $now,
-         'key_old', 5, 'done', 0, 0, $twoHoursAgo, $twoHoursAgo)
-      `).run({ $now: Date.now(), $twoHoursAgo: twoHoursAgo });
+         'key_old', 5, 'done', 0, 0, $twoDaysAgo, $twoDaysAgo)
+      `).run({ $now: Date.now(), $twoDaysAgo: twoDaysAgo });
 
       const stats = getStats();
-      expect(stats.inbox.done_1h).toBe(0); // Old message not counted
+      expect(stats.inbox.done_24h).toBe(0); // Old message not counted
     });
 
     test("counts outbox messages by status", () => {
@@ -302,12 +302,12 @@ describe("stats API", () => {
       // Inbox shape
       expect(typeof data.inbox.pending).toBe("number");
       expect(typeof data.inbox.processing).toBe("number");
-      expect(typeof data.inbox.done_1h).toBe("number");
-      expect(typeof data.inbox.failed_1h).toBe("number");
+      expect(typeof data.inbox.done_24h).toBe("number");
+      expect(typeof data.inbox.failed_24h).toBe("number");
 
       // Outbox shape
       expect(typeof data.outbox.pending).toBe("number");
-      expect(typeof data.outbox.delivered_1h).toBe("number");
+      expect(typeof data.outbox.delivered_24h).toBe("number");
       expect(typeof data.outbox.dead_total).toBe("number");
 
       // Receptors shape
