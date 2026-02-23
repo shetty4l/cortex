@@ -73,6 +73,10 @@ export interface CortexConfig {
 
   // Output routing
   silentChannelAlias?: string;
+
+  // Debug logging
+  debugPipeline?: boolean;
+  debugPrompt?: boolean;
 }
 
 // --- Defaults ---
@@ -311,6 +315,22 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     >;
   }
 
+  // Boolean fields
+  const booleanFields: Array<keyof CortexConfig> = [
+    "debugPipeline",
+    "debugPrompt",
+  ];
+
+  for (const field of booleanFields) {
+    if (obj[field] !== undefined) {
+      if (typeof obj[field] !== "boolean") {
+        return err(`${field}: must be a boolean`);
+      }
+      // biome-ignore lint: dynamic field assignment
+      (result as Record<string, unknown>)[field] = obj[field];
+    }
+  }
+
   return ok(result);
 }
 
@@ -432,6 +452,14 @@ export function loadConfig(
       );
     }
     config.maxToolRounds = val;
+  }
+
+  // Debug logging env overrides (env overrides config)
+  if (process.env.CORTEX_DEBUG_PIPELINE !== undefined) {
+    config.debugPipeline = process.env.CORTEX_DEBUG_PIPELINE === "1";
+  }
+  if (process.env.CORTEX_DEBUG_PROMPT !== undefined) {
+    config.debugPrompt = process.env.CORTEX_DEBUG_PROMPT === "1";
   }
 
   // Path expansion (resolve ~ to home directory)
