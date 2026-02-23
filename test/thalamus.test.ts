@@ -548,7 +548,7 @@ describe("thalamus.syncAll()", () => {
     await thalamus.syncAll();
 
     expect(capturedBody.model).toBe("gpt-oss:20b");
-    expect(capturedBody.temperature).toBe(0.3);
+    expect(capturedBody.temperature).toBe(0.1);
   });
 
   test("handles empty LLM items gracefully", async () => {
@@ -709,8 +709,8 @@ describe("thalamus.syncAll()", () => {
     await thalamus.syncAll();
 
     expect(capturedTemperatures).toHaveLength(2);
-    expect(capturedTemperatures[0]).toBe(0.3); // First attempt
-    expect(capturedTemperatures[1]).toBe(0.1); // Retry with lower temp
+    expect(capturedTemperatures[0]).toBe(0.1); // First attempt (deterministic for topic keys)
+    expect(capturedTemperatures[1]).toBe(0.1); // Retry with same temp
   });
 
   test("includes correction prompt in retry request", async () => {
