@@ -34,6 +34,7 @@ import type { OpenAITool } from "./synapse";
 import { chat } from "./synapse";
 import type { BuiltinToolContext } from "./tools";
 import { resolveOutputChannel } from "./tools";
+import { generateTraceId, runWithTraceId } from "./trace";
 
 // --- Constants ---
 
@@ -139,153 +140,160 @@ export function startProcessingLoop(
 
         if (message) {
           delay = pollBusyMs;
-          const startMs = performance.now();
 
-          // Update built-in tool context for this message
-          if (builtinCtx) {
-            builtinCtx.topicKey = message.topic_key;
-          }
+          // Generate trace ID for this message
+          const traceId = generateTraceId();
 
-          const preview =
-            message.text.length > 60
-              ? `${message.text.slice(0, 57)}...`
-              : message.text;
-          log(`[${message.topic_key}] claimed: ${preview}`);
+          // Process within trace context
+          await runWithTraceId(traceId, async () => {
+            const startMs = performance.now();
 
-          // 1. Recall memories from Engram (graceful on failure)
-          const memories = await recallDual(
-            message.text,
-            message.topic_key,
-            config.engramUrl,
-          );
-
-          // 2. Load recent turn history
-          const turns = loadHistory(message.topic_key);
-
-          // 3. Load topic summary (fast SQLite read)
-          const topicSummary = getTopicSummary(message.topic_key);
-
-          log(
-            `[${message.topic_key}] context: memories=${memories.length} turns=${turns.length}`,
-          );
-
-          // 4. Build prompt
-          const messages = buildPrompt({
-            systemPrompt,
-            memories,
-            topicSummary,
-            turns,
-            userText: message.text,
-          });
-
-          // 5. Call Synapse — agent loop with tools or plain chat
-          let responseText: string;
-          let ok: boolean;
-          let errorMsg: string | undefined;
-
-          if (hasTools) {
-            const agentResult = await runAgentLoop({
-              messages,
-              tools: openAITools,
-              registry,
-              config: {
-                models: config.models,
-                synapseUrl: config.synapseUrl,
-                toolTimeoutMs: config.toolTimeoutMs,
-                maxToolRounds: config.maxToolRounds,
-                skillConfig: config.skillConfig,
-                synapseTimeoutMs: config.synapseTimeoutMs,
-              },
-            });
-
-            if (agentResult.ok) {
-              ok = true;
-              responseText = agentResult.value.response;
-
-              // Save full agent history (user message + all loop turns)
-              const userMessage = {
-                role: "user" as const,
-                content: message.text,
-              };
-              saveAgentHistory(message.topic_key, [
-                userMessage,
-                ...agentResult.value.turns,
-              ]);
-            } else {
-              ok = false;
-              responseText = "";
-              errorMsg = agentResult.error;
+            // Update built-in tool context for this message
+            if (builtinCtx) {
+              builtinCtx.topicKey = message.topic_key;
             }
-          } else {
-            // Plain chat path (no tools loaded)
-            const result = await chat(
-              messages,
-              config.models,
-              config.synapseUrl,
-              { timeoutMs: config.synapseTimeoutMs },
+
+            const preview =
+              message.text.length > 60
+                ? `${message.text.slice(0, 57)}...`
+                : message.text;
+            log(`[${message.topic_key}] claimed: ${preview}`);
+
+            // 1. Recall memories from Engram (graceful on failure)
+            const memories = await recallDual(
+              message.text,
+              message.topic_key,
+              config.engramUrl,
             );
 
-            if (result.ok) {
-              ok = true;
-              responseText = result.value.content;
-              saveTurnPair(message.topic_key, message.text, responseText);
-            } else {
-              ok = false;
-              responseText = "";
-              errorMsg = result.error;
-            }
-          }
+            // 2. Load recent turn history
+            const turns = loadHistory(message.topic_key);
 
-          const elapsed = ((performance.now() - startMs) / 1000).toFixed(1);
-          const processingMs = Math.round(performance.now() - startMs);
+            // 3. Load topic summary (fast SQLite read)
+            const topicSummary = getTopicSummary(message.topic_key);
 
-          if (ok) {
-            // 7. Trigger async extraction (fire-and-forget, serialized per topic)
-            //    Always increment the turn counter — even when extraction is
-            //    already in-flight — so the cadence stays accurate.
-            if (config.extractionModels) {
-              incrementTurnsSinceExtraction(message.topic_key);
-            }
-            if (!extractionInFlight.has(message.topic_key)) {
-              const p = maybeExtract(message.topic_key, config)
-                .catch((e) =>
-                  log(
-                    `[${message.topic_key}] extraction error: ${e instanceof Error ? e.message : String(e)}`,
-                  ),
-                )
-                .finally(() => extractionInFlight.delete(message.topic_key));
-              extractionInFlight.set(message.topic_key, p);
-            }
-
-            // 8. Write to outbox
-            enqueueOutboxMessage({
-              channel: resolveOutputChannel(message.channel, config),
-              topicKey: message.topic_key,
-              text: responseText,
-            });
-
-            completeInboxMessage(message.id, processingMs);
-
-            const responsePreview =
-              responseText.length > 120
-                ? `${responseText.slice(0, 117)}...`
-                : responseText;
             log(
-              `[${message.topic_key}] done in ${elapsed}s: ${responsePreview}`,
+              `[${message.topic_key}] context: memories=${memories.length} turns=${turns.length}`,
             );
-          } else {
-            log(`[${message.topic_key}] failed in ${elapsed}s: ${errorMsg}`);
-            if (isTransientError(errorMsg!)) {
-              retryInboxMessage(
-                message.id,
-                message.attempts,
-                config.inboxMaxAttempts,
-                errorMsg!,
+
+            // 4. Build prompt
+            const messages = buildPrompt({
+              systemPrompt,
+              memories,
+              topicSummary,
+              turns,
+              userText: message.text,
+            });
+
+            // 5. Call Synapse — agent loop with tools or plain chat
+            let responseText: string;
+            let ok: boolean;
+            let errorMsg: string | undefined;
+
+            if (hasTools) {
+              const agentResult = await runAgentLoop({
+                messages,
+                tools: openAITools,
+                registry,
+                config: {
+                  models: config.models,
+                  synapseUrl: config.synapseUrl,
+                  toolTimeoutMs: config.toolTimeoutMs,
+                  maxToolRounds: config.maxToolRounds,
+                  skillConfig: config.skillConfig,
+                  synapseTimeoutMs: config.synapseTimeoutMs,
+                },
+              });
+
+              if (agentResult.ok) {
+                ok = true;
+                responseText = agentResult.value.response;
+
+                // Save full agent history (user message + all loop turns)
+                const userMessage = {
+                  role: "user" as const,
+                  content: message.text,
+                };
+                saveAgentHistory(message.topic_key, [
+                  userMessage,
+                  ...agentResult.value.turns,
+                ]);
+              } else {
+                ok = false;
+                responseText = "";
+                errorMsg = agentResult.error;
+              }
+            } else {
+              // Plain chat path (no tools loaded)
+              const result = await chat(
+                messages,
+                config.models,
+                config.synapseUrl,
+                { timeoutMs: config.synapseTimeoutMs },
+              );
+
+              if (result.ok) {
+                ok = true;
+                responseText = result.value.content;
+                saveTurnPair(message.topic_key, message.text, responseText);
+              } else {
+                ok = false;
+                responseText = "";
+                errorMsg = result.error;
+              }
+            }
+
+            const elapsed = ((performance.now() - startMs) / 1000).toFixed(1);
+            const processingMs = Math.round(performance.now() - startMs);
+
+            if (ok) {
+              // 7. Trigger async extraction (fire-and-forget, serialized per topic)
+              //    Always increment the turn counter — even when extraction is
+              //    already in-flight — so the cadence stays accurate.
+              if (config.extractionModels) {
+                incrementTurnsSinceExtraction(message.topic_key);
+              }
+              if (!extractionInFlight.has(message.topic_key)) {
+                const p = maybeExtract(message.topic_key, config)
+                  .catch((e) =>
+                    log(
+                      `[${message.topic_key}] extraction error: ${e instanceof Error ? e.message : String(e)}`,
+                    ),
+                  )
+                  .finally(() => extractionInFlight.delete(message.topic_key));
+                extractionInFlight.set(message.topic_key, p);
+              }
+
+              // 8. Write to outbox
+              enqueueOutboxMessage({
+                channel: resolveOutputChannel(message.channel, config),
+                topicKey: message.topic_key,
+                text: responseText,
+              });
+
+              completeInboxMessage(message.id, processingMs);
+
+              const responsePreview =
+                responseText.length > 120
+                  ? `${responseText.slice(0, 117)}...`
+                  : responseText;
+              log(
+                `[${message.topic_key}] done in ${elapsed}s: ${responsePreview}`,
               );
             } else {
-              completeInboxMessage(message.id, processingMs, errorMsg);
+              log(`[${message.topic_key}] failed in ${elapsed}s: ${errorMsg}`);
+              if (isTransientError(errorMsg!)) {
+                retryInboxMessage(
+                  message.id,
+                  message.attempts,
+                  config.inboxMaxAttempts,
+                  errorMsg!,
+                );
+              } else {
+                completeInboxMessage(message.id, processingMs, errorMsg);
+              }
             }
-          }
+          });
         }
       } catch (err) {
         // Unexpected error in the loop itself (e.g. DB failure on claim).
