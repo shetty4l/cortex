@@ -78,8 +78,6 @@ describe("stats API", () => {
       expect(stats.outbox.dead_total).toBe(0);
 
       // Receptors
-      expect(stats.receptors.calendar_last_sync_at).toBeNull();
-      expect(stats.receptors.calendar_buffer_pending).toBe(0);
       expect(stats.receptors.thalamus_last_run_at).toBeNull();
       expect(stats.receptors.buffer_pending_total).toBe(0);
 
@@ -199,16 +197,7 @@ describe("stats API", () => {
       expect(stats.outbox.pending).toBe(2);
     });
 
-    test("reports receptor cursor timestamps", () => {
-      upsertReceptorCursor("calendar", "cursor-value-1");
-
-      const stats = getStats();
-      // last_synced_at is set to Date.now() by the function
-      expect(stats.receptors.calendar_last_sync_at).not.toBeNull();
-      expect(typeof stats.receptors.calendar_last_sync_at).toBe("number");
-    });
-
-    test("counts pending receptor buffers", () => {
+    test("counts pending receptor buffers (total across all channels)", () => {
       insertReceptorBuffer({
         channel: "calendar",
         externalId: "event-1",
@@ -223,7 +212,7 @@ describe("stats API", () => {
       });
 
       const stats = getStats();
-      expect(stats.receptors.calendar_buffer_pending).toBe(2);
+      expect(stats.receptors.buffer_pending_total).toBe(2);
     });
 
     test("sums buffer_pending_total across all channels", () => {
@@ -254,9 +243,6 @@ describe("stats API", () => {
       });
 
       const stats = getStats();
-
-      // calendar_buffer_pending only counts calendar
-      expect(stats.receptors.calendar_buffer_pending).toBe(2);
 
       // buffer_pending_total sums all channels: 2 + 1 + 1 = 4
       expect(stats.receptors.buffer_pending_total).toBe(4);
@@ -353,11 +339,6 @@ describe("stats API", () => {
       expect(typeof data.outbox.dead_total).toBe("number");
 
       // Receptors shape
-      expect(
-        data.receptors.calendar_last_sync_at === null ||
-          typeof data.receptors.calendar_last_sync_at === "number",
-      ).toBe(true);
-      expect(typeof data.receptors.calendar_buffer_pending).toBe("number");
       expect(
         data.receptors.thalamus_last_run_at === null ||
           typeof data.receptors.thalamus_last_run_at === "number",
