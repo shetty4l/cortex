@@ -14,6 +14,8 @@
 import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+import { getDebugLogger } from "./debug-logger";
+import { getTraceId } from "./trace";
 
 const log = createLogger("cortex");
 
@@ -192,7 +194,28 @@ export async function chat(
     }
 
     const latency = ((performance.now() - startMs) / 1000).toFixed(1);
+    const latencyMs = Math.round(performance.now() - startMs);
     log(`synapse ${model} ${response.status} ${latency}s`);
+
+    // Emit llm debug event
+    const debug = getDebugLogger();
+    const traceId = getTraceId();
+    if (debug.isEnabled() && traceId) {
+      const responsePreview =
+        result.content.length > 200
+          ? `${result.content.slice(0, 197)}...`
+          : result.content;
+      debug.log({
+        type: "llm",
+        traceId,
+        timestamp: new Date().toISOString(),
+        model,
+        latencyMs,
+        status: response.status,
+        toolCallsCount: result.toolCalls?.length ?? 0,
+        responsePreview,
+      });
+    }
 
     return ok(result);
   }
