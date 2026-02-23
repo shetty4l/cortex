@@ -19,9 +19,18 @@ export interface SyncOutputItem {
   rawBufferIds: string[];
 }
 
+export interface ParseResult {
+  /** True if the LLM response was valid JSON with an items array */
+  ok: boolean;
+  /** Parsed items (empty array if ok=true but nothing noteworthy, or if ok=false) */
+  items: SyncOutputItem[];
+}
+
 // --- Prompts ---
 
 export const THALAMUS_TRIAGE_SYSTEM_PROMPT = `You are a triage layer for incoming sensor data in a personal life assistant.
+
+CRITICAL: You must respond with valid JSON only. No markdown, no explanation, no code fences. Start your response with { and end with }.
 
 Your job:
 1. Review buffered data from various channels (calendar, email, etc.)
@@ -58,6 +67,13 @@ Output ONLY valid JSON matching this schema:
 }
 
 Do not include any text outside the JSON.`;
+
+/**
+ * Correction prompt used when the LLM returns invalid JSON.
+ * Appended to the conversation to request a clean retry.
+ */
+export const THALAMUS_RETRY_PROMPT =
+  "Your response was not valid JSON. Respond with ONLY the JSON object. No markdown, no explanation, no code fences. Start with { and end with }.";
 
 export function buildTriageUserPrompt(
   buffers: {
@@ -96,7 +112,7 @@ export function buildTriageUserPrompt(
 
 // --- Parsing ---
 
-export function parseSyncOutput(llmResponse: string): SyncOutputItem[] {
+export function parseSyncOutput(llmResponse: string): ParseResult {
   try {
     // Strip markdown code fences if present
     let json = llmResponse.trim();
@@ -109,7 +125,7 @@ export function parseSyncOutput(llmResponse: string): SyncOutputItem[] {
 
     if (!parsed.items || !Array.isArray(parsed.items)) {
       log("thalamus sync: parsed response missing items array");
-      return [];
+      return { ok: false, items: [] };
     }
 
     const valid: SyncOutputItem[] = [];
@@ -128,11 +144,11 @@ export function parseSyncOutput(llmResponse: string): SyncOutputItem[] {
       }
     }
 
-    return valid;
+    return { ok: true, items: valid };
   } catch (e) {
     log(
       `thalamus sync: failed to parse LLM response: ${e instanceof Error ? e.message : String(e)}`,
     );
-    return [];
+    return { ok: false, items: [] };
   }
 }

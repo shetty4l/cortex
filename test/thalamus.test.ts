@@ -572,6 +572,201 @@ describe("thalamus.syncAll()", () => {
     const remaining = getUnprocessedBuffers();
     expect(remaining).toHaveLength(0);
   });
+
+  test("retries with correction prompt on parse failure", async () => {
+    insertReceptorBuffer({
+      channel: "calendar",
+      externalId: "cal-1",
+      content: "Meeting tomorrow",
+      occurredAt: Date.now(),
+    });
+
+    let callCount = 0;
+    mockSynapseHandler = () => {
+      callCount++;
+      if (callCount === 1) {
+        // First call: return invalid JSON (markdown)
+        return Response.json({
+          id: "chat-test",
+          object: "chat.completion",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: "Here's the analysis:\n\n* Item 1\n* Item 2",
+              },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        });
+      }
+      // Second call (retry): return valid JSON
+      return Response.json(
+        makeSynapseResponse([
+          {
+            topicKey: "meeting",
+            priority: 1,
+            summary: "Meeting scheduled",
+            rawBufferIds: ["rb_1"],
+          },
+        ]),
+      );
+    };
+
+    const thalamus = new Thalamus(makeThalamusConfig());
+    await thalamus.syncAll();
+
+    expect(callCount).toBe(2);
+
+    // Inbox should have the message from retry
+    const msg = claimNextInboxMessage();
+    expect(msg).not.toBeNull();
+    expect(msg!.topic_key).toBe("meeting");
+
+    // Buffers should be deleted after successful retry
+    const remaining = getUnprocessedBuffers();
+    expect(remaining).toHaveLength(0);
+  });
+
+  test("preserves buffers when all parse attempts fail", async () => {
+    insertReceptorBuffer({
+      channel: "calendar",
+      externalId: "cal-1",
+      content: "Meeting tomorrow",
+      occurredAt: Date.now(),
+    });
+
+    let callCount = 0;
+    mockSynapseHandler = () => {
+      callCount++;
+      // Both calls return invalid JSON
+      return Response.json({
+        id: "chat-test",
+        object: "chat.completion",
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: "Here's the analysis:\n\n* Item 1",
+            },
+            finish_reason: "stop",
+          },
+        ],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      });
+    };
+
+    const thalamus = new Thalamus(makeThalamusConfig());
+    await thalamus.syncAll();
+
+    expect(callCount).toBe(2);
+
+    // No inbox messages created
+    const msg = claimNextInboxMessage();
+    expect(msg).toBeNull();
+
+    // Buffers should be PRESERVED (not deleted)
+    const remaining = getUnprocessedBuffers();
+    expect(remaining).toHaveLength(1);
+  });
+
+  test("uses lower temperature (0.1) on retry", async () => {
+    insertReceptorBuffer({
+      channel: "calendar",
+      externalId: "cal-1",
+      content: "Meeting tomorrow",
+      occurredAt: Date.now(),
+    });
+
+    const capturedTemperatures: number[] = [];
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as { temperature?: number };
+      capturedTemperatures.push(body.temperature ?? -1);
+
+      if (capturedTemperatures.length === 1) {
+        // First call: return invalid JSON
+        return Response.json({
+          id: "chat-test",
+          object: "chat.completion",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "not json" },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        });
+      }
+      // Second call: return valid JSON
+      return Response.json(makeSynapseResponse([]));
+    };
+
+    const thalamus = new Thalamus(makeThalamusConfig());
+    await thalamus.syncAll();
+
+    expect(capturedTemperatures).toHaveLength(2);
+    expect(capturedTemperatures[0]).toBe(0.3); // First attempt
+    expect(capturedTemperatures[1]).toBe(0.1); // Retry with lower temp
+  });
+
+  test("includes correction prompt in retry request", async () => {
+    insertReceptorBuffer({
+      channel: "calendar",
+      externalId: "cal-1",
+      content: "Meeting tomorrow",
+      occurredAt: Date.now(),
+    });
+
+    const capturedMessages: Array<Array<{ role: string; content: string }>> =
+      [];
+    mockSynapseHandler = async (req) => {
+      const body = (await req.json()) as {
+        messages?: Array<{ role: string; content: string }>;
+      };
+      capturedMessages.push(body.messages ?? []);
+
+      if (capturedMessages.length === 1) {
+        // First call: return invalid JSON
+        return Response.json({
+          id: "chat-test",
+          object: "chat.completion",
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: "bad response" },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        });
+      }
+      // Second call: return valid JSON
+      return Response.json(makeSynapseResponse([]));
+    };
+
+    const thalamus = new Thalamus(makeThalamusConfig());
+    await thalamus.syncAll();
+
+    expect(capturedMessages).toHaveLength(2);
+
+    // First request: system + user
+    expect(capturedMessages[0]).toHaveLength(2);
+    expect(capturedMessages[0][0].role).toBe("system");
+    expect(capturedMessages[0][1].role).toBe("user");
+
+    // Retry request: system + user + assistant (bad response) + user (correction)
+    expect(capturedMessages[1]).toHaveLength(4);
+    expect(capturedMessages[1][0].role).toBe("system");
+    expect(capturedMessages[1][1].role).toBe("user");
+    expect(capturedMessages[1][2].role).toBe("assistant");
+    expect(capturedMessages[1][2].content).toBe("bad response");
+    expect(capturedMessages[1][3].role).toBe("user");
+    expect(capturedMessages[1][3].content).toContain("not valid JSON");
+  });
 });
 
 describe("thalamus.syncChannel()", () => {
