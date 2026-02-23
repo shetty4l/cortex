@@ -14,6 +14,7 @@ import { TelegramChannel } from "./channels/telegram";
 import type { CortexConfig } from "./config";
 import { loadConfig } from "./config";
 import { initDatabase } from "./db";
+import { initDebugLogger } from "./debug-logger";
 import { Hippocampus } from "./hippocampus";
 import { startProcessingLoop } from "./loop";
 import { RAS } from "./ras";
@@ -130,6 +131,12 @@ export async function run(): Promise<void> {
     process.exit(1);
   }
   const config = configResult.value;
+
+  // Initialize debug logger (must happen before any processing)
+  initDebugLogger({
+    debugPipeline: config.debugPipeline,
+    debugPrompt: config.debugPrompt,
+  });
 
   const dbResult = initDatabase();
   if (!dbResult.ok) {
