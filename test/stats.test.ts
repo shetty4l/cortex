@@ -81,6 +81,7 @@ describe("stats API", () => {
       expect(stats.receptors.calendar_last_sync_at).toBeNull();
       expect(stats.receptors.calendar_buffer_pending).toBe(0);
       expect(stats.receptors.thalamus_last_run_at).toBeNull();
+      expect(stats.receptors.buffer_pending_total).toBe(0);
 
       // Processing latencies
       expect(stats.processing.p50_ms).toBeNull();
@@ -225,6 +226,47 @@ describe("stats API", () => {
       expect(stats.receptors.calendar_buffer_pending).toBe(2);
     });
 
+    test("sums buffer_pending_total across all channels", () => {
+      // Insert buffers across multiple channels
+      insertReceptorBuffer({
+        channel: "calendar",
+        externalId: "cal-1",
+        content: "Calendar event 1",
+        occurredAt: Date.now(),
+      });
+      insertReceptorBuffer({
+        channel: "calendar",
+        externalId: "cal-2",
+        content: "Calendar event 2",
+        occurredAt: Date.now(),
+      });
+      insertReceptorBuffer({
+        channel: "email",
+        externalId: "email-1",
+        content: "Email 1",
+        occurredAt: Date.now(),
+      });
+      insertReceptorBuffer({
+        channel: "telegram",
+        externalId: "tg-1",
+        content: "Telegram message",
+        occurredAt: Date.now(),
+      });
+
+      const stats = getStats();
+
+      // calendar_buffer_pending only counts calendar
+      expect(stats.receptors.calendar_buffer_pending).toBe(2);
+
+      // buffer_pending_total sums all channels: 2 + 1 + 1 = 4
+      expect(stats.receptors.buffer_pending_total).toBe(4);
+    });
+
+    test("buffer_pending_total is 0 when no buffers exist", () => {
+      const stats = getStats();
+      expect(stats.receptors.buffer_pending_total).toBe(0);
+    });
+
     test("computes processing latency percentiles", () => {
       // Create 10 messages with different processing times
       for (let i = 1; i <= 10; i++) {
@@ -320,6 +362,7 @@ describe("stats API", () => {
         data.receptors.thalamus_last_run_at === null ||
           typeof data.receptors.thalamus_last_run_at === "number",
       ).toBe(true);
+      expect(typeof data.receptors.buffer_pending_total).toBe("number");
 
       // Processing shape
       expect(

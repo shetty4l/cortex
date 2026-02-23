@@ -84,6 +84,10 @@ export class Thalamus {
       return;
     }
     log(`thalamus started (sync interval: ${this.config.syncIntervalMs}ms)`);
+
+    // Immediate sync on startup to process any pending buffers
+    void this.syncAll();
+
     this.syncTimer = setInterval(
       () => void this.syncAll(),
       this.config.syncIntervalMs,

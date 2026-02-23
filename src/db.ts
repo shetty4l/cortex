@@ -1214,6 +1214,7 @@ export interface CortexStats {
     calendar_last_sync_at: number | null;
     calendar_buffer_pending: number;
     thalamus_last_run_at: number | null;
+    buffer_pending_total: number;
   };
   processing: {
     p50_ms: number | null;
@@ -1325,6 +1326,10 @@ export function getStats(thalamus?: ThalamusSyncInfo): CortexStats {
       calendar_last_sync_at: cursorByChannel.calendar ?? null,
       calendar_buffer_pending: bufferByChannel.calendar ?? 0,
       thalamus_last_run_at: thalamus?.getLastSyncAt() ?? null,
+      buffer_pending_total: Object.values(bufferByChannel).reduce(
+        (a, b) => a + b,
+        0,
+      ),
     },
     processing: {
       p50_ms: hasLatency ? percentile(latencies, 50) : null,
