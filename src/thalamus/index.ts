@@ -12,7 +12,9 @@ import { listTopics } from "../topics";
 import { formatChannelData } from "./formatters";
 import {
   buildTriageUserPrompt,
+  type ParseResult,
   parseSyncOutput,
+  THALAMUS_RETRY_PROMPT,
   THALAMUS_TRIAGE_SYSTEM_PROMPT,
 } from "./prompts";
 
@@ -194,8 +196,42 @@ export class Thalamus {
       throw new Error(chatResult.error);
     }
 
-    const messageContent = chatResult.value.content;
-    const items = parseSyncOutput(messageContent);
+    let messageContent = chatResult.value.content;
+    let parseResult: ParseResult = parseSyncOutput(messageContent);
+
+    // Retry with correction prompt if parse failed (not just empty items)
+    if (!parseResult.ok && buffers.length > 0) {
+      log("thalamus sync: parse failed, retrying with correction prompt");
+
+      const retryResult = await chat(
+        [
+          { role: "system", content: THALAMUS_TRIAGE_SYSTEM_PROMPT },
+          { role: "user", content: userPrompt },
+          { role: "assistant", content: messageContent },
+          { role: "user", content: THALAMUS_RETRY_PROMPT },
+        ],
+        config.thalamusModels,
+        config.synapseUrl,
+        { temperature: 0.1, timeoutMs: config.synapseTimeoutMs },
+      );
+
+      if (retryResult.ok) {
+        messageContent = retryResult.value.content;
+        parseResult = parseSyncOutput(messageContent);
+      } else {
+        log(`thalamus sync: retry failed: ${retryResult.error}`);
+      }
+    }
+
+    // Prevent data loss: only delete buffers if parsing succeeded
+    if (!parseResult.ok && buffers.length > 0) {
+      log(
+        `thalamus sync: all attempts failed, preserving ${buffers.length} buffers for next sync`,
+      );
+      return 0;
+    }
+
+    const items = parseResult.items;
 
     // Create inbox messages for each triaged group
     for (const item of items) {

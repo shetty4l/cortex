@@ -143,11 +143,12 @@ describe("parseSyncOutput", () => {
     });
 
     const result = parseSyncOutput(input);
-    expect(result).toHaveLength(1);
-    expect(result[0].topicKey).toBe("japan-trip");
-    expect(result[0].priority).toBe(2);
-    expect(result[0].summary).toBe("3 upcoming events for Japan trip");
-    expect(result[0].rawBufferIds).toEqual(["rb_1", "rb_2"]);
+    expect(result.ok).toBe(true);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].topicKey).toBe("japan-trip");
+    expect(result.items[0].priority).toBe(2);
+    expect(result.items[0].summary).toBe("3 upcoming events for Japan trip");
+    expect(result.items[0].rawBufferIds).toEqual(["rb_1", "rb_2"]);
   });
 
   test("handles markdown code fences", () => {
@@ -165,8 +166,9 @@ describe("parseSyncOutput", () => {
 \`\`\``;
 
     const result = parseSyncOutput(input);
-    expect(result).toHaveLength(1);
-    expect(result[0].topicKey).toBe("work");
+    expect(result.ok).toBe(true);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].topicKey).toBe("work");
   });
 
   test("handles code fences without language tag", () => {
@@ -175,22 +177,26 @@ describe("parseSyncOutput", () => {
 \`\`\``;
 
     const result = parseSyncOutput(input);
-    expect(result).toHaveLength(1);
+    expect(result.ok).toBe(true);
+    expect(result.items).toHaveLength(1);
   });
 
-  test("returns empty array on invalid JSON", () => {
+  test("returns ok=false on invalid JSON", () => {
     const result = parseSyncOutput("this is not json at all");
-    expect(result).toEqual([]);
+    expect(result.ok).toBe(false);
+    expect(result.items).toEqual([]);
   });
 
-  test("returns empty array when items is missing", () => {
+  test("returns ok=false when items is missing", () => {
     const result = parseSyncOutput('{"data": []}');
-    expect(result).toEqual([]);
+    expect(result.ok).toBe(false);
+    expect(result.items).toEqual([]);
   });
 
-  test("returns empty array when items is not an array", () => {
+  test("returns ok=false when items is not an array", () => {
     const result = parseSyncOutput('{"items": "not-array"}');
-    expect(result).toEqual([]);
+    expect(result.ok).toBe(false);
+    expect(result.items).toEqual([]);
   });
 
   test("validates item structure — skips invalid items", () => {
@@ -209,13 +215,15 @@ describe("parseSyncOutput", () => {
     });
 
     const result = parseSyncOutput(input);
-    expect(result).toHaveLength(1);
-    expect(result[0].topicKey).toBe("valid");
+    expect(result.ok).toBe(true);
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].topicKey).toBe("valid");
   });
 
-  test("returns empty items array from valid empty response", () => {
+  test("returns ok=true with empty items array from valid empty response", () => {
     const result = parseSyncOutput('{"items":[]}');
-    expect(result).toEqual([]);
+    expect(result.ok).toBe(true);
+    expect(result.items).toEqual([]);
   });
 
   test("parses multiple items", () => {
@@ -237,8 +245,9 @@ describe("parseSyncOutput", () => {
     });
 
     const result = parseSyncOutput(input);
-    expect(result).toHaveLength(2);
-    expect(result[0].topicKey).toBe("a");
-    expect(result[1].topicKey).toBe("b");
+    expect(result.ok).toBe(true);
+    expect(result.items).toHaveLength(2);
+    expect(result.items[0].topicKey).toBe("a");
+    expect(result.items[1].topicKey).toBe("b");
   });
 });
