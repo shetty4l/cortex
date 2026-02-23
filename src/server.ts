@@ -387,7 +387,7 @@ export function startServer(
         }
       }
 
-      if (response) {
+      if (response && url.pathname !== "/stats") {
         const latency = (performance.now() - start).toFixed(0);
         log(`${req.method} ${url.pathname} ${response.status} ${latency}ms`);
       }
