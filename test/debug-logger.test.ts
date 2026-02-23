@@ -3,8 +3,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "fs";
 import { tmpdir } from "os";
@@ -186,5 +188,90 @@ describe("DebugLogger", () => {
     const logger = new DebugLogger({});
     const path = logger.getLogsDir();
     expect(path).toContain("logs");
+  });
+
+  test("rotates stale file on first write after restart", () => {
+    const logsDir = join(mockConfigDir, "logs");
+    mkdirSync(logsDir, { recursive: true });
+    const logFile = join(logsDir, "pipeline.jsonl");
+
+    // Create a log file with yesterday's modification time
+    writeFileSync(
+      logFile,
+      '{"type":"old","traceId":"old123","timestamp":"2026-02-22T12:00:00.000Z"}\n',
+    );
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    utimesSync(logFile, yesterday, yesterday);
+
+    // Create a new logger instance (simulating restart)
+    const logger = new (class extends DebugLogger {
+      constructor() {
+        super({ debugPipeline: true });
+        (this as unknown as { logsDir: string }).logsDir = logsDir;
+        (this as unknown as { logFile: string }).logFile = logFile;
+      }
+    })();
+
+    // Write a new event - should trigger rotation of the stale file
+    logger.log({
+      type: "new",
+      traceId: "new123",
+      timestamp: new Date().toISOString(),
+    });
+
+    // Check that the old file was rotated
+    const files = readdirSync(logsDir).filter((f) => f.endsWith(".jsonl"));
+    expect(files.length).toBe(2); // pipeline.jsonl (new) + rotated file
+
+    // Current file should only have the new event
+    const currentContent = readFileSync(logFile, "utf-8");
+    const currentLines = currentContent.trim().split("\n");
+    expect(currentLines.length).toBe(1);
+    expect(JSON.parse(currentLines[0]).type).toBe("new");
+
+    // Rotated file should have the old event
+    const rotatedFile = files.find((f) => f !== "pipeline.jsonl");
+    expect(rotatedFile).toBeDefined();
+    const rotatedContent = readFileSync(join(logsDir, rotatedFile!), "utf-8");
+    expect(JSON.parse(rotatedContent.trim()).type).toBe("old");
+  });
+
+  test("does not rotate file from today on restart", () => {
+    const logsDir = join(mockConfigDir, "logs");
+    mkdirSync(logsDir, { recursive: true });
+    const logFile = join(logsDir, "pipeline.jsonl");
+
+    // Create a log file with today's modification time (default)
+    writeFileSync(
+      logFile,
+      '{"type":"today","traceId":"today123","timestamp":"2026-02-23T12:00:00.000Z"}\n',
+    );
+
+    // Create a new logger instance (simulating restart)
+    const logger = new (class extends DebugLogger {
+      constructor() {
+        super({ debugPipeline: true });
+        (this as unknown as { logsDir: string }).logsDir = logsDir;
+        (this as unknown as { logFile: string }).logFile = logFile;
+      }
+    })();
+
+    // Write a new event - should NOT trigger rotation
+    logger.log({
+      type: "new",
+      traceId: "new123",
+      timestamp: new Date().toISOString(),
+    });
+
+    // Check that no rotation occurred
+    const files = readdirSync(logsDir).filter((f) => f.endsWith(".jsonl"));
+    expect(files.length).toBe(1); // Only pipeline.jsonl
+
+    // File should have both events
+    const content = readFileSync(logFile, "utf-8");
+    const lines = content.trim().split("\n");
+    expect(lines.length).toBe(2);
+    expect(JSON.parse(lines[0]).type).toBe("today");
+    expect(JSON.parse(lines[1]).type).toBe("new");
   });
 });

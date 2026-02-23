@@ -115,11 +115,25 @@ export class DebugLogger {
    * Rotates on:
    * 1. File size exceeds 100MB
    * 2. Date changed since last rotation check
+   * 3. On first write after restart, if existing file is from a previous day
    */
   private maybeRotate(): void {
     const today = new Date().toISOString().slice(0, 10);
 
-    // Check daily rotation
+    // On first call after startup, check if existing file is from a previous day
+    if (this.lastRotationDate === null && existsSync(this.logFile)) {
+      try {
+        const stats = statSync(this.logFile);
+        const fileDate = new Date(stats.mtime).toISOString().slice(0, 10);
+        if (fileDate !== today) {
+          this.rotate();
+        }
+      } catch {
+        // File may have been deleted, ignore
+      }
+    }
+
+    // Check daily rotation (for long-running processes across midnight)
     if (this.lastRotationDate !== null && this.lastRotationDate !== today) {
       this.rotate();
       this.lastRotationDate = today;
