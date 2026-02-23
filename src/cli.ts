@@ -12,6 +12,9 @@
  *   cortex health         Check health of running instance
  *   cortex config         Print resolved configuration
  *   cortex logs [n]       Show last n log lines (default: 20)
+ *   cortex logs --debug [n]        Show pipeline debug logs
+ *   cortex logs --debug --list     List available debug log files
+ *   cortex logs --debug --file <timestamp>  Read specific rotated file
  *   cortex send "msg"     Send a message and wait for response
  *   cortex send "msg" --topic ID  Send on a fixed topic (multi-turn)
  *   cortex inbox          Show recent inbox messages
@@ -34,6 +37,7 @@ import {
 } from "@shetty4l/core/cli";
 import { getConfigDir } from "@shetty4l/core/config";
 import { createDaemonManager } from "@shetty4l/core/daemon";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { loadConfig } from "./config";
 import {
@@ -42,6 +46,7 @@ import {
   listOutboxMessages,
   purgeMessages,
 } from "./db";
+import { DebugLogger } from "./debug-logger";
 import { run } from "./index";
 import { sendMessage } from "./send";
 import { VERSION } from "./version";
@@ -58,6 +63,9 @@ Usage:
   cortex health         Check health of running instance
   cortex config         Print resolved configuration
   cortex logs [n]       Show last n log lines (default: 20)
+  cortex logs --debug [n]        Show pipeline debug logs
+  cortex logs --debug --list     List available debug log files
+  cortex logs --debug --file <timestamp>  Read specific rotated file
   cortex send "msg"     Send a message and wait for response
   cortex inbox          Show recent inbox messages
   cortex outbox         Show recent outbox messages
@@ -193,10 +201,145 @@ function cmdConfig(_args: string[], json: boolean): number {
   return 0;
 }
 
-const cmdLogs = createLogsCommand({
+const cmdLogsOperational = createLogsCommand({
   logFile: LOG_FILE,
   emptyMessage: "No logs found.",
 });
+
+/**
+ * Handle debug log commands (--debug flag).
+ * Supports: --list, --file <timestamp>, or tail (default).
+ */
+async function cmdLogsDebug(args: string[], json: boolean): Promise<number> {
+  const debugLogger = new DebugLogger({}); // Just for paths
+  const logsDir = debugLogger.getLogsDir();
+  const logFile = debugLogger.getLogFilePath();
+
+  // Check for --list flag
+  if (args.includes("--list")) {
+    const files = debugLogger.listLogFiles();
+
+    if (json) {
+      console.log(JSON.stringify({ files, directory: logsDir }));
+    } else if (files.length === 0) {
+      console.log("No debug log files found.");
+      console.log(`Directory: ${logsDir}`);
+    } else {
+      console.log(`\nDebug log files (${logsDir}):\n`);
+      for (const file of files) {
+        const isActive = file === "pipeline.jsonl";
+        console.log(`  ${file}${isActive ? " (active)" : ""}`);
+      }
+      console.log("");
+    }
+    return 0;
+  }
+
+  // Check for --file <timestamp> flag
+  const fileIdx = args.indexOf("--file");
+  if (fileIdx !== -1) {
+    const timestamp = args[fileIdx + 1];
+    if (!timestamp) {
+      console.error("Error: --file requires a timestamp argument.");
+      console.error("Usage: cortex logs --debug --file 2026-02-23T12-00-00");
+      return 1;
+    }
+
+    // Find matching file
+    const files = debugLogger.listLogFiles();
+    const match = files.find((f) => f.includes(timestamp));
+
+    if (!match) {
+      console.error(`No debug log file found matching: ${timestamp}`);
+      console.error("Available files:");
+      for (const file of files) {
+        console.error(`  ${file}`);
+      }
+      return 1;
+    }
+
+    const filePath = join(logsDir, match);
+    if (!existsSync(filePath)) {
+      console.error(`File not found: ${filePath}`);
+      return 1;
+    }
+
+    const content = readFileSync(filePath, "utf-8");
+    const lines = content.split("\n").filter((l) => l.length > 0);
+
+    if (json) {
+      console.log(JSON.stringify({ file: match, lines, total: lines.length }));
+    } else {
+      console.log(`\n--- ${match} (${lines.length} entries) ---\n`);
+      for (const line of lines) {
+        console.log(line);
+      }
+    }
+    return 0;
+  }
+
+  // Default: tail the active debug log
+  // Extract count from remaining args (after removing --debug)
+  const countArg = args.find((a) => !a.startsWith("--") && /^\d+$/.test(a));
+  const count = countArg ? Number.parseInt(countArg, 10) : 20;
+
+  if (!existsSync(logFile)) {
+    if (json) {
+      console.log(JSON.stringify({ lines: [], file: logFile }));
+    } else {
+      console.log("No debug logs found.");
+      console.log(
+        `Enable with: debugPipeline: true in ~/.config/cortex/config.json`,
+      );
+      console.log(`Or: CORTEX_DEBUG_PIPELINE=1`);
+    }
+    return 0;
+  }
+
+  const content = readFileSync(logFile, "utf-8");
+  const allLines = content.split("\n").filter((l) => l.length > 0);
+
+  if (allLines.length === 0) {
+    if (json) {
+      console.log(JSON.stringify({ lines: [], file: logFile }));
+    } else {
+      console.log("Debug log file is empty.");
+    }
+    return 0;
+  }
+
+  const lines = allLines.slice(-count);
+
+  if (json) {
+    console.log(
+      JSON.stringify({ lines, file: logFile, total: allLines.length }),
+    );
+  } else {
+    for (const line of lines) {
+      console.log(line);
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Unified logs command handler.
+ * Routes to debug or operational logs based on --debug flag.
+ */
+async function cmdLogs(args: string[], json: boolean): Promise<number> {
+  // Check if --debug flag is present (anywhere in process.argv)
+  const hasDebug = process.argv.includes("--debug");
+
+  if (hasDebug) {
+    // Filter out --debug from args for the handler
+    const filteredArgs = args.filter((a) => a !== "--debug");
+    return cmdLogsDebug(filteredArgs, json);
+  }
+
+  const result = await cmdLogsOperational(args, json);
+  return result ?? 0;
+}
 
 // --- Inbox/outbox/purge/send commands ---
 
