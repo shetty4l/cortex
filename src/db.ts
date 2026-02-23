@@ -1211,8 +1211,6 @@ export interface CortexStats {
     dead_total: number;
   };
   receptors: {
-    calendar_last_sync_at: number | null;
-    calendar_buffer_pending: number;
     thalamus_last_run_at: number | null;
     buffer_pending_total: number;
   };
@@ -1276,15 +1274,6 @@ export function getStats(thalamus?: ThalamusSyncInfo): CortexStats {
     outboxRows.map((r) => [r.status, r.count]),
   );
 
-  // Receptor cursors (last sync timestamps)
-  const cursorRows = database
-    .prepare(`SELECT channel, last_synced_at FROM receptor_cursors`)
-    .all() as { channel: string; last_synced_at: number }[];
-
-  const cursorByChannel = Object.fromEntries(
-    cursorRows.map((r) => [r.channel, r.last_synced_at]),
-  );
-
   // Receptor buffers pending (count per channel)
   const bufferRows = database
     .prepare(
@@ -1323,8 +1312,6 @@ export function getStats(thalamus?: ThalamusSyncInfo): CortexStats {
       dead_total: outboxByStatus.dead ?? 0,
     },
     receptors: {
-      calendar_last_sync_at: cursorByChannel.calendar ?? null,
-      calendar_buffer_pending: bufferByChannel.calendar ?? 0,
       thalamus_last_run_at: thalamus?.getLastSyncAt() ?? null,
       buffer_pending_total: Object.values(bufferByChannel).reduce(
         (a, b) => a + b,
