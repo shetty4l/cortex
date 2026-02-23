@@ -25,6 +25,7 @@ import {
   incrementTurnsSinceExtraction,
   retryInboxMessage,
 } from "./db";
+import { getDebugLogger } from "./debug-logger";
 import { recallDual } from "./engram";
 import { maybeExtract } from "./extraction";
 import { loadHistory, saveAgentHistory, saveTurnPair } from "./history";
@@ -147,6 +148,7 @@ export function startProcessingLoop(
           // Process within trace context
           await runWithTraceId(traceId, async () => {
             const startMs = performance.now();
+            const debug = getDebugLogger();
 
             // Update built-in tool context for this message
             if (builtinCtx) {
@@ -158,6 +160,19 @@ export function startProcessingLoop(
                 ? `${message.text.slice(0, 57)}...`
                 : message.text;
             log(`[${message.topic_key}] claimed: ${preview}`);
+
+            // Emit claim event
+            if (debug.isEnabled()) {
+              debug.log({
+                type: "claim",
+                traceId,
+                timestamp: new Date().toISOString(),
+                topicKey: message.topic_key,
+                channel: message.channel,
+                textPreview: preview,
+                inboxId: message.id,
+              });
+            }
 
             // 1. Recall memories from Engram (graceful on failure)
             const memories = await recallDual(
@@ -184,6 +199,44 @@ export function startProcessingLoop(
               turns,
               userText: message.text,
             });
+
+            // Emit context event (char counts only)
+            if (debug.isEnabled()) {
+              const systemChars = systemPrompt.length;
+              const memoriesChars = memories.reduce(
+                (sum, m) => sum + m.content.length,
+                0,
+              );
+              const summaryChars = topicSummary?.length ?? 0;
+              const turnsChars = turns.reduce(
+                (sum, t) => sum + (t.content?.length ?? 0),
+                0,
+              );
+              const userChars = message.text.length;
+
+              debug.log({
+                type: "context",
+                traceId,
+                timestamp: new Date().toISOString(),
+                systemPromptChars: systemChars,
+                memoriesChars,
+                memoriesCount: memories.length,
+                summaryChars,
+                turnsChars,
+                turnsCount: turns.length,
+                userChars,
+              });
+
+              // Emit prompt event (only if debugPrompt enabled)
+              if (debug.isPromptEnabled()) {
+                debug.log({
+                  type: "prompt",
+                  traceId,
+                  timestamp: new Date().toISOString(),
+                  messages,
+                });
+              }
+            }
 
             // 5. Call Synapse — agent loop with tools or plain chat
             let responseText: string;
@@ -280,8 +333,32 @@ export function startProcessingLoop(
               log(
                 `[${message.topic_key}] done in ${elapsed}s: ${responsePreview}`,
               );
+
+              // Emit done event
+              if (debug.isEnabled()) {
+                debug.log({
+                  type: "done",
+                  traceId,
+                  timestamp: new Date().toISOString(),
+                  totalMs: processingMs,
+                  ok: true,
+                });
+              }
             } else {
               log(`[${message.topic_key}] failed in ${elapsed}s: ${errorMsg}`);
+
+              // Emit done event (failure)
+              if (debug.isEnabled()) {
+                debug.log({
+                  type: "done",
+                  traceId,
+                  timestamp: new Date().toISOString(),
+                  totalMs: processingMs,
+                  ok: false,
+                  error: errorMsg,
+                });
+              }
+
               if (isTransientError(errorMsg!)) {
                 retryInboxMessage(
                   message.id,

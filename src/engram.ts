@@ -14,6 +14,8 @@
 import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+import { getDebugLogger } from "./debug-logger";
+import { getTraceId } from "./trace";
 
 const log = createLogger("cortex");
 
@@ -230,6 +232,26 @@ export async function recallDual(
     if (seen.has(mem.id)) continue;
     seen.add(mem.id);
     merged.push(mem);
+  }
+
+  // Emit recall debug event
+  const debug = getDebugLogger();
+  const traceId = getTraceId();
+  if (debug.isEnabled() && traceId) {
+    debug.log({
+      type: "recall",
+      traceId,
+      timestamp: new Date().toISOString(),
+      query,
+      scopeId: topicKey,
+      memories: merged.map((m) => ({
+        id: m.id,
+        content: m.content,
+        category: m.category,
+        strength: m.strength,
+        relevance: m.relevance,
+      })),
+    });
   }
 
   return merged;

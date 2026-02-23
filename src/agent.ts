@@ -17,9 +17,11 @@
 import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+import { getDebugLogger } from "./debug-logger";
 import type { SkillRegistry, SkillRuntimeContext } from "./skills";
 import type { ChatMessage, OpenAITool, ToolCall } from "./synapse";
 import { chat } from "./synapse";
+import { getTraceId } from "./trace";
 
 const log = createLogger("cortex");
 
@@ -212,6 +214,23 @@ async function executeOneToolCall(
       `Tool execution timed out after ${config.toolTimeoutMs / 1000}s`,
     );
     const duration = ((performance.now() - startMs) / 1000).toFixed(1);
+    const latencyMs = Math.round(performance.now() - startMs);
+
+    // Emit tool debug event
+    const debug = getDebugLogger();
+    const traceId = getTraceId();
+    if (debug.isEnabled() && traceId) {
+      debug.log({
+        type: "tool",
+        traceId,
+        timestamp: new Date().toISOString(),
+        name: qualifiedName,
+        args: toolCall.function.arguments,
+        output: result.ok ? result.value.content : `Error: ${result.error}`,
+        latencyMs,
+        ok: result.ok,
+      });
+    }
 
     if (!result.ok) {
       log(`tool ${qualifiedName} failed in ${duration}s: ${result.error}`);
@@ -232,6 +251,24 @@ async function executeOneToolCall(
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    const latencyMs = Math.round(performance.now() - performance.now()); // approx 0
+
+    // Emit tool debug event for exception
+    const debug = getDebugLogger();
+    const traceId = getTraceId();
+    if (debug.isEnabled() && traceId) {
+      debug.log({
+        type: "tool",
+        traceId,
+        timestamp: new Date().toISOString(),
+        name: qualifiedName,
+        args: toolCall.function.arguments,
+        output: `Error: ${message}`,
+        latencyMs,
+        ok: false,
+      });
+    }
+
     log(`tool ${qualifiedName} failed: ${message}`);
     return {
       role: "tool",

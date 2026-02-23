@@ -27,9 +27,11 @@ import {
   loadTurnsSinceCursor,
   upsertTopicSummary,
 } from "./db";
+import { getDebugLogger } from "./debug-logger";
 import { recall, remember } from "./engram";
 import type { ChatMessage } from "./synapse";
 import { chat } from "./synapse";
+import { getTraceId } from "./trace";
 
 // --- Constants ---
 
@@ -247,6 +249,21 @@ async function extractBatch(
     log(
       `[${topicKey}] extracted ${stored}/${facts.length} facts from ${turns.length} turns`,
     );
+  }
+
+  // Emit extraction debug event
+  const debug = getDebugLogger();
+  const traceId = getTraceId();
+  if (debug.isEnabled() && traceId) {
+    debug.log({
+      type: "extraction",
+      traceId,
+      timestamp: new Date().toISOString(),
+      turnsProcessed: turns.length,
+      factsExtracted: facts.length,
+      factsStored: stored,
+      summaryUpdated: false, // summary is updated separately
+    });
   }
 
   return ok(undefined);
