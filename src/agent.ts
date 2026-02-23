@@ -205,9 +205,9 @@ async function executeOneToolCall(
     http: { fetch: globalThis.fetch },
   };
 
+  const startMs = performance.now();
   try {
     // Execute with timeout
-    const startMs = performance.now();
     const result = await withTimeout(
       registry.executeTool(qualifiedName, toolCall.function.arguments, ctx),
       config.toolTimeoutMs,
@@ -251,7 +251,7 @@ async function executeOneToolCall(
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    const latencyMs = Math.round(performance.now() - performance.now()); // approx 0
+    const latencyMs = Math.round(performance.now() - startMs);
 
     // Emit tool debug event for exception
     const debug = getDebugLogger();
