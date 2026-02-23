@@ -49,6 +49,7 @@ Priority scale:
 Rules:
 - Group related items (e.g., multiple calendar events in the same week, related emails)
 - Use existing topic keys when a matching topic exists
+- IMPORTANT: If an existing topic is semantically related to incoming data, USE ITS EXACT KEY. Do not create variations.
 - For new topics, use a descriptive kebab-case key (e.g., "japan-trip-planning")
 - Each summary should be 1-3 sentences: what happened, what changed, what needs attention
 - Include the buffer IDs (id field) that belong to each group in rawBufferIds

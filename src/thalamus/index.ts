@@ -193,7 +193,7 @@ export class Thalamus {
       ],
       config.thalamusModels,
       config.synapseUrl,
-      { temperature: 0.3, timeoutMs: config.synapseTimeoutMs },
+      { temperature: 0.1, timeoutMs: config.synapseTimeoutMs },
     );
 
     if (!chatResult.ok) {

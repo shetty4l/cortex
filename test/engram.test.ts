@@ -243,6 +243,31 @@ describe("recallDual", () => {
     expect(result.slice(4).map((m) => m.id)).toEqual(["g1", "g2", "g3", "g4"]);
   });
 
+  test("sorts merged memories by relevance (highest first)", async () => {
+    const topicMems = [
+      { ...makeMemory("t1", "Low relevance topic"), relevance: 0.3 },
+      { ...makeMemory("t2", "High relevance topic"), relevance: 0.9 },
+    ];
+    const globalMems = [
+      { ...makeMemory("g1", "Medium relevance global"), relevance: 0.6 },
+      { ...makeMemory("g2", "Very high relevance global"), relevance: 0.95 },
+    ];
+
+    mockHandler = async (req) => {
+      const body = (await req.json()) as { scope_id?: string };
+      if (body.scope_id) {
+        return Response.json(recallResponse(topicMems));
+      }
+      return Response.json(recallResponse(globalMems));
+    };
+
+    const result = await recallDual("test", "my-topic", mockUrl);
+
+    expect(result).toHaveLength(4);
+    // Sorted by relevance: g2 (0.95), t2 (0.9), g1 (0.6), t1 (0.3)
+    expect(result.map((m) => m.id)).toEqual(["g2", "t2", "g1", "t1"]);
+  });
+
   test("sends correct scope_id for topic call and none for global", async () => {
     const calls: Array<{ scope_id?: string; limit?: number }> = [];
 

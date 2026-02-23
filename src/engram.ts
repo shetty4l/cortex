@@ -234,6 +234,9 @@ export async function recallDual(
     merged.push(mem);
   }
 
+  // Sort by relevance (highest first)
+  merged.sort((a, b) => b.relevance - a.relevance);
+
   // Emit recall debug event
   const debug = getDebugLogger();
   const traceId = getTraceId();
