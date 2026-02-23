@@ -836,3 +836,80 @@ describe("thalamus.syncChannel()", () => {
     expect(synapseCalled).toBe(false);
   });
 });
+
+describe("thalamus.start()", () => {
+  beforeEach(() => {
+    initDatabase(":memory:");
+  });
+
+  afterEach(() => {
+    closeDatabase();
+  });
+
+  test("triggers immediate syncAll on startup", async () => {
+    // Insert a buffer that should be processed on startup
+    insertReceptorBuffer({
+      channel: "calendar",
+      externalId: "cal-startup-1",
+      content: "Startup test event",
+      occurredAt: Date.now(),
+    });
+
+    let synapseCalled = false;
+    mockSynapseHandler = () => {
+      synapseCalled = true;
+      return Response.json(makeSynapseResponse([]));
+    };
+
+    const thalamus = new Thalamus(makeThalamusConfig());
+    await thalamus.start();
+
+    // Give a small delay for the async syncAll to run
+    await Bun.sleep(50);
+
+    // Synapse should have been called (syncAll was triggered)
+    expect(synapseCalled).toBe(true);
+
+    await thalamus.stop();
+  });
+
+  test("does not sync on startup when config is missing", async () => {
+    insertReceptorBuffer({
+      channel: "calendar",
+      externalId: "cal-startup-2",
+      content: "Test event",
+      occurredAt: Date.now(),
+    });
+
+    let synapseCalled = false;
+    mockSynapseHandler = () => {
+      synapseCalled = true;
+      return Response.json(makeSynapseResponse([]));
+    };
+
+    // No config = sync disabled
+    const thalamus = new Thalamus();
+    await thalamus.start();
+
+    await Bun.sleep(50);
+
+    // Synapse should NOT have been called
+    expect(synapseCalled).toBe(false);
+
+    await thalamus.stop();
+  });
+
+  test("sets lastSyncAt after startup sync", async () => {
+    mockSynapseHandler = () => Response.json(makeSynapseResponse([]));
+
+    const thalamus = new Thalamus(makeThalamusConfig());
+    expect(thalamus.getLastSyncAt()).toBeNull();
+
+    await thalamus.start();
+    await Bun.sleep(50);
+
+    expect(thalamus.getLastSyncAt()).not.toBeNull();
+
+    await thalamus.stop();
+  });
+});
