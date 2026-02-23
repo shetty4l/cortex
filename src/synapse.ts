@@ -8,7 +8,7 @@
  * Cortex sends `{ model, messages }` and gets back a chat completion.
  *
  * Model fallback: when multiple models are provided, chat() iterates through
- * them on 429 (rate limit). Non-429 errors return immediately.
+ * them on 429 (rate limit) or 5xx (server error). Client errors (4xx) return immediately.
  */
 
 import { createLogger } from "@shetty4l/core/log";
@@ -135,9 +135,11 @@ export async function chat(
       const latency = ((performance.now() - startMs) / 1000).toFixed(1);
       lastError = `Synapse returned ${response.status}: ${body.slice(0, 500)}`;
 
-      // On 429 (rate limit), try the next model in the fallback chain
-      if (response.status === 429) {
-        log(`synapse ${model} 429 ${latency}s — trying next model`);
+      // On 429 (rate limit) or 5xx (server error), try the next model in the fallback chain
+      if (response.status === 429 || response.status >= 500) {
+        log(
+          `synapse ${model} ${response.status} ${latency}s — trying next model`,
+        );
         continue;
       }
 
