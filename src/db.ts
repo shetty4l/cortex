@@ -81,18 +81,6 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_turns_topic_created
     ON turns(topic_key, created_at);
 
-  CREATE TABLE IF NOT EXISTS extraction_cursors (
-    topic_key TEXT PRIMARY KEY,
-    last_extracted_rowid INTEGER NOT NULL,
-    turns_since_extraction INTEGER NOT NULL DEFAULT 0
-  );
-
-  CREATE TABLE IF NOT EXISTS topic_summaries (
-    topic_key TEXT PRIMARY KEY,
-    summary TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-
   CREATE TABLE IF NOT EXISTS topics (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -130,13 +118,6 @@ const SCHEMA = `
     UNIQUE(channel, external_id)
   );
   CREATE INDEX IF NOT EXISTS idx_receptor_buffers_channel_created ON receptor_buffers(channel, created_at);
-
-  CREATE TABLE IF NOT EXISTS receptor_cursors (
-    channel TEXT PRIMARY KEY,
-    cursor_value TEXT NOT NULL,
-    last_synced_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
 
   CREATE TABLE IF NOT EXISTS pending_approvals (
     id TEXT PRIMARY KEY,
@@ -897,71 +878,6 @@ export function loadRecentTurns(topicKey: string, maxRows = 16): Turn[] {
     .all({ $topicKey: topicKey, $maxRows: maxRows }) as Turn[];
 }
 
-// --- Extraction cursor operations ---
-
-export interface ExtractionCursor {
-  topic_key: string;
-  last_extracted_rowid: number;
-  turns_since_extraction: number;
-}
-
-/**
- * Get the extraction cursor for a topic.
- * Returns null if no extraction has ever run for this topic.
- */
-export function getExtractionCursor(topicKey: string): ExtractionCursor | null {
-  const database = getDatabase();
-  return (
-    (database
-      .prepare(
-        "SELECT topic_key, last_extracted_rowid, turns_since_extraction FROM extraction_cursors WHERE topic_key = $topicKey",
-      )
-      .get({ $topicKey: topicKey }) as ExtractionCursor | null) ?? null
-  );
-}
-
-/**
- * Increment the turns-since-extraction counter for a topic.
- *
- * If no cursor exists, creates one with last_extracted_rowid = 0
- * and turns_since_extraction = 1 (first turn, no extraction yet).
- */
-export function incrementTurnsSinceExtraction(topicKey: string): void {
-  const database = getDatabase();
-  database
-    .prepare(
-      `INSERT INTO extraction_cursors (topic_key, last_extracted_rowid, turns_since_extraction)
-       VALUES ($topicKey, 0, 1)
-       ON CONFLICT(topic_key) DO UPDATE
-       SET turns_since_extraction = turns_since_extraction + 1`,
-    )
-    .run({ $topicKey: topicKey });
-}
-
-/**
- * Advance the extraction cursor after a successful extraction run.
- * Resets turns_since_extraction to 0.
- *
- * Uses MAX() as defense-in-depth — the caller (loop.ts) serializes
- * extraction per topic, so out-of-order advances should not occur,
- * but the guard is cheap and makes the invariant self-enforcing.
- */
-export function advanceExtractionCursor(
-  topicKey: string,
-  lastRowid: number,
-): void {
-  const database = getDatabase();
-  database
-    .prepare(
-      `INSERT INTO extraction_cursors (topic_key, last_extracted_rowid, turns_since_extraction)
-       VALUES ($topicKey, $lastRowid, 0)
-       ON CONFLICT(topic_key) DO UPDATE
-       SET last_extracted_rowid = MAX(last_extracted_rowid, $lastRowid),
-           turns_since_extraction = 0`,
-    )
-    .run({ $topicKey: topicKey, $lastRowid: lastRowid });
-}
-
 /**
  * Load turns newer than the extraction cursor for a topic.
  *
@@ -990,78 +906,6 @@ export function loadTurnsSinceCursor(
         ? { $topicKey: topicKey, $afterRowid: afterRowid, $limit: limit }
         : { $topicKey: topicKey, $afterRowid: afterRowid },
     ) as Array<Turn & { rowid: number }>;
-}
-
-// --- Topic summary operations ---
-
-/**
- * Get the cached topic summary for a topic.
- * Returns null if no summary exists yet.
- */
-export function getTopicSummary(topicKey: string): string | null {
-  const database = getDatabase();
-  const row = database
-    .prepare("SELECT summary FROM topic_summaries WHERE topic_key = $topicKey")
-    .get({ $topicKey: topicKey }) as { summary: string } | null;
-  return row?.summary ?? null;
-}
-
-/**
- * Upsert the cached topic summary for a topic.
- * Overwrites any existing summary (INSERT OR REPLACE on PK).
- */
-export function upsertTopicSummary(topicKey: string, summary: string): void {
-  const database = getDatabase();
-  database
-    .prepare(
-      `INSERT INTO topic_summaries (topic_key, summary, updated_at)
-       VALUES ($topicKey, $summary, $now)
-       ON CONFLICT(topic_key) DO UPDATE
-       SET summary = $summary, updated_at = $now`,
-    )
-    .run({ $topicKey: topicKey, $summary: summary, $now: Date.now() });
-}
-
-// --- Receptor cursor operations ---
-
-/**
- * Get the receptor cursor for a channel.
- * Returns null when no cursor exists for this channel.
- */
-export function getReceptorCursor(
-  channel: string,
-): { cursorValue: string; lastSyncedAt: number } | null {
-  const database = getDatabase();
-  const row = database
-    .prepare(
-      "SELECT cursor_value, last_synced_at FROM receptor_cursors WHERE channel = $channel",
-    )
-    .get({ $channel: channel }) as {
-    cursor_value: string;
-    last_synced_at: number;
-  } | null;
-
-  if (!row) return null;
-  return { cursorValue: row.cursor_value, lastSyncedAt: row.last_synced_at };
-}
-
-/**
- * Upsert the receptor cursor for a channel.
- */
-export function upsertReceptorCursor(
-  channel: string,
-  cursorValue: string,
-): void {
-  const database = getDatabase();
-  const now = Date.now();
-  database
-    .prepare(
-      `INSERT INTO receptor_cursors (channel, cursor_value, last_synced_at, updated_at)
-       VALUES ($channel, $cursorValue, $now, $now)
-       ON CONFLICT(channel) DO UPDATE
-       SET cursor_value = $cursorValue, last_synced_at = $now, updated_at = $now`,
-    )
-    .run({ $channel: channel, $cursorValue: cursorValue, $now: now });
 }
 
 // --- Receptor buffer operations ---

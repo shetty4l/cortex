@@ -12,13 +12,14 @@ import { ChannelRegistry } from "./channels";
 import { SilentChannel } from "./channels/silent";
 import type { CortexConfig } from "./config";
 import { loadConfig } from "./config";
-import { initDatabase } from "./db";
+import { getDatabase, initDatabase } from "./db";
 import { initDebugLogger } from "./debug-logger";
 import { Hippocampus } from "./hippocampus";
 import { startProcessingLoop } from "./loop";
 import { RAS } from "./ras";
 import { startServer } from "./server";
 import { createEmptyRegistry, loadSkills, type SkillRegistry } from "./skills";
+import { StateLoader } from "./state";
 import { Thalamus } from "./thalamus";
 import { Tick } from "./tick";
 import { type BuiltinToolContext, createCombinedRegistry } from "./tools";
@@ -60,6 +61,7 @@ export interface CortexRuntime {
 export async function startCortexRuntime(
   config: CortexConfig,
   registry: SkillRegistry,
+  stateLoader: StateLoader,
   deps: RuntimeDeps = DEFAULT_RUNTIME_DEPS,
 ): Promise<CortexRuntime> {
   const thalamus = new Thalamus({
@@ -68,6 +70,9 @@ export async function startCortexRuntime(
     synapseTimeoutMs: config.synapseTimeoutMs,
     syncIntervalMs: config.thalamusSyncIntervalMs,
   });
+
+  // Set stateLoader for thalamus to persist sync timestamps
+  thalamus.setStateLoader(stateLoader);
 
   const server = deps.startServer(config, thalamus);
   deps.log(`listening on http://${config.host}:${config.port}`);
@@ -86,6 +91,7 @@ export async function startCortexRuntime(
 
   const loop = deps.startProcessingLoop(config, combinedRegistry, {
     builtinContext: builtinCtx,
+    stateLoader,
   });
   deps.log("processing loop started");
 
@@ -106,6 +112,7 @@ export async function startCortexRuntime(
       await channels.stopAll();
       await loop.stop();
       server.stop();
+      await stateLoader.flush();
     },
   };
 }
@@ -132,6 +139,9 @@ export async function run(): Promise<void> {
     process.exit(1);
   }
 
+  // Initialize state loader for persisted state classes
+  const stateLoader = new StateLoader(getDatabase());
+
   const registryResult =
     config.skillDirs.length > 0
       ? await loadSkills(config.skillDirs, config.skillConfig)
@@ -147,7 +157,7 @@ export async function run(): Promise<void> {
     `loaded ${registry.tools.length} tools from ${config.skillDirs.length} skill dirs`,
   );
 
-  const runtime = await startCortexRuntime(config, registry);
+  const runtime = await startCortexRuntime(config, registry, stateLoader);
   onShutdown(
     async () => {
       log("shutting down...");

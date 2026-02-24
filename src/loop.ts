@@ -21,8 +21,6 @@ import {
   claimNextInboxMessage,
   completeInboxMessage,
   enqueueOutboxMessage,
-  getTopicSummary,
-  incrementTurnsSinceExtraction,
   retryInboxMessage,
 } from "./db";
 import { getDebugLogger } from "./debug-logger";
@@ -31,6 +29,11 @@ import { maybeExtract } from "./extraction";
 import { loadHistory, saveAgentHistory, saveTurnPair } from "./history";
 import { buildPrompt, loadAndRenderSystemPrompt } from "./prompt";
 import type { SkillRegistry } from "./skills";
+import {
+  ExtractionCursorState,
+  type StateLoader,
+  TopicSummaryState,
+} from "./state";
 import type { OpenAITool } from "./synapse";
 import { chat } from "./synapse";
 import type { BuiltinToolContext } from "./tools";
@@ -90,6 +93,8 @@ export interface ProcessingLoopOptions {
   pollIdleMs?: number;
   /** Mutable context shared with built-in tools (topicKey updated per message). */
   builtinContext?: BuiltinToolContext;
+  /** StateLoader for persisted state classes. */
+  stateLoader?: StateLoader;
 }
 
 /**
@@ -109,6 +114,7 @@ export function startProcessingLoop(
   const pollBusyMs = options?.pollBusyMs ?? DEFAULT_POLL_BUSY_MS;
   const pollIdleMs = options?.pollIdleMs ?? DEFAULT_POLL_IDLE_MS;
   const builtinCtx = options?.builtinContext;
+  const stateLoader = options?.stateLoader;
 
   if (!config.extractionModels) {
     log("extraction disabled — no extractionModels configured");
@@ -184,8 +190,10 @@ export function startProcessingLoop(
             // 2. Load recent turn history
             const turns = loadHistory(message.topic_key);
 
-            // 3. Load topic summary (fast SQLite read)
-            const topicSummary = getTopicSummary(message.topic_key);
+            // 3. Load topic summary (fast SQLite read via StateLoader)
+            const topicSummary = stateLoader
+              ? stateLoader.load(TopicSummaryState, message.topic_key).summary
+              : null;
 
             log(
               `[${message.topic_key}] context: memories=${memories.length} turns=${turns.length}`,
@@ -303,11 +311,17 @@ export function startProcessingLoop(
               // 7. Trigger async extraction (fire-and-forget, serialized per topic)
               //    Always increment the turn counter — even when extraction is
               //    already in-flight — so the cadence stays accurate.
-              if (config.extractionModels) {
-                incrementTurnsSinceExtraction(message.topic_key);
+              if (config.extractionModels && stateLoader) {
+                const cursor = stateLoader.load(
+                  ExtractionCursorState,
+                  message.topic_key,
+                );
+                cursor.turnsSinceExtraction += 1;
+                // Flush immediately so maybeExtract sees the updated counter
+                await stateLoader.flush();
               }
-              if (!extractionInFlight.has(message.topic_key)) {
-                const p = maybeExtract(message.topic_key, config)
+              if (stateLoader && !extractionInFlight.has(message.topic_key)) {
+                const p = maybeExtract(message.topic_key, config, stateLoader)
                   .catch((e) =>
                     log(
                       `[${message.topic_key}] extraction error: ${e instanceof Error ? e.message : String(e)}`,

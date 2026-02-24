@@ -20,15 +20,14 @@ import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
 import type { CortexConfig } from "./config";
-import {
-  advanceExtractionCursor,
-  getExtractionCursor,
-  getTopicSummary,
-  loadTurnsSinceCursor,
-  upsertTopicSummary,
-} from "./db";
+import { loadTurnsSinceCursor } from "./db";
 import { getDebugLogger } from "./debug-logger";
 import { recall, remember } from "./engram";
+import {
+  ExtractionCursorState,
+  type StateLoader,
+  TopicSummaryState,
+} from "./state";
 import type { ChatMessage } from "./synapse";
 import { chat } from "./synapse";
 import { getTraceId } from "./trace";
@@ -81,21 +80,24 @@ interface ExtractedFact {
 export async function maybeExtract(
   topicKey: string,
   config: CortexConfig,
+  stateLoader: StateLoader,
 ): Promise<void> {
   // Guard: extraction disabled if no model configured
   if (!config.extractionModels) return;
 
+  // Load cursor state
+  const cursor = stateLoader.load(ExtractionCursorState, topicKey);
+
   // Check if extraction is due
-  const cursor = getExtractionCursor(topicKey);
-  if (!cursor || cursor.turns_since_extraction < config.extractionInterval) {
+  if (cursor.turnsSinceExtraction < config.extractionInterval) {
     return;
   }
 
   log(
-    `[${topicKey}] extraction triggered (${cursor.turns_since_extraction} turns since last)`,
+    `[${topicKey}] extraction triggered (${cursor.turnsSinceExtraction} turns since last)`,
   );
 
-  let afterRowid = cursor.last_extracted_rowid;
+  let afterRowid = cursor.lastExtractedRowid;
 
   // Loop to drain the backlog — each iteration processes up to
   // MAX_TURNS_PER_EXTRACTION turns, trimmed to fit within
@@ -116,8 +118,8 @@ export async function maybeExtract(
       MAX_TURNS_PER_EXTRACTION,
     );
     if (loaded.length === 0) {
-      // No more turns — advance cursor to reset counter
-      advanceExtractionCursor(topicKey, afterRowid);
+      // No more turns — reset counter
+      cursor.turnsSinceExtraction = 0;
       break;
     }
 
@@ -150,7 +152,9 @@ export async function maybeExtract(
     lastBatchTurns = extractableTurns;
 
     const lastRowid = turns[turns.length - 1].rowid;
-    advanceExtractionCursor(topicKey, lastRowid);
+    // Advance cursor and reset counter
+    cursor.lastExtractedRowid = lastRowid;
+    cursor.turnsSinceExtraction = 0;
     afterRowid = lastRowid;
 
     // Continue draining if the batch was trimmed (more turns remain at
@@ -170,7 +174,7 @@ export async function maybeExtract(
   // bad response), the summary call would likely fail too. Unprocessed turns
   // are retried on the next extraction cycle.
   if (lastBatchTurns.length > 0) {
-    await updateTopicSummary(topicKey, lastBatchTurns, config);
+    await updateTopicSummary(topicKey, lastBatchTurns, config, stateLoader);
   }
 }
 
@@ -287,9 +291,11 @@ async function updateTopicSummary(
   topicKey: string,
   turns: Array<{ role: string; content: string | null }>,
   config: CortexConfig,
+  stateLoader: StateLoader,
 ): Promise<Result<void>> {
   try {
-    const existingSummary = getTopicSummary(topicKey);
+    const summaryState = stateLoader.load(TopicSummaryState, topicKey);
+    const existingSummary = summaryState.summary;
     const messages = buildSummaryPrompt(turns, existingSummary);
 
     const result = await chat(
@@ -306,7 +312,7 @@ async function updateTopicSummary(
     if (summary.length === 0) return ok(undefined);
 
     // Write to local SQLite cache (fast reads at prompt time)
-    upsertTopicSummary(topicKey, summary);
+    summaryState.summary = summary;
 
     // Write to Engram (source of truth, upsert by topic key).
     // Category "summary" is intentionally outside VALID_CATEGORIES —

@@ -1,9 +1,11 @@
+import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import type { Channel } from "../src/channels";
 import { ChannelRegistry } from "../src/channels";
 import type { CortexConfig } from "../src/config";
 import { startCortexRuntime } from "../src/index";
 import { createEmptyRegistry } from "../src/skills";
+import { StateLoader } from "../src/state";
 
 function testConfig(overrides: Partial<CortexConfig> = {}): CortexConfig {
   return {
@@ -50,13 +52,22 @@ function mockChannel(name: string, events: string[]): Channel {
   };
 }
 
+function mockStateLoader(): StateLoader {
+  // Create a mock database for StateLoader
+  const { Database } = require("bun:sqlite");
+  const db = new Database(":memory:");
+  return new StateLoader(db as Database);
+}
+
 describe("index runtime wiring", () => {
   test("starts channels via registry after server and loop", async () => {
     const events: string[] = [];
+    const stateLoader = mockStateLoader();
 
     const runtime = await startCortexRuntime(
       testConfig(),
       createEmptyRegistry(),
+      stateLoader,
       {
         startServer: () => {
           events.push("server:start");
@@ -104,10 +115,12 @@ describe("index runtime wiring", () => {
 
   test("runs with no channels when registry is empty", async () => {
     const events: string[] = [];
+    const stateLoader = mockStateLoader();
 
     const runtime = await startCortexRuntime(
       testConfig(),
       createEmptyRegistry(),
+      stateLoader,
       {
         startServer: () => {
           events.push("server:start");
@@ -143,10 +156,12 @@ describe("index runtime wiring", () => {
 
   test("stops channels before loop and server (reverse order)", async () => {
     const events: string[] = [];
+    const stateLoader = mockStateLoader();
 
     const runtime = await startCortexRuntime(
       testConfig(),
       createEmptyRegistry(),
+      stateLoader,
       {
         startServer: () => {
           events.push("server:start");

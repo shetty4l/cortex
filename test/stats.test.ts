@@ -19,7 +19,6 @@ import {
   initDatabase,
   insertReceptorBuffer,
   resetDatabase,
-  upsertReceptorCursor,
 } from "../src/db";
 import { startServer } from "../src/server";
 

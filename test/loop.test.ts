@@ -18,9 +18,7 @@ import {
   computeBackoffDelay,
   enqueueInboxMessage,
   getDatabase,
-  getExtractionCursor,
   getInboxMessage,
-  getTopicSummary,
   initDatabase,
   listOutboxMessagesByTopic,
   loadRecentTurns,
@@ -30,6 +28,31 @@ import { isTransientError, startProcessingLoop } from "../src/loop";
 import { DEFAULT_SYSTEM_PROMPT_TEMPLATE } from "../src/prompt";
 import type { SkillRegistry } from "../src/skills";
 import { createEmptyRegistry } from "../src/skills";
+import {
+  ExtractionCursorState,
+  StateLoader,
+  TopicSummaryState,
+} from "../src/state";
+
+// --- StateLoader instance (initialized in beforeEach) ---
+
+let stateLoader: StateLoader;
+
+// --- StateLoader helper functions ---
+
+function getExtractionCursor(topicKey: string) {
+  const state = stateLoader.load(ExtractionCursorState, topicKey);
+  return {
+    topic_key: topicKey,
+    last_extracted_rowid: state.lastExtractedRowid,
+    turns_since_extraction: state.turnsSinceExtraction,
+  };
+}
+
+function getTopicSummary(topicKey: string): string | null {
+  const state = stateLoader.load(TopicSummaryState, topicKey);
+  return state.summary;
+}
 
 // --- Mock Synapse server ---
 
@@ -172,13 +195,16 @@ async function waitFor(
 }
 
 /** Fast poll intervals for tests — avoids 2s idle sleep. */
-const FAST_LOOP = { pollBusyMs: 10, pollIdleMs: 50 };
+function makeFastLoop() {
+  return { pollBusyMs: 10, pollIdleMs: 50, stateLoader };
+}
 
 // --- Tests ---
 
 describe("processing loop", () => {
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
     mockSynapseCallCount = 0;
     // Default Engram mock: handle both recall and remember
     mockEngramHandler = async (req) => {
@@ -193,7 +219,8 @@ describe("processing loop", () => {
     };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
@@ -202,7 +229,11 @@ describe("processing loop", () => {
 
     const { eventId } = ingestMessage({ text: "Hello assistant" });
     const config = testConfig();
-    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      config,
+      createEmptyRegistry(),
+      makeFastLoop(),
+    );
 
     await waitFor(() => {
       const msg = getInboxMessage(eventId);
@@ -237,7 +268,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     await waitFor(() => mockSynapseCallCount > 0);
@@ -283,7 +314,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     await waitFor(() => {
@@ -327,7 +358,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     await waitFor(() => {
@@ -359,7 +390,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     await waitFor(() => {
@@ -404,7 +435,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     // First call: 502 → transient → retry (but with backoff delay)
@@ -433,7 +464,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     // Let it tick a couple of times on empty inbox
@@ -468,7 +499,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     await waitFor(() => {
@@ -495,7 +526,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
@@ -523,7 +554,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "failed");
@@ -555,7 +586,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
     await waitFor(() => getInboxMessage(id1)?.status === "done");
 
@@ -607,7 +638,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
     await waitFor(() => getInboxMessage(idA)?.status === "done");
 
@@ -660,7 +691,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
@@ -683,7 +714,11 @@ describe("processing loop", () => {
       text: "Hello",
       topicKey: "topic-no-engram",
     });
-    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      config,
+      createEmptyRegistry(),
+      makeFastLoop(),
+    );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
     await loop.stop();
@@ -711,7 +746,7 @@ describe("processing loop", () => {
     const loop = startProcessingLoop(
       testConfig(),
       createEmptyRegistry(),
-      FAST_LOOP,
+      makeFastLoop(),
     );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
@@ -761,7 +796,11 @@ describe("processing loop", () => {
       text: "Hi there",
       topicKey: "topic-extract",
     });
-    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      config,
+      createEmptyRegistry(),
+      makeFastLoop(),
+    );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
 
@@ -775,7 +814,7 @@ describe("processing loop", () => {
     // Cursor should be advanced
     const cursor = getExtractionCursor("topic-extract");
     expect(cursor).not.toBeNull();
-    expect(cursor!.turns_since_extraction).toBe(0);
+    expect(cursor.turns_since_extraction).toBe(0);
   });
 
   test("counts turns for extraction even when extraction is in-flight", async () => {
@@ -812,7 +851,11 @@ describe("processing loop", () => {
       text: "Message A",
       topicKey: "topic-inflight",
     });
-    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      config,
+      createEmptyRegistry(),
+      makeFastLoop(),
+    );
     await waitFor(() => getInboxMessage(idA)?.status === "done");
     // Wait for extraction to start (it will be blocked)
     await waitFor(() => extractionCallCount >= 1);
@@ -889,7 +932,11 @@ describe("processing loop", () => {
       text: "Message A",
       topicKey: "topic-catchup",
     });
-    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      config,
+      createEmptyRegistry(),
+      makeFastLoop(),
+    );
     await waitFor(() => getInboxMessage(idA)?.status === "done");
     await waitFor(() => extractionCallCount >= 1);
 
@@ -959,7 +1006,11 @@ describe("processing loop", () => {
       externalMessageId: "msg-second-ext",
     });
 
-    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      config,
+      createEmptyRegistry(),
+      makeFastLoop(),
+    );
 
     await waitFor(() => getInboxMessage(id2)?.status === "done");
     await Bun.sleep(200);
@@ -1009,7 +1060,11 @@ describe("processing loop", () => {
       text: "I want to visit Tokyo",
       topicKey: "topic-summary-e2e",
     });
-    const loop = startProcessingLoop(config, createEmptyRegistry(), FAST_LOOP);
+    const loop = startProcessingLoop(
+      config,
+      createEmptyRegistry(),
+      makeFastLoop(),
+    );
     await waitFor(() => getInboxMessage(id1)?.status === "done");
     // Wait for fire-and-forget extraction + summary to complete
     await waitFor(() => getTopicSummary("topic-summary-e2e") !== null);
@@ -1107,7 +1162,11 @@ describe("processing loop", () => {
       text: "Greet Watson",
       topicKey: "topic-tools",
     });
-    const loop = startProcessingLoop(testConfig(), stubRegistry, FAST_LOOP);
+    const loop = startProcessingLoop(
+      testConfig(),
+      stubRegistry,
+      makeFastLoop(),
+    );
 
     await waitFor(() => getInboxMessage(eventId)?.status === "done");
     await loop.stop();
@@ -1153,6 +1212,7 @@ describe("processing loop", () => {
 
     try {
       initDatabase(tmpDb);
+      stateLoader = new StateLoader(getDatabase());
 
       // Simulate a message stuck in 'processing' from a prior crash
       const { eventId } = ingestMessage({ text: "Stuck message" });
@@ -1163,6 +1223,7 @@ describe("processing loop", () => {
 
       // Re-init the database (simulates a restart) — should recover the message
       initDatabase(tmpDb);
+      stateLoader = new StateLoader(getDatabase());
 
       // The message should be back to 'pending'
       expect(getInboxMessage(eventId)?.status).toBe("pending");
@@ -1171,7 +1232,7 @@ describe("processing loop", () => {
       const loop = startProcessingLoop(
         testConfig(),
         createEmptyRegistry(),
-        FAST_LOOP,
+        makeFastLoop(),
       );
 
       await waitFor(() => getInboxMessage(eventId)?.status === "done");
@@ -1182,6 +1243,7 @@ describe("processing loop", () => {
       expect(outbox).toHaveLength(1);
       expect(outbox[0].text).toBe("Recovered!");
     } finally {
+      await stateLoader.flush();
       closeDatabase();
       unlinkSync(tmpDb);
     }
