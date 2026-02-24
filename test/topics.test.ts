@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { closeDatabase, initDatabase } from "../src/db";
 import {
   createTopic,
+  getOrCreateTopicByKey,
   getTopic,
+  getTopicByKey,
   listTopics,
   updateTopic,
 } from "../src/topics/index";
@@ -112,5 +114,55 @@ describe("topics CRUD", () => {
     updateTopic(topic.id, { name: "Changed" });
     const fetched = getTopic(topic.id)!;
     expect(fetched.updated_at).toBeGreaterThanOrEqual(originalUpdatedAt);
+  });
+});
+
+describe("topic key lookups", () => {
+  test("getTopicByKey returns null for non-existent key", () => {
+    expect(getTopicByKey("non-existent-key")).toBeNull();
+  });
+
+  test("getTopicByKey returns topic when key exists", () => {
+    const created = createTopic({ key: "my-key", name: "My Topic" });
+    const fetched = getTopicByKey("my-key");
+
+    expect(fetched).not.toBeNull();
+    expect(fetched!.id).toBe(created.id);
+    expect(fetched!.key).toBe("my-key");
+    expect(fetched!.name).toBe("My Topic");
+  });
+
+  test("getOrCreateTopicByKey returns existing topic if key exists", () => {
+    const created = createTopic({ key: "existing-key", name: "Original Name" });
+    const fetched = getOrCreateTopicByKey("existing-key");
+
+    expect(fetched.id).toBe(created.id);
+    expect(fetched.name).toBe("Original Name");
+  });
+
+  test("getOrCreateTopicByKey creates topic with key as name if not exists", () => {
+    const fetched = getOrCreateTopicByKey("new-key");
+
+    expect(fetched.id).toBeTruthy();
+    expect(fetched.key).toBe("new-key");
+    expect(fetched.name).toBe("new-key");
+    expect(fetched.status).toBe("active");
+
+    // Verify it's actually in the database
+    const fromDb = getTopicByKey("new-key");
+    expect(fromDb).not.toBeNull();
+    expect(fromDb!.id).toBe(fetched.id);
+  });
+
+  test("getOrCreateTopicByKey is idempotent", () => {
+    const first = getOrCreateTopicByKey("idempotent-key");
+    const second = getOrCreateTopicByKey("idempotent-key");
+
+    expect(first.id).toBe(second.id);
+
+    // Verify only one topic exists with this key
+    const all = listTopics();
+    const matching = all.filter((t) => t.key === "idempotent-key");
+    expect(matching).toHaveLength(1);
   });
 });

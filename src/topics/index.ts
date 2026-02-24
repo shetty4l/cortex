@@ -50,6 +50,23 @@ export function getTopic(id: string): Topic | null {
   );
 }
 
+export function getTopicByKey(key: string): Topic | null {
+  const db = getDatabase();
+  return (
+    (db.prepare("SELECT * FROM topics WHERE key = ?").get(key) as Topic) ?? null
+  );
+}
+
+/**
+ * Get a topic by key, or create it if it doesn't exist.
+ * When creating, uses the key as both the key and name.
+ */
+export function getOrCreateTopicByKey(key: string): Topic {
+  const existing = getTopicByKey(key);
+  if (existing) return existing;
+  return createTopic({ key, name: key });
+}
+
 export function listTopics(status?: string): Topic[] {
   const db = getDatabase();
   if (status) {
