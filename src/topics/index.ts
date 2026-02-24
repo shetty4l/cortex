@@ -2,6 +2,7 @@ import { getDatabase } from "../db";
 
 export interface Topic {
   id: string;
+  key: string | null;
   name: string;
   description: string | null;
   status: string;
@@ -13,6 +14,7 @@ export interface Topic {
 }
 
 export interface CreateTopicInput {
+  key?: string;
   name: string;
   description?: string;
   starts_at?: number;
@@ -25,10 +27,11 @@ export function createTopic(input: CreateTopicInput): Topic {
   const now = Date.now();
   const id = crypto.randomUUID();
   db.prepare(
-    `INSERT INTO topics (id, name, description, starts_at, ends_at, telegram_thread_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO topics (id, key, name, description, starts_at, ends_at, telegram_thread_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
+    input.key ?? null,
     input.name,
     input.description ?? null,
     input.starts_at ?? null,
