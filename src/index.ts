@@ -10,7 +10,6 @@ import { ok } from "@shetty4l/core/result";
 import { onShutdown } from "@shetty4l/core/signals";
 import { ChannelRegistry } from "./channels";
 import { SilentChannel } from "./channels/silent";
-import { TelegramChannel } from "./channels/telegram";
 import type { CortexConfig } from "./config";
 import { loadConfig } from "./config";
 import { initDatabase } from "./db";
@@ -39,21 +38,10 @@ interface RuntimeDeps {
 }
 
 function defaultCreateChannelRegistry(
-  config: CortexConfig,
-  thalamus?: Thalamus,
+  _config: CortexConfig,
+  _thalamus?: Thalamus,
 ): ChannelRegistry {
   const registry = new ChannelRegistry();
-  if (config.telegramBotToken) {
-    const allowedIds = config.telegramAllowedUserIds ?? [];
-    if (allowedIds.length === 0) {
-      log(
-        "telegram channel enabled with empty allowedUserIds — all messages will be rejected",
-      );
-    }
-    registry.register(new TelegramChannel(config, {}, thalamus));
-  } else {
-    log("telegram channel disabled (no token configured)");
-  }
   registry.register(new SilentChannel());
   return registry;
 }

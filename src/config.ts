@@ -4,7 +4,7 @@
  * Load order:
  *   1. Defaults (hardcoded)
  *   2. Config file (~/.config/cortex/config.json)
- *   3. Environment variables (CORTEX_PORT, CORTEX_HOST, CORTEX_MODELS, CORTEX_CONFIG_PATH, CORTEX_INGEST_API_KEY, CORTEX_MAX_TOOL_ROUNDS, CORTEX_TELEGRAM_BOT_TOKEN, CORTEX_TELEGRAM_ALLOWED_USER_IDS)
+ *   3. Environment variables (CORTEX_PORT, CORTEX_HOST, CORTEX_MODELS, CORTEX_CONFIG_PATH, CORTEX_INGEST_API_KEY, CORTEX_MAX_TOOL_ROUNDS)
  *
  * String values in the config file support ${ENV_VAR} interpolation.
  */
@@ -42,10 +42,6 @@ export interface CortexConfig {
   // Scheduler
   schedulerTickSeconds: number;
   schedulerTimezone: string;
-
-  // Telegram
-  telegramBotToken?: string;
-  telegramAllowedUserIds?: number[];
 
   // Outbox
   outboxPollDefaultBatch: number;
@@ -94,8 +90,6 @@ const DEFAULTS: Omit<
   turnTtlDays: 30,
   schedulerTickSeconds: 30,
   schedulerTimezone: "UTC",
-  telegramBotToken: undefined,
-  telegramAllowedUserIds: [],
   outboxPollDefaultBatch: 20,
   outboxLeaseSeconds: 60,
   outboxMaxAttempts: 10,
@@ -119,29 +113,6 @@ function requireNonEmptyEnv(envName: string, value: string): Result<string> {
   return ok(trimmed);
 }
 
-function parseTelegramAllowedUserIdsEnv(
-  envName: string,
-  value: string,
-): Result<number[]> {
-  const trimmed = value.trim();
-  if (trimmed.length === 0) {
-    return ok([]);
-  }
-
-  const userIds: number[] = [];
-  for (const rawEntry of trimmed.split(",")) {
-    const entry = rawEntry.trim();
-    if (!/^-?\d+$/.test(entry)) {
-      return err(
-        `${envName}: invalid user ID "${entry}" (must be comma-separated integers)`,
-      );
-    }
-    userIds.push(Number(entry));
-  }
-
-  return ok(userIds);
-}
-
 function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
   if (typeof raw !== "object" || raw === null) {
     return err("Config must be a JSON object");
@@ -156,7 +127,6 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "ingestApiKey", label: "ingestApiKey" },
     { key: "synapseUrl", label: "synapseUrl" },
     { key: "engramUrl", label: "engramUrl" },
-    { key: "telegramBotToken", label: "telegramBotToken" },
     { key: "systemPromptFile", label: "systemPromptFile" },
     { key: "silentChannelAlias", label: "silentChannelAlias" },
   ];
@@ -168,19 +138,11 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
       }
 
       const value = obj[field.key] as string;
-      if (field.key === "telegramBotToken") {
-        const trimmed = value.trim();
-        if (trimmed.length === 0) {
-          return err(`${field.label}: must be a non-empty string`);
-        }
-        result.telegramBotToken = trimmed;
-      } else {
-        if (value.length === 0) {
-          return err(`${field.label}: must be a non-empty string`);
-        }
-        // biome-ignore lint: dynamic field assignment
-        (result as Record<string, unknown>)[field.key] = value;
+      if (value.length === 0) {
+        return err(`${field.label}: must be a non-empty string`);
       }
+      // biome-ignore lint: dynamic field assignment
+      (result as Record<string, unknown>)[field.key] = value;
     }
   }
 
@@ -270,18 +232,6 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
       return err("schedulerTimezone: must be a string");
     }
     result.schedulerTimezone = obj.schedulerTimezone;
-  }
-
-  if (obj.telegramAllowedUserIds !== undefined) {
-    if (
-      !Array.isArray(obj.telegramAllowedUserIds) ||
-      !obj.telegramAllowedUserIds.every(
-        (id) => typeof id === "number" && Number.isInteger(id),
-      )
-    ) {
-      return err("telegramAllowedUserIds: must be an array of integers");
-    }
-    result.telegramAllowedUserIds = obj.telegramAllowedUserIds as number[];
   }
 
   if (obj.skillDirs !== undefined) {
@@ -426,22 +376,6 @@ export function loadConfig(
       }
     }
     config.models = models;
-  }
-  if (process.env.CORTEX_TELEGRAM_BOT_TOKEN !== undefined) {
-    const tokenResult = requireNonEmptyEnv(
-      "CORTEX_TELEGRAM_BOT_TOKEN",
-      process.env.CORTEX_TELEGRAM_BOT_TOKEN,
-    );
-    if (!tokenResult.ok) return tokenResult as Result<never>;
-    config.telegramBotToken = tokenResult.value;
-  }
-  if (process.env.CORTEX_TELEGRAM_ALLOWED_USER_IDS !== undefined) {
-    const userIdsResult = parseTelegramAllowedUserIdsEnv(
-      "CORTEX_TELEGRAM_ALLOWED_USER_IDS",
-      process.env.CORTEX_TELEGRAM_ALLOWED_USER_IDS,
-    );
-    if (!userIdsResult.ok) return userIdsResult as Result<never>;
-    config.telegramAllowedUserIds = userIdsResult.value;
   }
   if (process.env.CORTEX_MAX_TOOL_ROUNDS) {
     const raw = process.env.CORTEX_MAX_TOOL_ROUNDS;
