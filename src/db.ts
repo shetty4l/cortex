@@ -83,6 +83,7 @@ const SCHEMA = `
 
   CREATE TABLE IF NOT EXISTS topics (
     id TEXT PRIMARY KEY,
+    key TEXT UNIQUE,
     name TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'completed', 'archived')),
@@ -92,6 +93,7 @@ const SCHEMA = `
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
+  CREATE INDEX IF NOT EXISTS idx_topics_key ON topics(key);
 
   CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
