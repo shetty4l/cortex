@@ -268,7 +268,11 @@ async function handleOutboxPoll(
     body.topicKey ?? undefined,
   );
 
-  return jsonOk({ messages }, 200);
+  const response = jsonOk({ messages }, 200);
+  if (messages.length === 0) {
+    response.headers.set("x-empty-poll", "1");
+  }
+  return response;
 }
 
 interface AckRequestBody {
@@ -388,8 +392,16 @@ export function startServer(
       }
 
       if (response && url.pathname !== "/stats") {
-        const latency = (performance.now() - start).toFixed(0);
-        log(`${req.method} ${url.pathname} ${response.status} ${latency}ms`);
+        // Skip logging empty outbox polls to reduce noise
+        const isEmptyPoll =
+          url.pathname === "/outbox/poll" &&
+          response.status === 200 &&
+          response.headers.get("x-empty-poll") === "1";
+
+        if (!isEmptyPoll) {
+          const latency = (performance.now() - start).toFixed(0);
+          log(`${req.method} ${url.pathname} ${response.status} ${latency}ms`);
+        }
       }
 
       return response;
