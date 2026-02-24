@@ -11,16 +11,32 @@ import {
   claimNextInboxMessage,
   closeDatabase,
   getDatabase,
-  getReceptorCursor,
   getUnprocessedBuffers,
   initDatabase,
   insertReceptorBuffer,
 } from "../src/db";
+import { ReceptorCursorState, StateLoader, ThalamusState } from "../src/state";
 import {
   type ReceivePayload,
   Thalamus,
   type ThalamusConfig,
 } from "../src/thalamus";
+
+let stateLoader: StateLoader;
+
+function getReceptorCursor(channel: string): {
+  cursorValue: string | null;
+  lastSyncedAt: number | null;
+} | null {
+  const state = stateLoader.load(ReceptorCursorState, channel);
+  if (state.cursorValue === null && state.lastSyncedAt === null) {
+    return null;
+  }
+  return {
+    cursorValue: state.cursorValue,
+    lastSyncedAt: state.lastSyncedAt?.getTime() ?? null,
+  };
+}
 
 function makePayload(overrides?: Partial<ReceivePayload>): ReceivePayload {
   return {
@@ -37,10 +53,12 @@ describe("thalamus.receive()", () => {
 
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
     thalamus = new Thalamus();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
@@ -371,9 +389,11 @@ function makeThalamusConfig(
 describe("thalamus.syncAll()", () => {
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
@@ -516,7 +536,9 @@ describe("thalamus.syncAll()", () => {
     mockSynapseHandler = () => Response.json(makeSynapseResponse([]));
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
+    await stateLoader.flush();
 
     const calCursor = getReceptorCursor("calendar");
     expect(calCursor).not.toBeNull();
@@ -840,9 +862,11 @@ describe("thalamus.syncChannel()", () => {
 describe("thalamus.start()", () => {
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
@@ -903,6 +927,7 @@ describe("thalamus.start()", () => {
     mockSynapseHandler = () => Response.json(makeSynapseResponse([]));
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     expect(thalamus.getLastSyncAt()).toBeNull();
 
     await thalamus.start();

@@ -9,17 +9,19 @@ import {
 } from "bun:test";
 import type { CortexConfig } from "../src/config";
 import {
-  advanceExtractionCursor,
   closeDatabase,
-  getExtractionCursor,
-  getTopicSummary,
-  incrementTurnsSinceExtraction,
+  getDatabase,
   initDatabase,
   loadTurnsSinceCursor,
   saveAgentTurns,
   saveTurn,
 } from "../src/db";
 import { maybeExtract, trimToBudget } from "../src/extraction";
+import {
+  ExtractionCursorState,
+  StateLoader,
+  TopicSummaryState,
+} from "../src/state";
 
 // --- Mock Synapse server (extraction model) ---
 
@@ -99,7 +101,38 @@ afterAll(() => {
   mockEngram.stop(true);
 });
 
+// --- StateLoader helper functions ---
+
+function getExtractionCursor(topicKey: string) {
+  const state = stateLoader.load(ExtractionCursorState, topicKey);
+  return {
+    topic_key: topicKey,
+    last_extracted_rowid: state.lastExtractedRowid,
+    turns_since_extraction: state.turnsSinceExtraction,
+  };
+}
+
+async function incrementTurnsSinceExtraction(topicKey: string) {
+  const state = stateLoader.load(ExtractionCursorState, topicKey);
+  state.turnsSinceExtraction += 1;
+  await stateLoader.flush();
+}
+
+async function advanceExtractionCursor(topicKey: string, lastRowid: number) {
+  const state = stateLoader.load(ExtractionCursorState, topicKey);
+  state.lastExtractedRowid = lastRowid;
+  state.turnsSinceExtraction = 0;
+  await stateLoader.flush();
+}
+
+function getTopicSummary(topicKey: string): string | null {
+  const state = stateLoader.load(TopicSummaryState, topicKey);
+  return state.summary;
+}
+
 // --- Test config ---
+
+let stateLoader: StateLoader;
 
 function testConfig(overrides?: Partial<CortexConfig>): CortexConfig {
   return {
@@ -170,9 +203,11 @@ async function processAndExtract(
   config: CortexConfig,
 ): Promise<void> {
   if (config.extractionModels) {
-    incrementTurnsSinceExtraction(topicKey);
+    await incrementTurnsSinceExtraction(topicKey);
   }
-  await maybeExtract(topicKey, config);
+  await maybeExtract(topicKey, config, stateLoader);
+  // Flush to ensure cursor changes are persisted before tests read them back
+  await stateLoader.flush();
 }
 
 /**
@@ -199,45 +234,47 @@ function mockSynapseWithFacts(
 describe("extraction cursors (DB)", () => {
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
-  test("getExtractionCursor returns null for unknown topic", () => {
+  test("getExtractionCursor returns defaults for new topic", () => {
     const cursor = getExtractionCursor("unknown-topic");
-    expect(cursor).toBeNull();
+    expect(cursor.last_extracted_rowid).toBe(0);
+    expect(cursor.turns_since_extraction).toBe(0);
   });
 
-  test("incrementTurnsSinceExtraction creates cursor on first call", () => {
-    incrementTurnsSinceExtraction("topic-1");
+  test("incrementTurnsSinceExtraction increments counter", async () => {
+    await incrementTurnsSinceExtraction("topic-1");
     const cursor = getExtractionCursor("topic-1");
 
-    expect(cursor).not.toBeNull();
-    expect(cursor!.last_extracted_rowid).toBe(0);
-    expect(cursor!.turns_since_extraction).toBe(1);
+    expect(cursor.last_extracted_rowid).toBe(0);
+    expect(cursor.turns_since_extraction).toBe(1);
   });
 
-  test("incrementTurnsSinceExtraction increments on subsequent calls", () => {
-    incrementTurnsSinceExtraction("topic-1");
-    incrementTurnsSinceExtraction("topic-1");
-    incrementTurnsSinceExtraction("topic-1");
+  test("incrementTurnsSinceExtraction increments on subsequent calls", async () => {
+    await incrementTurnsSinceExtraction("topic-1");
+    await incrementTurnsSinceExtraction("topic-1");
+    await incrementTurnsSinceExtraction("topic-1");
 
     const cursor = getExtractionCursor("topic-1");
-    expect(cursor!.turns_since_extraction).toBe(3);
+    expect(cursor.turns_since_extraction).toBe(3);
   });
 
-  test("advanceExtractionCursor resets counter", () => {
-    incrementTurnsSinceExtraction("topic-1");
-    incrementTurnsSinceExtraction("topic-1");
-    incrementTurnsSinceExtraction("topic-1");
+  test("advanceExtractionCursor resets counter", async () => {
+    await incrementTurnsSinceExtraction("topic-1");
+    await incrementTurnsSinceExtraction("topic-1");
+    await incrementTurnsSinceExtraction("topic-1");
 
-    advanceExtractionCursor("topic-1", 42);
+    await advanceExtractionCursor("topic-1", 42);
 
     const cursor = getExtractionCursor("topic-1");
-    expect(cursor!.last_extracted_rowid).toBe(42);
-    expect(cursor!.turns_since_extraction).toBe(0);
+    expect(cursor.last_extracted_rowid).toBe(42);
+    expect(cursor.turns_since_extraction).toBe(0);
   });
 
   test("loadTurnsSinceCursor returns turns after rowid", () => {
@@ -279,6 +316,7 @@ describe("extraction cursors (DB)", () => {
 describe("maybeExtract", () => {
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
     engramRememberCalls = [];
     engramSummaryCalls = [];
     engramRecallCalls = [];
@@ -296,7 +334,8 @@ describe("maybeExtract", () => {
     };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
@@ -304,10 +343,12 @@ describe("maybeExtract", () => {
     const config = testConfig({ extractionModels: undefined });
     seedTurns("topic-1", 5);
 
-    await maybeExtract("topic-1", config);
+    await maybeExtract("topic-1", config, stateLoader);
 
-    // No cursor created, no model call
-    expect(getExtractionCursor("topic-1")).toBeNull();
+    // Cursor not touched when extraction disabled, stays at defaults
+    const cursor = getExtractionCursor("topic-1");
+    expect(cursor.turns_since_extraction).toBe(0);
+    expect(cursor.last_extracted_rowid).toBe(0);
     expect(engramRememberCalls).toHaveLength(0);
   });
 
@@ -319,7 +360,7 @@ describe("maybeExtract", () => {
     await processAndExtract("topic-1", config);
 
     const cursor = getExtractionCursor("topic-1");
-    expect(cursor!.turns_since_extraction).toBe(1);
+    expect(cursor.turns_since_extraction).toBe(1);
     expect(engramRememberCalls).toHaveLength(0);
   });
 
@@ -381,7 +422,7 @@ describe("maybeExtract", () => {
 
     // Reset cursor to force re-extraction of same turns
     engramRememberCalls = [];
-    advanceExtractionCursor("topic-1", 0);
+    await advanceExtractionCursor("topic-1", 0);
 
     // Add another turn to trigger extraction again
     seedTurns("topic-1", 1);
@@ -403,8 +444,8 @@ describe("maybeExtract", () => {
     await processAndExtract("topic-1", config);
 
     const cursor = getExtractionCursor("topic-1");
-    expect(cursor!.turns_since_extraction).toBe(0);
-    expect(cursor!.last_extracted_rowid).toBeGreaterThan(0);
+    expect(cursor.turns_since_extraction).toBe(0);
+    expect(cursor.last_extracted_rowid).toBeGreaterThan(0);
   });
 
   test("cursor does NOT advance on model call failure", async () => {
@@ -421,8 +462,8 @@ describe("maybeExtract", () => {
 
     const cursor = getExtractionCursor("topic-1");
     // Counter was incremented but cursor NOT advanced
-    expect(cursor!.turns_since_extraction).toBe(1);
-    expect(cursor!.last_extracted_rowid).toBe(0);
+    expect(cursor.turns_since_extraction).toBe(1);
+    expect(cursor.last_extracted_rowid).toBe(0);
   });
 
   test("cursor does NOT advance on malformed JSON response", async () => {
@@ -437,8 +478,8 @@ describe("maybeExtract", () => {
     await processAndExtract("topic-1", config);
 
     const cursor = getExtractionCursor("topic-1");
-    expect(cursor!.turns_since_extraction).toBe(1);
-    expect(cursor!.last_extracted_rowid).toBe(0);
+    expect(cursor.turns_since_extraction).toBe(1);
+    expect(cursor.last_extracted_rowid).toBe(0);
   });
 
   test("cursor advances even if all remember calls fail", async () => {
@@ -463,8 +504,8 @@ describe("maybeExtract", () => {
 
     const cursor = getExtractionCursor("topic-1");
     // Cursor advanced despite remember failure (upsert makes re-extraction safe)
-    expect(cursor!.turns_since_extraction).toBe(0);
-    expect(cursor!.last_extracted_rowid).toBeGreaterThan(0);
+    expect(cursor.turns_since_extraction).toBe(0);
+    expect(cursor.last_extracted_rowid).toBeGreaterThan(0);
   });
 
   test("empty extraction result advances cursor", async () => {
@@ -475,8 +516,8 @@ describe("maybeExtract", () => {
     await processAndExtract("topic-1", config);
 
     const cursor = getExtractionCursor("topic-1");
-    expect(cursor!.turns_since_extraction).toBe(0);
-    expect(cursor!.last_extracted_rowid).toBeGreaterThan(0);
+    expect(cursor.turns_since_extraction).toBe(0);
+    expect(cursor.last_extracted_rowid).toBeGreaterThan(0);
     // No fact remember calls, but summary is stored
     expect(engramRememberCalls).toHaveLength(0);
     expect(engramSummaryCalls).toHaveLength(1);
@@ -746,13 +787,15 @@ describe("trimToBudget", () => {
 describe("maybeExtract with oversized batches", () => {
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
     engramRememberCalls = [];
     engramSummaryCalls = [];
     engramRecallCalls = [];
     mockEngramHandler = defaultEngramHandler;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
@@ -787,12 +830,12 @@ describe("maybeExtract with oversized batches", () => {
 
     // Cursor should be fully advanced (all turns processed)
     const cursor = getExtractionCursor("topic-1");
-    expect(cursor!.turns_since_extraction).toBe(0);
+    expect(cursor.turns_since_extraction).toBe(0);
 
     // Verify all turns are behind the cursor
     const remaining = loadTurnsSinceCursor(
       "topic-1",
-      cursor!.last_extracted_rowid,
+      cursor.last_extracted_rowid,
     );
     expect(remaining).toHaveLength(0);
   });
@@ -801,6 +844,7 @@ describe("maybeExtract with oversized batches", () => {
 describe("topic summary generation", () => {
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
     engramRememberCalls = [];
     engramSummaryCalls = [];
     engramRecallCalls = [];
@@ -817,7 +861,8 @@ describe("topic summary generation", () => {
     };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
@@ -924,7 +969,7 @@ describe("topic summary generation", () => {
 
     // Cursor still advanced
     const cursor = getExtractionCursor("topic-1");
-    expect(cursor!.turns_since_extraction).toBe(0);
+    expect(cursor.turns_since_extraction).toBe(0);
   });
 
   test("summary not generated when extraction fails", async () => {

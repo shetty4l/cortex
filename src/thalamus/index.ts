@@ -5,8 +5,8 @@ import {
   enqueueInboxMessage,
   getUnprocessedBuffers,
   insertReceptorBuffer,
-  upsertReceptorCursor,
 } from "../db";
+import { ReceptorCursorState, type StateLoader, ThalamusState } from "../state";
 import { chat } from "../synapse";
 import { listTopics } from "../topics";
 import { formatChannelData } from "./formatters";
@@ -69,13 +69,21 @@ export interface SyncResult {
 
 export class Thalamus {
   private syncTimer: ReturnType<typeof setInterval> | null = null;
-  private lastSyncAt: number | null = null;
+  private stateLoader: StateLoader | null = null;
+  private thalamusState: ThalamusState | null = null;
 
   constructor(private config?: ThalamusConfig) {}
 
+  /** Set the StateLoader for persistent state. */
+  setStateLoader(stateLoader: StateLoader): void {
+    this.stateLoader = stateLoader;
+    // Load the thalamus state once when stateLoader is set
+    this.thalamusState = stateLoader.load(ThalamusState, "singleton");
+  }
+
   /** Returns the timestamp of the last syncAll() run, or null if never run. */
   getLastSyncAt(): number | null {
-    return this.lastSyncAt;
+    return this.thalamusState?.lastSyncAt?.getTime() ?? null;
   }
 
   async start(): Promise<void> {
@@ -103,7 +111,10 @@ export class Thalamus {
   }
 
   async syncAll(): Promise<SyncResult> {
-    this.lastSyncAt = Date.now();
+    // Update persistent timestamp
+    if (this.thalamusState) {
+      this.thalamusState.lastSyncAt = new Date();
+    }
 
     if (!this.config) {
       log("thalamus syncAll: no config, skipping");
@@ -259,8 +270,12 @@ export class Thalamus {
     }
 
     // Update receptor cursors per channel
-    for (const channel of grouped.keys()) {
-      upsertReceptorCursor(channel, String(Date.now()));
+    if (this.stateLoader) {
+      for (const channel of grouped.keys()) {
+        const cursorState = this.stateLoader.load(ReceptorCursorState, channel);
+        cursorState.cursorValue = String(Date.now());
+        cursorState.lastSyncedAt = new Date();
+      }
     }
 
     // Delete processed buffers
