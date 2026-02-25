@@ -73,13 +73,19 @@ export interface CortexConfig {
   // Debug logging
   debugPipeline?: boolean;
   debugPrompt?: boolean;
+
+  // Wilson (external tool provider)
+  wilson?: {
+    url: string;
+    apiKey?: string;
+  };
 }
 
 // --- Defaults ---
 
 const DEFAULTS: Omit<
   CortexConfig,
-  "ingestApiKey" | "models" | "extractionModels"
+  "ingestApiKey" | "models" | "extractionModels" | "wilson"
 > = {
   host: "127.0.0.1",
   port: 7751,
@@ -279,6 +285,44 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
       // biome-ignore lint: dynamic field assignment
       (result as Record<string, unknown>)[field] = obj[field];
     }
+  }
+
+  // Wilson config (optional)
+  if (obj.wilson !== undefined) {
+    if (
+      typeof obj.wilson !== "object" ||
+      obj.wilson === null ||
+      Array.isArray(obj.wilson)
+    ) {
+      return err("wilson: must be an object");
+    }
+    const wilson = obj.wilson as Record<string, unknown>;
+
+    // wilson.url is required if wilson is present
+    if (wilson.url === undefined) {
+      return err("wilson.url: is required when wilson config is present");
+    }
+    if (typeof wilson.url !== "string" || wilson.url.length === 0) {
+      return err("wilson.url: must be a non-empty string");
+    }
+    // Validate URL format
+    try {
+      new URL(wilson.url);
+    } catch {
+      return err(`wilson.url: "${wilson.url}" is not a valid URL`);
+    }
+
+    // wilson.apiKey is optional
+    if (wilson.apiKey !== undefined) {
+      if (typeof wilson.apiKey !== "string" || wilson.apiKey.length === 0) {
+        return err("wilson.apiKey: must be a non-empty string if provided");
+      }
+    }
+
+    result.wilson = {
+      url: wilson.url,
+      ...(wilson.apiKey !== undefined && { apiKey: wilson.apiKey as string }),
+    };
   }
 
   return ok(result);

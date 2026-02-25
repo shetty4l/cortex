@@ -49,6 +49,8 @@ export interface ChatMessage {
   tool_call_id?: string;
   tool_calls?: ToolCall[];
   name?: string;
+  /** Internal metadata (not sent to LLM). */
+  metadata?: Record<string, unknown>;
 }
 
 export interface ChatResponse {

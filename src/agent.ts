@@ -17,6 +17,7 @@
 import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+import { proposeApproval } from "./approval";
 import { getDebugLogger } from "./debug-logger";
 import type { SkillRegistry, SkillRuntimeContext } from "./skills";
 import type { ChatMessage, OpenAITool, ToolCall } from "./synapse";
@@ -34,6 +35,8 @@ export interface AgentConfig {
   maxToolRounds: number;
   skillConfig: Record<string, unknown>;
   synapseTimeoutMs?: number;
+  /** Topic key for approval gating. */
+  topicKey?: string;
 }
 
 export interface AgentResult {
@@ -180,6 +183,26 @@ async function executeOneToolCall(
       content: `Error: Invalid JSON in tool arguments: ${toolCall.function.arguments}`,
       tool_call_id: toolCall.id,
       name: qualifiedName,
+    };
+  }
+
+  // Approval gate: block mutating tools until approved
+  if (registry.isMutating(qualifiedName) && config.topicKey) {
+    const approval = proposeApproval({
+      topic_key: config.topicKey,
+      action: `Execute tool ${qualifiedName}`,
+      tool_name: qualifiedName,
+      tool_args_json: toolCall.function.arguments,
+    });
+
+    log(`tool ${qualifiedName} requires approval (id=${approval.id})`);
+
+    return {
+      role: "tool",
+      content: `Action requires approval: Execute tool ${qualifiedName}. Waiting for user confirmation.`,
+      tool_call_id: toolCall.id,
+      name: qualifiedName,
+      metadata: { approval_id: approval.id },
     };
   }
 

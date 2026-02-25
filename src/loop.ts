@@ -263,6 +263,7 @@ export function startProcessingLoop(
                   maxToolRounds: config.maxToolRounds,
                   skillConfig: config.skillConfig,
                   synapseTimeoutMs: config.synapseTimeoutMs,
+                  topicKey: message.topic_key,
                 },
               });
 
