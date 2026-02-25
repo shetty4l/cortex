@@ -2,13 +2,16 @@
  * HTTP server for Cortex.
  *
  * Routes:
- *   GET  /health         — health check (handled by core)
- *   GET  /stats          — aggregated stats (Wave 3)
- *   POST /ingest         — DEPRECATED (returns 410 Gone)
- *   POST /receive        — thalamus-gated event ingress
- *   POST /outbox/poll    — connector delivery claim
- *   POST /outbox/ack     — connector delivery acknowledgement
- *   POST /thalamus/sync  — trigger thalamus sync (optional ?channel=X)
+ *   GET  /health                         — health check (handled by core)
+ *   GET  /stats                          — aggregated stats (Wave 3)
+ *   POST /ingest                         — DEPRECATED (returns 410 Gone)
+ *   POST /receive                        — thalamus-gated event ingress
+ *   POST /outbox/poll                    — connector delivery claim
+ *   POST /outbox/ack                     — connector delivery acknowledgement
+ *   POST /thalamus/sync                  — trigger thalamus sync (optional ?channel=X)
+ *   POST   /tools/external/register      — register/update external tool provider
+ *   DELETE /tools/external/unregister/:id — unregister provider
+ *   POST   /tools/external/heartbeat/:id — update provider heartbeat
  */
 
 import {
@@ -18,9 +21,11 @@ import {
   jsonOk,
 } from "@shetty4l/core/http";
 import { createLogger } from "@shetty4l/core/log";
+import type { StateLoader } from "@shetty4l/core/state";
 import { timingSafeEqual } from "crypto";
 import type { CortexConfig } from "./config";
 import { ackOutboxMessage, getStats, pollOutboxMessages } from "./db";
+import { routeExternalTools } from "./routes/external-tools";
 import type { Thalamus } from "./thalamus";
 import { VERSION } from "./version";
 
@@ -350,6 +355,7 @@ async function handleOutboxAck(
 export function startServer(
   config: CortexConfig,
   thalamus?: Thalamus,
+  stateLoader?: StateLoader,
 ): HttpServer {
   return createServer({
     name: "cortex",
@@ -389,6 +395,8 @@ export function startServer(
             response = jsonOk(result, 500);
           }
         }
+      } else if (url.pathname.startsWith("/tools/external/") && stateLoader) {
+        response = await routeExternalTools(req, url, stateLoader);
       }
 
       if (response && url.pathname !== "/stats") {
