@@ -5,7 +5,7 @@
     "": {
       "name": "cortex",
       "dependencies": {
-        "@shetty4l/core": "^0.1.37",
+        "@shetty4l/core": "^0.1.38",
       },
       "devDependencies": {
         "@biomejs/biome": "^2.4.4",
@@ -73,7 +73,7 @@
 
     "@oxlint/binding-win32-x64-msvc": ["@oxlint/binding-win32-x64-msvc@1.50.0", "", { "os": "win32", "cpu": "x64" }, "sha512-682t7npLC4G2Ca+iNlI9fhAKTcFPYYXJjwoa88H4q+u5HHHlsnL/gHULapX3iqp+A8FIJbgdylL5KMYo2LaluQ=="],
 
-    "@shetty4l/core": ["@shetty4l/core@0.1.37", "", { "bin": { "version-bump": "bin/version-bump.js" } }, "sha512-u+39syftoCWh2Yn6YVN1OysAHHClLEnGLi3hSmvRvjSiFFi17Trh9J9vyHvqfAY7j4wISmE/rNK3pNjS8SOMBA=="],
+    "@shetty4l/core": ["@shetty4l/core@0.1.38", "", { "bin": { "version-bump": "bin/version-bump.js" } }, "sha512-HcuK16oPK7F74cD/ygd1ZtlnF2l605wDQ9Z2g1Hj8YCvK+HQzjXrUWdoa2CL8tbnLy1Pabqx5HHBwMKGcO6RWg=="],
 
     "@types/bun": ["@types/bun@1.3.9", "", { "dependencies": { "bun-types": "1.3.9" } }, "sha512-KQ571yULOdWJiMH+RIWIOZ7B2RXQGpL1YQrBtLIV3FqDcCu6FsbFUBwhdKUlCKUpS3PJDsHlJ1QKlpxoVR+xtw=="],
 
