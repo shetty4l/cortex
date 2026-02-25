@@ -1,16 +1,46 @@
-import { getDatabase } from "../db";
+/**
+ * Topic management using StateLoader collection persistence.
+ *
+ * Topics are conversation containers that group related messages together.
+ * Each topic has an optional key for external references (e.g., Telegram thread ID).
+ */
 
-export interface Topic {
-  id: string;
-  key: string | null;
-  name: string;
-  description: string | null;
-  status: string;
-  starts_at: number | null;
-  ends_at: number | null;
-  telegram_thread_id: number | null;
-  created_at: number;
-  updated_at: number;
+import {
+  CollectionEntity,
+  Id,
+  Index,
+  PersistedCollection,
+  type StateLoader,
+} from "@shetty4l/core/state";
+// Workaround: Import Field from collection decorators directly
+// The @shetty4l/core/state exports the singleton Field decorator,
+// but @PersistedCollection requires the collection Field decorator.
+// Using relative path until package exports are fixed.
+import { Field } from "../../node_modules/@shetty4l/core/src/state/collection/decorators";
+
+/**
+ * Topic entity persisted to SQLite via StateLoader.
+ *
+ * Uses @PersistedCollection for multi-row table storage with explicit save().
+ */
+@PersistedCollection("topics")
+export class Topic extends CollectionEntity {
+  @Id() id: string = "";
+  @Field("string") @Index() key: string | null = null;
+  @Field("string") name: string = "";
+  @Field("string") description: string | null = null;
+  @Field("string") @Index() status: string = "active";
+  @Field("number") starts_at: number | null = null;
+  @Field("number") ends_at: number | null = null;
+  @Field("number") telegram_thread_id: number | null = null;
+
+  async save(): Promise<void> {
+    throw new Error("Not bound to StateLoader");
+  }
+
+  async delete(): Promise<void> {
+    throw new Error("Not bound to StateLoader");
+  }
 }
 
 export interface CreateTopicInput {
@@ -22,64 +52,78 @@ export interface CreateTopicInput {
   telegram_thread_id?: number;
 }
 
-export function createTopic(input: CreateTopicInput): Topic {
-  const db = getDatabase();
-  const now = Date.now();
-  const id = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO topics (id, key, name, description, starts_at, ends_at, telegram_thread_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.key ?? null,
-    input.name,
-    input.description ?? null,
-    input.starts_at ?? null,
-    input.ends_at ?? null,
-    input.telegram_thread_id ?? null,
-    now,
-    now,
-  );
-  return db.prepare("SELECT * FROM topics WHERE id = ?").get(id) as Topic;
+/**
+ * Create a new topic.
+ */
+export function createTopic(
+  stateLoader: StateLoader,
+  input: CreateTopicInput,
+): Topic {
+  return stateLoader.create(Topic, {
+    id: crypto.randomUUID(),
+    key: input.key ?? null,
+    name: input.name,
+    description: input.description ?? null,
+    starts_at: input.starts_at ?? null,
+    ends_at: input.ends_at ?? null,
+    telegram_thread_id: input.telegram_thread_id ?? null,
+  });
 }
 
-export function getTopic(id: string): Topic | null {
-  const db = getDatabase();
-  return (
-    (db.prepare("SELECT * FROM topics WHERE id = ?").get(id) as Topic) ?? null
-  );
+/**
+ * Get a topic by ID.
+ */
+export function getTopic(stateLoader: StateLoader, id: string): Topic | null {
+  return stateLoader.get(Topic, id);
 }
 
-export function getTopicByKey(key: string): Topic | null {
-  const db = getDatabase();
-  return (
-    (db.prepare("SELECT * FROM topics WHERE key = ?").get(key) as Topic) ?? null
-  );
+/**
+ * Get a topic by its unique key.
+ */
+export function getTopicByKey(
+  stateLoader: StateLoader,
+  key: string,
+): Topic | null {
+  const topics = stateLoader.find(Topic, {
+    where: { key },
+    limit: 1,
+  });
+  return topics.length > 0 ? topics[0] : null;
 }
 
 /**
  * Get a topic by key, or create it if it doesn't exist.
  * When creating, uses the key as both the key and name.
  */
-export function getOrCreateTopicByKey(key: string): Topic {
-  const existing = getTopicByKey(key);
+export function getOrCreateTopicByKey(
+  stateLoader: StateLoader,
+  key: string,
+): Topic {
+  const existing = getTopicByKey(stateLoader, key);
   if (existing) return existing;
-  return createTopic({ key, name: key });
+  return createTopic(stateLoader, { key, name: key });
 }
 
-export function listTopics(status?: string): Topic[] {
-  const db = getDatabase();
+/**
+ * List topics, optionally filtered by status.
+ */
+export function listTopics(stateLoader: StateLoader, status?: string): Topic[] {
   if (status) {
-    return db
-      .prepare("SELECT * FROM topics WHERE status = ? ORDER BY created_at DESC")
-      .all(status) as Topic[];
+    return stateLoader.find(Topic, {
+      where: { status },
+      orderBy: { id: "desc" },
+    });
   }
-  return db
-    .prepare("SELECT * FROM topics ORDER BY created_at DESC")
-    .all() as Topic[];
+  return stateLoader.find(Topic, {
+    orderBy: { id: "desc" },
+  });
 }
 
-export function updateTopic(
+/**
+ * Update a topic's fields.
+ */
+export async function updateTopic(
+  stateLoader: StateLoader,
   id: string,
   updates: Partial<
     Pick<
@@ -92,19 +136,19 @@ export function updateTopic(
       | "telegram_thread_id"
     >
   >,
-): void {
-  const db = getDatabase();
-  const fields: string[] = [];
-  const values: (string | number | null)[] = [];
-  for (const [key, value] of Object.entries(updates)) {
-    fields.push(`${key} = ?`);
-    values.push(value as string | number | null);
+): Promise<void> {
+  const topic = stateLoader.get(Topic, id);
+  if (!topic) return;
+
+  if (updates.name !== undefined) topic.name = updates.name;
+  if (updates.description !== undefined)
+    topic.description = updates.description;
+  if (updates.status !== undefined) topic.status = updates.status;
+  if (updates.starts_at !== undefined) topic.starts_at = updates.starts_at;
+  if (updates.ends_at !== undefined) topic.ends_at = updates.ends_at;
+  if (updates.telegram_thread_id !== undefined) {
+    topic.telegram_thread_id = updates.telegram_thread_id;
   }
-  if (fields.length === 0) return;
-  fields.push("updated_at = ?");
-  values.push(Date.now());
-  values.push(id);
-  db.prepare(`UPDATE topics SET ${fields.join(", ")} WHERE id = ?`).run(
-    ...values,
-  );
+
+  await topic.save();
 }

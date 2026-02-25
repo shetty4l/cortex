@@ -1,12 +1,20 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { closeDatabase, initDatabase } from "../src/db";
+import { closeDatabase, getDatabase, initDatabase } from "../src/db";
+import { StateLoader } from "../src/state";
 import type { BuiltinToolContext } from "../src/tools";
 import { createTopicTools } from "../src/tools/topics";
-import { createTopic, getTopicByKey, listTopics } from "../src/topics/index";
+import {
+  createTopic,
+  getTopicByKey,
+  listTopics,
+  updateTopic,
+} from "../src/topics/index";
+
+let stateLoader: StateLoader;
 
 /** Helper to get a tool by name from the topic tools */
 function getTool(name: string) {
-  const tools = createTopicTools();
+  const tools = createTopicTools(stateLoader);
   const tool = tools.find((t) => t.definition.name === name);
   if (!tool) throw new Error(`Tool ${name} not found`);
   return tool;
@@ -14,9 +22,11 @@ function getTool(name: string) {
 
 beforeEach(() => {
   initDatabase(":memory:");
+  stateLoader = new StateLoader(getDatabase());
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await stateLoader.flush();
   closeDatabase();
 });
 
@@ -47,7 +57,7 @@ describe("topics_create tool", () => {
     }
 
     // Verify in database
-    const topic = getTopicByKey("my-topic");
+    const topic = getTopicByKey(stateLoader, "my-topic");
     expect(topic).not.toBeNull();
     expect(topic!.name).toBe("My Topic");
   });
@@ -113,8 +123,8 @@ describe("topics_create tool", () => {
 
 describe("topics_list tool", () => {
   test("returns all topics when no filter", async () => {
-    createTopic({ key: "topic-1", name: "Topic 1" });
-    createTopic({ key: "topic-2", name: "Topic 2" });
+    createTopic(stateLoader, { key: "topic-1", name: "Topic 1" });
+    createTopic(stateLoader, { key: "topic-2", name: "Topic 2" });
 
     const tool = getTool("topics_list");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -129,12 +139,14 @@ describe("topics_list tool", () => {
   });
 
   test("returns filtered results by status", async () => {
-    const topic1 = createTopic({ key: "active-topic", name: "Active" });
-    const topic2 = createTopic({ key: "completed-topic", name: "Completed" });
+    createTopic(stateLoader, { key: "active-topic", name: "Active" });
+    const topic2 = createTopic(stateLoader, {
+      key: "completed-topic",
+      name: "Completed",
+    });
 
     // Update one to completed status
-    const { updateTopic } = await import("../src/topics/index");
-    updateTopic(topic2.id, { status: "completed" });
+    await updateTopic(stateLoader, topic2.id, { status: "completed" });
 
     const tool = getTool("topics_list");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -163,7 +175,7 @@ describe("topics_list tool", () => {
   });
 
   test("returns empty array when no topics match filter", async () => {
-    createTopic({ key: "active-only", name: "Active Only" });
+    createTopic(stateLoader, { key: "active-only", name: "Active Only" });
 
     const tool = getTool("topics_list");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -180,8 +192,8 @@ describe("topics_list tool", () => {
     }
   });
 
-  test("returns topics with created_at as ISO string", async () => {
-    createTopic({ key: "iso-test", name: "ISO Test" });
+  test("returns topics with key field included", async () => {
+    createTopic(stateLoader, { key: "iso-test", name: "ISO Test" });
 
     const tool = getTool("topics_list");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -191,9 +203,8 @@ describe("topics_list tool", () => {
     expect(result.ok).toBe(true);
     if (result.ok) {
       const topics = JSON.parse(result.value.content);
-      expect(topics[0].created_at).toMatch(
-        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/,
-      );
+      expect(topics[0].key).toBe("iso-test");
+      expect(topics[0].name).toBe("ISO Test");
     }
   });
 });
@@ -202,7 +213,7 @@ describe("topics_list tool", () => {
 
 describe("topics_update tool", () => {
   test("modifies topic name", async () => {
-    createTopic({ key: "update-test", name: "Original" });
+    createTopic(stateLoader, { key: "update-test", name: "Original" });
 
     const tool = getTool("topics_update");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -220,12 +231,12 @@ describe("topics_update tool", () => {
     }
 
     // Verify in database
-    const topic = getTopicByKey("update-test");
+    const topic = getTopicByKey(stateLoader, "update-test");
     expect(topic!.name).toBe("Updated Name");
   });
 
   test("modifies topic description", async () => {
-    createTopic({ key: "desc-test", name: "Desc Test" });
+    createTopic(stateLoader, { key: "desc-test", name: "Desc Test" });
 
     const tool = getTool("topics_update");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -243,7 +254,7 @@ describe("topics_update tool", () => {
   });
 
   test("modifies topic status", async () => {
-    createTopic({ key: "status-test", name: "Status Test" });
+    createTopic(stateLoader, { key: "status-test", name: "Status Test" });
 
     const tool = getTool("topics_update");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -260,7 +271,7 @@ describe("topics_update tool", () => {
     }
 
     // Verify in database
-    const topic = getTopicByKey("status-test");
+    const topic = getTopicByKey(stateLoader, "status-test");
     expect(topic!.status).toBe("archived");
   });
 
@@ -289,7 +300,7 @@ describe("topics_update tool", () => {
   });
 
   test("fails when no fields to update", async () => {
-    createTopic({ key: "no-update", name: "No Update" });
+    createTopic(stateLoader, { key: "no-update", name: "No Update" });
 
     const tool = getTool("topics_update");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -310,7 +321,7 @@ describe("topics_update tool", () => {
 
 describe("topics_close tool", () => {
   test("sets status to completed", async () => {
-    createTopic({ key: "close-test", name: "Close Test" });
+    createTopic(stateLoader, { key: "close-test", name: "Close Test" });
 
     const tool = getTool("topics_close");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -328,7 +339,7 @@ describe("topics_close tool", () => {
     }
 
     // Verify in database
-    const topic = getTopicByKey("close-test");
+    const topic = getTopicByKey(stateLoader, "close-test");
     expect(topic!.status).toBe("completed");
   });
 
@@ -361,7 +372,7 @@ describe("topics_close tool", () => {
 
 describe("topic tools registration", () => {
   test("createTopicTools returns all 4 tools", () => {
-    const tools = createTopicTools();
+    const tools = createTopicTools(stateLoader);
 
     expect(tools).toHaveLength(4);
     const names = tools.map((t) => t.definition.name);
@@ -372,7 +383,7 @@ describe("topic tools registration", () => {
   });
 
   test("all topic tools have correct mutatesState flag", () => {
-    const tools = createTopicTools();
+    const tools = createTopicTools(stateLoader);
     const toolMap = Object.fromEntries(
       tools.map((t) => [t.definition.name, t.definition.mutatesState]),
     );

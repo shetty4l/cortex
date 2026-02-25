@@ -5,12 +5,13 @@
  */
 
 import { err, ok } from "@shetty4l/core/result";
+import type { StateLoader } from "@shetty4l/core/state";
 import { createTopic, getTopicByKey, listTopics, updateTopic } from "../topics";
 import type { BuiltinTool, BuiltinToolContext } from "./index";
 
 // --- topics_create ---
 
-export function createTopicsCreateTool(): BuiltinTool {
+export function createTopicsCreateTool(stateLoader: StateLoader): BuiltinTool {
   return {
     definition: {
       name: "topics_create",
@@ -52,7 +53,7 @@ export function createTopicsCreateTool(): BuiltinTool {
         return err("key is required and must be a string");
       }
 
-      const topic = createTopic({
+      const topic = createTopic(stateLoader, {
         key: args.key,
         name: args.name ?? args.key,
         description: args.description,
@@ -75,7 +76,7 @@ export function createTopicsCreateTool(): BuiltinTool {
 
 // --- topics_list ---
 
-export function createTopicsListTool(): BuiltinTool {
+export function createTopicsListTool(stateLoader: StateLoader): BuiltinTool {
   return {
     definition: {
       name: "topics_list",
@@ -99,7 +100,7 @@ export function createTopicsListTool(): BuiltinTool {
         status?: string;
       };
 
-      const topics = listTopics(args.status);
+      const topics = listTopics(stateLoader, args.status);
 
       const result = topics.map((t) => ({
         id: t.id,
@@ -108,7 +109,6 @@ export function createTopicsListTool(): BuiltinTool {
         description: t.description,
         status: t.status,
         telegram_thread_id: t.telegram_thread_id,
-        created_at: new Date(t.created_at).toISOString(),
       }));
 
       return ok({ content: JSON.stringify(result) });
@@ -118,7 +118,7 @@ export function createTopicsListTool(): BuiltinTool {
 
 // --- topics_update ---
 
-export function createTopicsUpdateTool(): BuiltinTool {
+export function createTopicsUpdateTool(stateLoader: StateLoader): BuiltinTool {
   return {
     definition: {
       name: "topics_update",
@@ -160,7 +160,7 @@ export function createTopicsUpdateTool(): BuiltinTool {
         return err("key is required and must be a string");
       }
 
-      const topic = getTopicByKey(args.key);
+      const topic = getTopicByKey(stateLoader, args.key);
       if (!topic) {
         return err(`topic not found: ${args.key}`);
       }
@@ -180,9 +180,9 @@ export function createTopicsUpdateTool(): BuiltinTool {
         return err("no fields to update");
       }
 
-      updateTopic(topic.id, updates);
+      await updateTopic(stateLoader, topic.id, updates);
 
-      const updated = getTopicByKey(args.key);
+      const updated = getTopicByKey(stateLoader, args.key);
       return ok({
         content: JSON.stringify({
           id: updated!.id,
@@ -200,7 +200,7 @@ export function createTopicsUpdateTool(): BuiltinTool {
 
 // --- topics_close ---
 
-export function createTopicsCloseTool(): BuiltinTool {
+export function createTopicsCloseTool(stateLoader: StateLoader): BuiltinTool {
   return {
     definition: {
       name: "topics_close",
@@ -227,14 +227,14 @@ export function createTopicsCloseTool(): BuiltinTool {
         return err("key is required and must be a string");
       }
 
-      const topic = getTopicByKey(args.key);
+      const topic = getTopicByKey(stateLoader, args.key);
       if (!topic) {
         return err(`topic not found: ${args.key}`);
       }
 
-      updateTopic(topic.id, { status: "completed" });
+      await updateTopic(stateLoader, topic.id, { status: "completed" });
 
-      const updated = getTopicByKey(args.key);
+      const updated = getTopicByKey(stateLoader, args.key);
       return ok({
         content: JSON.stringify({
           id: updated!.id,
@@ -250,11 +250,11 @@ export function createTopicsCloseTool(): BuiltinTool {
 
 // --- Export all topic tools ---
 
-export function createTopicTools(): BuiltinTool[] {
+export function createTopicTools(stateLoader: StateLoader): BuiltinTool[] {
   return [
-    createTopicsCreateTool(),
-    createTopicsListTool(),
-    createTopicsUpdateTool(),
-    createTopicsCloseTool(),
+    createTopicsCreateTool(stateLoader),
+    createTopicsListTool(stateLoader),
+    createTopicsUpdateTool(stateLoader),
+    createTopicsCloseTool(stateLoader),
   ];
 }

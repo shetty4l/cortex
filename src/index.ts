@@ -86,8 +86,8 @@ export async function startCortexRuntime(
   const builtinCtx: BuiltinToolContext = { topicKey: "" };
   const builtinTools = [
     createSendMessageTool(channels),
-    ...createTaskTools(),
-    ...createTopicTools(),
+    ...createTaskTools(stateLoader),
+    ...createTopicTools(stateLoader),
   ];
   const combinedRegistry = createCombinedRegistry(
     builtinTools,

@@ -6,6 +6,7 @@
  */
 
 import { err, ok } from "@shetty4l/core/result";
+import type { StateLoader } from "@shetty4l/core/state";
 import {
   completeTask,
   createTask,
@@ -18,7 +19,7 @@ import type { BuiltinTool, BuiltinToolContext } from "./index";
 
 // --- tasks_create ---
 
-function createTasksCreateTool(): BuiltinTool {
+function createTasksCreateTool(stateLoader: StateLoader): BuiltinTool {
   return {
     definition: {
       name: "tasks_create",
@@ -69,7 +70,7 @@ function createTasksCreateTool(): BuiltinTool {
       }
 
       // Auto-create topic if it doesn't exist
-      const topic = getOrCreateTopicByKey(topicKey);
+      const topic = getOrCreateTopicByKey(stateLoader, topicKey);
 
       const dueAt = args.due_at ? new Date(args.due_at).getTime() : undefined;
 
@@ -95,7 +96,7 @@ function createTasksCreateTool(): BuiltinTool {
 
 // --- tasks_list ---
 
-function createTasksListTool(): BuiltinTool {
+function createTasksListTool(stateLoader: StateLoader): BuiltinTool {
   return {
     definition: {
       name: "tasks_list",
@@ -126,7 +127,7 @@ function createTasksListTool(): BuiltinTool {
 
       let topicId: string | undefined;
       if (args.topic_key) {
-        const topic = getTopicByKey(args.topic_key);
+        const topic = getTopicByKey(stateLoader, args.topic_key);
         if (!topic) {
           return ok({ content: JSON.stringify([]) });
         }
@@ -293,10 +294,10 @@ function createTasksUpdateTool(): BuiltinTool {
 
 // --- Export all task tools ---
 
-export function createTaskTools(): BuiltinTool[] {
+export function createTaskTools(stateLoader: StateLoader): BuiltinTool[] {
   return [
-    createTasksCreateTool(),
-    createTasksListTool(),
+    createTasksCreateTool(stateLoader),
+    createTasksListTool(stateLoader),
     createTasksCompleteTool(),
     createTasksUpdateTool(),
   ];

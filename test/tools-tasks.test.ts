@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { closeDatabase, initDatabase } from "../src/db";
+import { closeDatabase, getDatabase, initDatabase } from "../src/db";
+import { StateLoader } from "../src/state";
 import { getTask, listTasks } from "../src/tasks/index";
 import type { BuiltinToolContext } from "../src/tools";
 import { createTaskTools } from "../src/tools/tasks";
 import { createTopic, getTopicByKey } from "../src/topics/index";
 
+let stateLoader: StateLoader;
+
 /** Helper to get a tool by name from the task tools */
 function getTool(name: string) {
-  const tools = createTaskTools();
+  const tools = createTaskTools(stateLoader);
   const tool = tools.find((t) => t.definition.name === name);
   if (!tool) throw new Error(`Tool ${name} not found`);
   return tool;
@@ -15,9 +18,11 @@ function getTool(name: string) {
 
 beforeEach(() => {
   initDatabase(":memory:");
+  stateLoader = new StateLoader(getDatabase());
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await stateLoader.flush();
   closeDatabase();
 });
 
@@ -43,7 +48,7 @@ describe("tasks_create tool", () => {
     }
 
     // Verify topic was auto-created
-    const topic = getTopicByKey("shopping");
+    const topic = getTopicByKey(stateLoader, "shopping");
     expect(topic).not.toBeNull();
     expect(topic!.name).toBe("shopping");
   });
@@ -64,12 +69,15 @@ describe("tasks_create tool", () => {
     }
 
     // Verify topic was auto-created with context key
-    const topic = getTopicByKey("my-context-topic");
+    const topic = getTopicByKey(stateLoader, "my-context-topic");
     expect(topic).not.toBeNull();
   });
 
   test("reuses existing topic when key exists", async () => {
-    const existing = createTopic({ key: "existing", name: "Existing Topic" });
+    const existing = createTopic(stateLoader, {
+      key: "existing",
+      name: "Existing Topic",
+    });
     const tool = getTool("tasks_create");
     const ctx: BuiltinToolContext = { topicKey: "" };
 
@@ -134,7 +142,10 @@ describe("tasks_create tool", () => {
 
 describe("tasks_list tool", () => {
   test("lists all tasks when no filters", async () => {
-    const topic = createTopic({ key: "list-test", name: "List Test" });
+    const topic = createTopic(stateLoader, {
+      key: "list-test",
+      name: "List Test",
+    });
     const tool = getTool("tasks_list");
     const ctx: BuiltinToolContext = { topicKey: "" };
 
@@ -153,8 +164,14 @@ describe("tasks_list tool", () => {
   });
 
   test("filters by topic_key", async () => {
-    const topic1 = createTopic({ key: "topic-a", name: "Topic A" });
-    const topic2 = createTopic({ key: "topic-b", name: "Topic B" });
+    const topic1 = createTopic(stateLoader, {
+      key: "topic-a",
+      name: "Topic A",
+    });
+    const topic2 = createTopic(stateLoader, {
+      key: "topic-b",
+      name: "Topic B",
+    });
     const { createTask } = await import("../src/tasks/index");
     createTask({ topic_id: topic1.id, title: "Task A" });
     createTask({ topic_id: topic2.id, title: "Task B" });
@@ -176,7 +193,10 @@ describe("tasks_list tool", () => {
   });
 
   test("filters by status", async () => {
-    const topic = createTopic({ key: "status-test", name: "Status Test" });
+    const topic = createTopic(stateLoader, {
+      key: "status-test",
+      name: "Status Test",
+    });
     const { createTask, completeTask } = await import("../src/tasks/index");
     const t1 = createTask({ topic_id: topic.id, title: "Pending" });
     const t2 = createTask({ topic_id: topic.id, title: "Done" });
@@ -229,7 +249,10 @@ describe("tasks_list tool", () => {
 
 describe("tasks_complete tool", () => {
   test("marks task as completed", async () => {
-    const topic = createTopic({ key: "complete-test", name: "Complete Test" });
+    const topic = createTopic(stateLoader, {
+      key: "complete-test",
+      name: "Complete Test",
+    });
     const { createTask } = await import("../src/tasks/index");
     const task = createTask({ topic_id: topic.id, title: "To complete" });
 
@@ -277,7 +300,10 @@ describe("tasks_complete tool", () => {
 
 describe("tasks_update tool", () => {
   test("updates task title", async () => {
-    const topic = createTopic({ key: "update-test", name: "Update Test" });
+    const topic = createTopic(stateLoader, {
+      key: "update-test",
+      name: "Update Test",
+    });
     const { createTask } = await import("../src/tasks/index");
     const task = createTask({ topic_id: topic.id, title: "Original" });
 
@@ -301,7 +327,10 @@ describe("tasks_update tool", () => {
   });
 
   test("updates task status", async () => {
-    const topic = createTopic({ key: "status-update", name: "Status Update" });
+    const topic = createTopic(stateLoader, {
+      key: "status-update",
+      name: "Status Update",
+    });
     const { createTask } = await import("../src/tasks/index");
     const task = createTask({ topic_id: topic.id, title: "Status task" });
 
@@ -321,7 +350,10 @@ describe("tasks_update tool", () => {
   });
 
   test("updates task due_at", async () => {
-    const topic = createTopic({ key: "due-update", name: "Due Update" });
+    const topic = createTopic(stateLoader, {
+      key: "due-update",
+      name: "Due Update",
+    });
     const { createTask } = await import("../src/tasks/index");
     const task = createTask({ topic_id: topic.id, title: "Due task" });
 
@@ -365,7 +397,10 @@ describe("tasks_update tool", () => {
   });
 
   test("fails when no fields to update", async () => {
-    const topic = createTopic({ key: "no-update", name: "No Update" });
+    const topic = createTopic(stateLoader, {
+      key: "no-update",
+      name: "No Update",
+    });
     const { createTask } = await import("../src/tasks/index");
     const task = createTask({ topic_id: topic.id, title: "No change" });
 
@@ -382,7 +417,7 @@ describe("tasks_update tool", () => {
 
 describe("task tools registration", () => {
   test("createTaskTools returns all 4 tools", () => {
-    const tools = createTaskTools();
+    const tools = createTaskTools(stateLoader);
 
     expect(tools).toHaveLength(4);
     const names = tools.map((t) => t.definition.name);
@@ -393,7 +428,7 @@ describe("task tools registration", () => {
   });
 
   test("all task tools have correct mutatesState flag", () => {
-    const tools = createTaskTools();
+    const tools = createTaskTools(stateLoader);
     const toolMap = Object.fromEntries(
       tools.map((t) => [t.definition.name, t.definition.mutatesState]),
     );
