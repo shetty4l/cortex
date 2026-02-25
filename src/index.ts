@@ -25,6 +25,7 @@ import { Tick } from "./tick";
 import { type BuiltinToolContext, createCombinedRegistry } from "./tools";
 import { createSendMessageTool } from "./tools/send-message";
 import { createTaskTools } from "./tools/tasks";
+import { createTopicTools } from "./tools/topics";
 import { VERSION } from "./version";
 
 const log = createLogger("cortex");
@@ -83,7 +84,11 @@ export async function startCortexRuntime(
 
   // Create built-in tools with mutable per-message context
   const builtinCtx: BuiltinToolContext = { topicKey: "" };
-  const builtinTools = [createSendMessageTool(channels), ...createTaskTools()];
+  const builtinTools = [
+    createSendMessageTool(channels),
+    ...createTaskTools(),
+    ...createTopicTools(),
+  ];
   const combinedRegistry = createCombinedRegistry(
     builtinTools,
     registry,
