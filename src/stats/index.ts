@@ -58,7 +58,7 @@ function percentile(sorted: number[], p: number): number {
  * Get aggregated stats for the /stats API endpoint.
  *
  * Returns inbox/outbox counts, receptor sync timestamps, and processing latency percentiles.
- * Time-based metrics use a 24-hour sliding window.
+ * Time-based metrics use a 24-hour sliding window via the auto-managed `updated_at` field.
  *
  * Uses StateLoader.count() for counts and StateLoader.find() + JS for percentiles.
  */
@@ -66,12 +66,7 @@ export function getStats(
   stateLoader: StateLoader,
   thalamus?: ThalamusSyncInfo,
 ): CortexStats {
-  // Note: oneDayAgo would be used for filtering by updated_at, but StateLoader
-  // entities don't have updated_at exposed. This is an approximation that counts
-  // all done/failed/delivered messages. A fast-follow could add updated_at field
-  // to entities for proper 24h filtering.
-  const _oneDayAgo = Date.now() - 86_400_000;
-  void _oneDayAgo; // Suppress unused warning - placeholder for future 24h filtering
+  const oneDayAgo = new Date(Date.now() - 86_400_000);
 
   // --- Inbox stats ---
   // Pending/processing: all time
@@ -80,52 +75,41 @@ export function getStats(
     status: "processing",
   });
 
-  // Done/failed: last 24h (no updated_at filter in count, so use find + filter)
-  // StateLoader doesn't track updated_at internally, but InboxMessage tracks
-  // status changes. For 24h window, we approximate by fetching recent and counting.
-  // Note: This is an approximation since we don't have updated_at index.
-  // For production accuracy, updated_at should be added as a field.
-  const recentDone = stateLoader.find(InboxMessage, {
-    where: { status: "done" },
-    orderBy: { id: "desc" },
-    limit: 10000, // Reasonable upper bound for 24h
-  });
-  // Filter by checking if processing_ms is set (indicates recently completed)
-  // This is an approximation - for exact 24h window, updated_at field needed
-  const inboxDone24h = recentDone.length;
+  // Done/failed: last 24h using updated_at filter
+  const inboxDone24h = stateLoader
+    .find(InboxMessage, {
+      where: { status: "done" },
+    })
+    .filter((m) => m.updated_at >= oneDayAgo).length;
 
-  const recentFailed = stateLoader.find(InboxMessage, {
-    where: { status: "failed" },
-    orderBy: { id: "desc" },
-    limit: 10000,
-  });
-  const inboxFailed24h = recentFailed.length;
+  const inboxFailed24h = stateLoader
+    .find(InboxMessage, {
+      where: { status: "failed" },
+    })
+    .filter((m) => m.updated_at >= oneDayAgo).length;
 
   // --- Outbox stats ---
   const outboxPending = stateLoader.count(OutboxMessage, { status: "pending" });
   const outboxDeadTotal = stateLoader.count(OutboxMessage, { status: "dead" });
 
-  const recentDelivered = stateLoader.find(OutboxMessage, {
-    where: { status: "delivered" },
-    orderBy: { id: "desc" },
-    limit: 10000,
-  });
-  const outboxDelivered24h = recentDelivered.length;
+  const outboxDelivered24h = stateLoader
+    .find(OutboxMessage, {
+      where: { status: "delivered" },
+    })
+    .filter((m) => m.updated_at >= oneDayAgo).length;
 
   // --- Receptor buffer stats ---
-  const allBuffers = stateLoader.find(ReceptorBuffer, {});
-  const bufferPendingTotal = allBuffers.length;
+  const bufferPendingTotal = stateLoader.count(ReceptorBuffer, {});
 
   // --- Processing latency percentiles ---
-  // Fetch done messages with processing_ms, compute percentiles in JS
-  const doneWithLatency = stateLoader.find(InboxMessage, {
-    where: { status: "done" },
-    orderBy: { id: "desc" },
-    limit: 10000,
-  });
+  // Fetch done messages with processing_ms from last 24h, compute percentiles in JS
+  const doneWithLatency = stateLoader
+    .find(InboxMessage, {
+      where: { status: "done" },
+    })
+    .filter((m) => m.updated_at >= oneDayAgo && m.processing_ms !== null);
 
   const latencies = doneWithLatency
-    .filter((m) => m.processing_ms !== null)
     .map((m) => m.processing_ms as number)
     .sort((a, b) => a - b);
 
