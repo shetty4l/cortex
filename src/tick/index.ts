@@ -8,6 +8,7 @@ import {
   type ScheduledEvent,
 } from "../scheduled-events";
 import { getOverdueTasks, getTasksDueSoon, type Task } from "../tasks";
+import { getTopic } from "../topics";
 
 const log = createLogger("cortex");
 
@@ -263,10 +264,14 @@ export class Tick {
         ? `Task overdue: ${task.title}`
         : `Task due soon: ${task.title}`;
 
+    // Look up topic to get its key (fallback to topic_id if not found or no key)
+    const topic = getTopic(this.deps.stateLoader, task.topic_id);
+    const topicKey = topic?.key ?? task.topic_id;
+
     const result = this.deps.enqueueInboxMessage({
       channel: "tick",
       externalMessageId: `${warningType}_${task.id}_${dateKey}`,
-      topicKey: task.topic_id,
+      topicKey,
       userId: "system",
       text: warningText,
       occurredAt: Date.now(),
