@@ -12,7 +12,12 @@ import { ChannelRegistry } from "./channels";
 import { SilentChannel } from "./channels/silent";
 import type { CortexConfig } from "./config";
 import { loadConfig } from "./config";
-import { getDatabase, initDatabase } from "./db";
+import {
+  type ConnectionPool,
+  createConnectionPool,
+  getDatabase,
+  initDatabase,
+} from "./db";
 import { initDebugLogger } from "./debug-logger";
 import { Hippocampus } from "./hippocampus";
 import { type EnqueueInboxInput, enqueueInboxMessage } from "./inbox";
@@ -41,7 +46,7 @@ interface RuntimeDeps {
   createChannelRegistry: (
     config: CortexConfig,
     thalamus?: Thalamus,
-    stateLoader?: StateLoader,
+    channelLoader?: StateLoader,
   ) => ChannelRegistry;
   log: (message: string) => void;
 }
@@ -49,12 +54,12 @@ interface RuntimeDeps {
 function defaultCreateChannelRegistry(
   _config: CortexConfig,
   _thalamus?: Thalamus,
-  stateLoader?: StateLoader,
+  channelLoader?: StateLoader,
 ): ChannelRegistry {
   const registry = new ChannelRegistry();
   const silentChannel = new SilentChannel();
-  if (stateLoader) {
-    silentChannel.init(stateLoader);
+  if (channelLoader) {
+    silentChannel.init(channelLoader);
   }
   registry.register(silentChannel);
   return registry;
@@ -71,12 +76,24 @@ export interface CortexRuntime {
   stop(): Promise<void>;
 }
 
+export interface StartCortexRuntimeOptions {
+  /** Optional separate loader for channels to avoid transaction conflicts. */
+  channelLoader?: StateLoader;
+  /** Optional connection pool for cleanup. */
+  pool?: ConnectionPool;
+}
+
 export async function startCortexRuntime(
   config: CortexConfig,
   registry: SkillRegistry,
   stateLoader: StateLoader,
   deps: RuntimeDeps = DEFAULT_RUNTIME_DEPS,
+  options?: StartCortexRuntimeOptions,
 ): Promise<CortexRuntime> {
+  // Use separate channelLoader if provided, otherwise fall back to main stateLoader
+  const channelLoader = options?.channelLoader ?? stateLoader;
+  const pool = options?.pool;
+
   const thalamus = new Thalamus({
     synapseUrl: config.synapseUrl,
     thalamusModels: config.thalamusModels,
@@ -88,8 +105,8 @@ export async function startCortexRuntime(
   const server = deps.startServer(config, thalamus, stateLoader);
   deps.log(`listening on http://${config.host}:${config.port}`);
 
-  // Create channel registry (needed by built-in tools)
-  const channels = deps.createChannelRegistry(config, thalamus, stateLoader);
+  // Create channel registry with separate channelLoader to avoid transaction conflicts
+  const channels = deps.createChannelRegistry(config, thalamus, channelLoader);
 
   // Create built-in tools with mutable per-message context
   const builtinCtx: BuiltinToolContext = { topicKey: "" };
@@ -137,6 +154,8 @@ export async function startCortexRuntime(
       await loop.stop();
       server.stop();
       await stateLoader.flush();
+      await channelLoader.flush();
+      pool?.closeAll();
     },
   };
 }
@@ -166,8 +185,12 @@ export async function run(): Promise<void> {
     process.exit(1);
   }
 
-  // Initialize state loader for persisted state classes
-  const stateLoader = new StateLoader(getDatabase());
+  // Create connection pool for concurrent transaction support
+  // Use the same db path that initDatabase() uses
+  const dbPath = getDatabase().filename;
+  const pool = createConnectionPool(dbPath);
+  const mainLoader = pool.getLoader("main");
+  const channelLoader = pool.getLoader("channels");
 
   const registryResult =
     config.skillDirs.length > 0
@@ -184,7 +207,13 @@ export async function run(): Promise<void> {
     `loaded ${registry.tools.length} tools from ${config.skillDirs.length} skill dirs`,
   );
 
-  const runtime = await startCortexRuntime(config, registry, stateLoader);
+  const runtime = await startCortexRuntime(
+    config,
+    registry,
+    mainLoader,
+    DEFAULT_RUNTIME_DEPS,
+    { channelLoader, pool },
+  );
   onShutdown(
     async () => {
       log("shutting down...");

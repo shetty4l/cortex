@@ -281,12 +281,12 @@ export function startProcessingLoop(
                   payload: {
                     buttons: [
                       {
-                        text: "✓ Approve",
-                        callback_data: `approval:${approval.id}:approve`,
+                        label: "✓ Approve",
+                        data: `approval:${approval.id}:approve`,
                       },
                       {
-                        text: "✗ Reject",
-                        callback_data: `approval:${approval.id}:reject`,
+                        label: "✗ Reject",
+                        data: `approval:${approval.id}:reject`,
                       },
                     ],
                   },
@@ -484,12 +484,12 @@ export function startProcessingLoop(
                   payload: {
                     buttons: [
                       {
-                        text: "✓ Approve",
-                        callback_data: `approval:${approvalId}:approve`,
+                        label: "✓ Approve",
+                        data: `approval:${approvalId}:approve`,
                       },
                       {
-                        text: "✗ Reject",
-                        callback_data: `approval:${approvalId}:reject`,
+                        label: "✗ Reject",
+                        data: `approval:${approvalId}:reject`,
                       },
                     ],
                   },
