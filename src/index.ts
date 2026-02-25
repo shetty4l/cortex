@@ -91,6 +91,7 @@ export async function startCortexRuntime(
     builtinTools,
     registry,
     () => builtinCtx,
+    { stateLoader },
   );
 
   const loop = deps.startProcessingLoop(config, combinedRegistry, {

@@ -6,11 +6,14 @@
  * They are NOT namespaced — tool names are bare (e.g. "send_message").
  *
  * External skills loaded from skillDirs are namespaced as "skillId.toolName".
+ * External tools from registered providers are namespaced as "providerId.toolName".
  */
 
 import type { Result } from "@shetty4l/core/result";
+import type { StateLoader } from "@shetty4l/core/state";
 import type { CortexConfig } from "../config";
 import type { SkillRegistry, SkillToolResult, ToolDefinition } from "../skills";
+import { externalToolRegistry } from "./external-proxy";
 
 // --- Types ---
 
@@ -54,43 +57,90 @@ export function resolveOutputChannel(
 
 // --- Combined registry ---
 
+/** Options for creating a combined registry. */
+export interface CombinedRegistryOptions {
+  /** StateLoader for accessing external tool providers. */
+  stateLoader?: StateLoader;
+}
+
 /**
  * Create a unified SkillRegistry that dispatches to built-in tools first,
- * then falls through to the external skill registry.
+ * then external tool providers, then falls through to the skill registry.
  *
  * Built-in tools receive a BuiltinToolContext (topicKey, etc.) instead of
  * the SkillRuntimeContext used by external skills.
  *
+ * External tools from registered providers are loaded dynamically so that
+ * newly registered providers are immediately available.
+ *
  * @param builtinTools Array of built-in tool definitions + executors.
  * @param skillRegistry External skill registry loaded from skillDirs.
  * @param getContext Closure that returns the current per-message context.
+ * @param options Optional configuration including stateLoader for external tools.
  */
 export function createCombinedRegistry(
   builtinTools: BuiltinTool[],
   skillRegistry: SkillRegistry,
   getContext: () => BuiltinToolContext,
+  options?: CombinedRegistryOptions,
 ): SkillRegistry {
   const builtinMap = new Map(builtinTools.map((t) => [t.definition.name, t]));
+  const stateLoader = options?.stateLoader;
 
-  const allTools: ReadonlyArray<ToolDefinition> = [
+  // Build static tool list (external tools added dynamically in getter)
+  const staticTools: ToolDefinition[] = [
     ...builtinTools.map((t) => t.definition),
     ...skillRegistry.tools,
   ];
 
   return {
-    tools: allTools,
+    // Tools getter returns static tools + current external tools from providers
+    get tools(): ReadonlyArray<ToolDefinition> {
+      if (!stateLoader) return staticTools;
+      const externalTools = externalToolRegistry.getTools(stateLoader);
+      return [...staticTools, ...externalTools];
+    },
 
     async executeTool(name, argumentsJson, ctx) {
+      // 1. Check built-in tools first
       const builtin = builtinMap.get(name);
       if (builtin) {
         return builtin.execute(argumentsJson, getContext());
       }
+
+      // 2. Check external tool providers (namespaced as providerId.toolName)
+      if (stateLoader && name.includes(".")) {
+        const externalTools = externalToolRegistry.getTools(stateLoader);
+        const isExternalTool = externalTools.some((t) => t.name === name);
+        if (isExternalTool) {
+          return externalToolRegistry.executeTool(
+            stateLoader,
+            name,
+            argumentsJson,
+            ctx,
+          );
+        }
+      }
+
+      // 3. Fall through to skill registry
       return skillRegistry.executeTool(name, argumentsJson, ctx);
     },
 
     isMutating(name) {
+      // 1. Check built-in tools
       const builtin = builtinMap.get(name);
       if (builtin) return builtin.definition.mutatesState;
+
+      // 2. Check external tools
+      if (stateLoader && name.includes(".")) {
+        const externalTools = externalToolRegistry.getTools(stateLoader);
+        const isExternalTool = externalTools.some((t) => t.name === name);
+        if (isExternalTool) {
+          return externalToolRegistry.isMutating(stateLoader, name);
+        }
+      }
+
+      // 3. Fall through to skill registry
       return skillRegistry.isMutating(name);
     },
   };
