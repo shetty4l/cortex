@@ -17,7 +17,11 @@
 import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
-import { proposeApproval } from "./approval";
+import {
+  consumeApproval,
+  getApprovalForTool,
+  proposeApproval,
+} from "./approval";
 import { getDebugLogger } from "./debug-logger";
 import type { SkillRegistry, SkillRuntimeContext } from "./skills";
 import type { ChatMessage, OpenAITool, ToolCall } from "./synapse";
@@ -186,24 +190,125 @@ async function executeOneToolCall(
     };
   }
 
-  // Approval gate: block mutating tools until approved
+  // Approval resolution: check for existing approval before gating
   if (registry.isMutating(qualifiedName) && config.topicKey) {
-    const approval = proposeApproval({
-      topic_key: config.topicKey,
-      action: `Execute tool ${qualifiedName}`,
-      tool_name: qualifiedName,
-      tool_args_json: toolCall.function.arguments,
-    });
+    const existingApproval = getApprovalForTool(
+      config.topicKey,
+      qualifiedName,
+      toolCall.function.arguments,
+    );
 
-    log(`tool ${qualifiedName} requires approval (id=${approval.id})`);
+    if (existingApproval) {
+      // Handle based on approval status
+      switch (existingApproval.status) {
+        case "approved":
+          // Approved: execute tool and consume approval
+          log(
+            `tool ${qualifiedName} has approved approval (id=${existingApproval.id}), executing`,
+          );
+          consumeApproval(existingApproval.id);
+          // Fall through to execute the tool
+          break;
 
-    return {
-      role: "tool",
-      content: `Action requires approval: Execute tool ${qualifiedName}. Waiting for user confirmation.`,
-      tool_call_id: toolCall.id,
-      name: qualifiedName,
-      metadata: { approval_id: approval.id },
-    };
+        case "rejected":
+          // Rejected: return error message
+          log(`tool ${qualifiedName} was rejected (id=${existingApproval.id})`);
+          return {
+            role: "tool",
+            content: `Action rejected: Execute tool ${qualifiedName}. The user declined this action.`,
+            tool_call_id: toolCall.id,
+            name: qualifiedName,
+          };
+
+        case "expired":
+          // Expired: repropose (create new pending)
+          log(
+            `tool ${qualifiedName} approval expired (id=${existingApproval.id}), reproposing`,
+          );
+          const newApproval = proposeApproval({
+            topic_key: config.topicKey,
+            action: `Execute tool ${qualifiedName}`,
+            tool_name: qualifiedName,
+            tool_args_json: toolCall.function.arguments,
+          });
+          return {
+            role: "tool",
+            content: `Action requires approval: Execute tool ${qualifiedName}. Previous approval expired. Waiting for user confirmation.`,
+            tool_call_id: toolCall.id,
+            name: qualifiedName,
+            metadata: { approval_id: newApproval.id },
+          };
+
+        case "pending":
+          // Still pending: return waiting message
+          log(
+            `tool ${qualifiedName} still pending approval (id=${existingApproval.id})`,
+          );
+          return {
+            role: "tool",
+            content: `Action requires approval: Execute tool ${qualifiedName}. Waiting for user confirmation.`,
+            tool_call_id: toolCall.id,
+            name: qualifiedName,
+            metadata: { approval_id: existingApproval.id },
+          };
+
+        case "consumed":
+          // Already consumed: create new approval for retry
+          log(
+            `tool ${qualifiedName} approval already consumed (id=${existingApproval.id}), proposing new`,
+          );
+          const freshApproval = proposeApproval({
+            topic_key: config.topicKey,
+            action: `Execute tool ${qualifiedName}`,
+            tool_name: qualifiedName,
+            tool_args_json: toolCall.function.arguments,
+          });
+          return {
+            role: "tool",
+            content: `Action requires approval: Execute tool ${qualifiedName}. Waiting for user confirmation.`,
+            tool_call_id: toolCall.id,
+            name: qualifiedName,
+            metadata: { approval_id: freshApproval.id },
+          };
+
+        default:
+          // Unknown status: treat as needing new approval
+          log(
+            `tool ${qualifiedName} has unknown approval status (${existingApproval.status}), proposing new`,
+          );
+          const unknownApproval = proposeApproval({
+            topic_key: config.topicKey,
+            action: `Execute tool ${qualifiedName}`,
+            tool_name: qualifiedName,
+            tool_args_json: toolCall.function.arguments,
+          });
+          return {
+            role: "tool",
+            content: `Action requires approval: Execute tool ${qualifiedName}. Waiting for user confirmation.`,
+            tool_call_id: toolCall.id,
+            name: qualifiedName,
+            metadata: { approval_id: unknownApproval.id },
+          };
+      }
+    } else {
+      // No existing approval: create new one
+      const approval = proposeApproval({
+        topic_key: config.topicKey,
+        action: `Execute tool ${qualifiedName}`,
+        tool_name: qualifiedName,
+        tool_args_json: toolCall.function.arguments,
+      });
+
+      log(`tool ${qualifiedName} requires approval (id=${approval.id})`);
+
+      return {
+        role: "tool",
+        content: `Action requires approval: Execute tool ${qualifiedName}. Waiting for user confirmation.`,
+        tool_call_id: toolCall.id,
+        name: qualifiedName,
+        metadata: { approval_id: approval.id },
+      };
+    }
   }
 
   // Build runtime context

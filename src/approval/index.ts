@@ -68,3 +68,35 @@ export function listPendingApprovals(topicKey?: string): PendingApproval[] {
     )
     .all() as PendingApproval[];
 }
+
+/**
+ * Find an approval for the given topic, tool, and arguments.
+ * Returns the most recent approval matching the criteria, regardless of status.
+ */
+export function getApprovalForTool(
+  topicKey: string,
+  toolName: string,
+  argsJson: string,
+): PendingApproval | null {
+  const db = getDatabase();
+  return (
+    (db
+      .prepare(
+        `SELECT * FROM pending_approvals 
+         WHERE topic_key = ? AND tool_name = ? AND tool_args_json = ?
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(topicKey, toolName, argsJson) as PendingApproval | undefined) ?? null
+  );
+}
+
+/**
+ * Mark an approval as consumed (executed). Sets status to 'consumed'.
+ */
+export function consumeApproval(id: string): void {
+  const db = getDatabase();
+  const now = Date.now();
+  db.prepare(
+    "UPDATE pending_approvals SET status = 'consumed', updated_at = ? WHERE id = ?",
+  ).run(now, id);
+}
