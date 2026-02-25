@@ -26,6 +26,6 @@
   },
   "type": "module",
   "dependencies": {
-    "@shetty4l/core": "^0.1.36"
+    "@shetty4l/core": "^0.1.37"
   }
 }
