@@ -32,7 +32,6 @@ describe("approval CRUD", () => {
     expect(approval.proposed_at).toBeGreaterThanOrEqual(before);
     expect(approval.proposed_at).toBeLessThanOrEqual(after);
     expect(approval.resolved_at).toBeNull();
-    expect(approval.created_at).toBeGreaterThanOrEqual(before);
   });
 
   test("proposeApproval with tool_name and tool_args_json", () => {

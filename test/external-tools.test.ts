@@ -1,10 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { ExternalTool, ExternalToolClient } from "../src/external-tools";
+import { createExternalToolClient } from "../src/external-tools";
 import type { BuiltinToolContext } from "../src/tools";
-import { createWilsonProxyTool } from "../src/tools/wilson-proxy";
-import type { WilsonClient, WilsonTool } from "../src/wilson";
-import { createWilsonClient } from "../src/wilson";
+import { createExternalProxyTool } from "../src/tools/external-proxy";
 
-// --- Mock Wilson server ---
+// --- Mock external tool server ---
 
 let mockServer: ReturnType<typeof Bun.serve>;
 let mockUrl: string;
@@ -29,9 +29,9 @@ afterAll(() => {
   mockServer.stop(true);
 });
 
-// --- WilsonClient.listTools() tests ---
+// --- ExternalToolClient.listTools() tests ---
 
-describe("WilsonClient.listTools()", () => {
+describe("ExternalToolClient.listTools()", () => {
   test("returns array of tools on success", async () => {
     const mockTools = [
       {
@@ -55,7 +55,7 @@ describe("WilsonClient.listTools()", () => {
 
     mockHandler = () => Response.json(mockTools);
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.listTools();
 
     expect(result.ok).toBe(true);
@@ -72,7 +72,7 @@ describe("WilsonClient.listTools()", () => {
     mockHandler = () =>
       Response.json({ error: "Internal error" }, { status: 500 });
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.listTools();
 
     expect(result.ok).toBe(false);
@@ -83,7 +83,7 @@ describe("WilsonClient.listTools()", () => {
   test("returns error on invalid JSON response", async () => {
     mockHandler = () => new Response("not json", { status: 200 });
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.listTools();
 
     expect(result.ok).toBe(false);
@@ -94,7 +94,7 @@ describe("WilsonClient.listTools()", () => {
   test("returns error when response is not an array", async () => {
     mockHandler = () => Response.json({ tools: [] });
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.listTools();
 
     expect(result.ok).toBe(false);
@@ -113,7 +113,7 @@ describe("WilsonClient.listTools()", () => {
         },
       ]);
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.listTools();
 
     expect(result.ok).toBe(false);
@@ -132,7 +132,7 @@ describe("WilsonClient.listTools()", () => {
         },
       ]);
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.listTools();
 
     expect(result.ok).toBe(false);
@@ -152,7 +152,7 @@ describe("WilsonClient.listTools()", () => {
         },
       ]);
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.listTools();
 
     expect(result.ok).toBe(false);
@@ -167,14 +167,14 @@ describe("WilsonClient.listTools()", () => {
       return Response.json([]);
     };
 
-    const client = createWilsonClient(mockUrl, "secret-key");
+    const client = createExternalToolClient(mockUrl, "secret-key");
     await client.listTools();
 
     expect(receivedAuth).toBe("Bearer secret-key");
   });
 
   test("handles connection failure gracefully", async () => {
-    const client = createWilsonClient("http://localhost:99999");
+    const client = createExternalToolClient("http://localhost:99999");
     const result = await client.listTools();
 
     expect(result.ok).toBe(false);
@@ -183,9 +183,9 @@ describe("WilsonClient.listTools()", () => {
   });
 });
 
-// --- WilsonClient.executeTool() tests ---
+// --- ExternalToolClient.executeTool() tests ---
 
-describe("WilsonClient.executeTool()", () => {
+describe("ExternalToolClient.executeTool()", () => {
   test("executes tool and returns result", async () => {
     mockHandler = async (req) => {
       const body = await req.json();
@@ -198,7 +198,7 @@ describe("WilsonClient.executeTool()", () => {
       });
     };
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.executeTool("calendar", "get_events", {
       date: "2025-01-01",
     });
@@ -212,7 +212,7 @@ describe("WilsonClient.executeTool()", () => {
   test("returns result without metadata when not provided", async () => {
     mockHandler = () => Response.json({ content: "Success" });
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.executeTool("test", "tool", {});
 
     expect(result.ok).toBe(true);
@@ -225,7 +225,7 @@ describe("WilsonClient.executeTool()", () => {
     mockHandler = () =>
       Response.json({ error: "Tool not found" }, { status: 404 });
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.executeTool("missing", "tool", {});
 
     expect(result.ok).toBe(false);
@@ -236,7 +236,7 @@ describe("WilsonClient.executeTool()", () => {
   test("returns error on invalid response - missing content", async () => {
     mockHandler = () => Response.json({ result: "ok" });
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.executeTool("test", "tool", {});
 
     expect(result.ok).toBe(false);
@@ -248,7 +248,7 @@ describe("WilsonClient.executeTool()", () => {
     mockHandler = () =>
       Response.json({ content: "ok", metadata: "not an object" });
 
-    const client = createWilsonClient(mockUrl);
+    const client = createExternalToolClient(mockUrl);
     const result = await client.executeTool("test", "tool", {});
 
     expect(result.ok).toBe(false);
@@ -263,14 +263,14 @@ describe("WilsonClient.executeTool()", () => {
       return Response.json({ content: "ok" });
     };
 
-    const client = createWilsonClient(mockUrl, "my-api-key");
+    const client = createExternalToolClient(mockUrl, "my-api-key");
     await client.executeTool("test", "tool", {});
 
     expect(receivedAuth).toBe("Bearer my-api-key");
   });
 
   test("handles connection failure gracefully", async () => {
-    const client = createWilsonClient("http://localhost:99999");
+    const client = createExternalToolClient("http://localhost:99999");
     const result = await client.executeTool("test", "tool", {});
 
     expect(result.ok).toBe(false);
@@ -279,11 +279,11 @@ describe("WilsonClient.executeTool()", () => {
   });
 });
 
-// --- Wilson proxy tool tests ---
+// --- External proxy tool tests ---
 
-describe("createWilsonProxyTool", () => {
-  test("creates tool with qualified name (channel.tool)", () => {
-    const mockClient: WilsonClient = {
+describe("createExternalProxyTool", () => {
+  test("creates tool with qualified name (channel.tool) when no namespace", () => {
+    const mockClient: ExternalToolClient = {
       async listTools() {
         return { ok: true, value: [] };
       },
@@ -292,7 +292,7 @@ describe("createWilsonProxyTool", () => {
       },
     };
 
-    const wilsonTool: WilsonTool = {
+    const externalTool: ExternalTool = {
       channel: "calendar",
       name: "get_events",
       description: "Get calendar events",
@@ -300,15 +300,15 @@ describe("createWilsonProxyTool", () => {
       mutatesState: false,
     };
 
-    const proxyTool = createWilsonProxyTool(mockClient, wilsonTool);
+    const proxyTool = createExternalProxyTool(mockClient, externalTool);
 
     expect(proxyTool.definition.name).toBe("calendar.get_events");
     expect(proxyTool.definition.description).toBe("Get calendar events");
     expect(proxyTool.definition.mutatesState).toBe(false);
   });
 
-  test("preserves mutatesState from Wilson tool", () => {
-    const mockClient: WilsonClient = {
+  test("creates tool with namespaced name (namespace.channel.tool)", () => {
+    const mockClient: ExternalToolClient = {
       async listTools() {
         return { ok: true, value: [] };
       },
@@ -317,7 +317,34 @@ describe("createWilsonProxyTool", () => {
       },
     };
 
-    const mutatingTool: WilsonTool = {
+    const externalTool: ExternalTool = {
+      channel: "calendar",
+      name: "get_events",
+      description: "Get calendar events",
+      parameters: { type: "object" },
+      mutatesState: false,
+    };
+
+    const proxyTool = createExternalProxyTool(
+      mockClient,
+      externalTool,
+      "myapp",
+    );
+
+    expect(proxyTool.definition.name).toBe("myapp.calendar.get_events");
+  });
+
+  test("preserves mutatesState from external tool", () => {
+    const mockClient: ExternalToolClient = {
+      async listTools() {
+        return { ok: true, value: [] };
+      },
+      async executeTool() {
+        return { ok: true, value: { content: "ok" } };
+      },
+    };
+
+    const mutatingTool: ExternalTool = {
       channel: "calendar",
       name: "create_event",
       description: "Create event",
@@ -325,16 +352,16 @@ describe("createWilsonProxyTool", () => {
       mutatesState: true,
     };
 
-    const proxyTool = createWilsonProxyTool(mockClient, mutatingTool);
+    const proxyTool = createExternalProxyTool(mockClient, mutatingTool);
     expect(proxyTool.definition.mutatesState).toBe(true);
   });
 
-  test("proxies execution to Wilson client", async () => {
+  test("proxies execution to external tool client", async () => {
     let capturedChannel = "";
     let capturedTool = "";
     let capturedParams: Record<string, unknown> = {};
 
-    const mockClient: WilsonClient = {
+    const mockClient: ExternalToolClient = {
       async listTools() {
         return { ok: true, value: [] };
       },
@@ -346,7 +373,7 @@ describe("createWilsonProxyTool", () => {
       },
     };
 
-    const wilsonTool: WilsonTool = {
+    const externalTool: ExternalTool = {
       channel: "email",
       name: "send",
       description: "Send email",
@@ -354,7 +381,7 @@ describe("createWilsonProxyTool", () => {
       mutatesState: true,
     };
 
-    const proxyTool = createWilsonProxyTool(mockClient, wilsonTool);
+    const proxyTool = createExternalProxyTool(mockClient, externalTool);
     const ctx: BuiltinToolContext = { topicKey: "test-topic" };
 
     const result = await proxyTool.execute(
@@ -374,7 +401,7 @@ describe("createWilsonProxyTool", () => {
   });
 
   test("returns error on invalid JSON arguments", async () => {
-    const mockClient: WilsonClient = {
+    const mockClient: ExternalToolClient = {
       async listTools() {
         return { ok: true, value: [] };
       },
@@ -383,7 +410,7 @@ describe("createWilsonProxyTool", () => {
       },
     };
 
-    const wilsonTool: WilsonTool = {
+    const externalTool: ExternalTool = {
       channel: "test",
       name: "tool",
       description: "Test",
@@ -391,7 +418,7 @@ describe("createWilsonProxyTool", () => {
       mutatesState: false,
     };
 
-    const proxyTool = createWilsonProxyTool(mockClient, wilsonTool);
+    const proxyTool = createExternalProxyTool(mockClient, externalTool);
     const result = await proxyTool.execute("not valid json{{{", {
       topicKey: "test",
     });
@@ -401,17 +428,17 @@ describe("createWilsonProxyTool", () => {
     expect(result.error).toContain("Invalid JSON");
   });
 
-  test("returns error when Wilson client fails", async () => {
-    const mockClient: WilsonClient = {
+  test("returns error when external tool client fails", async () => {
+    const mockClient: ExternalToolClient = {
       async listTools() {
         return { ok: true, value: [] };
       },
       async executeTool() {
-        return { ok: false, error: "Wilson service unavailable" };
+        return { ok: false, error: "Service unavailable" };
       },
     };
 
-    const wilsonTool: WilsonTool = {
+    const externalTool: ExternalTool = {
       channel: "test",
       name: "tool",
       description: "Test",
@@ -419,16 +446,16 @@ describe("createWilsonProxyTool", () => {
       mutatesState: false,
     };
 
-    const proxyTool = createWilsonProxyTool(mockClient, wilsonTool);
+    const proxyTool = createExternalProxyTool(mockClient, externalTool);
     const result = await proxyTool.execute("{}", { topicKey: "test" });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toBe("Wilson service unavailable");
+    expect(result.error).toBe("Service unavailable");
   });
 
-  test("passes through metadata from Wilson response", async () => {
-    const mockClient: WilsonClient = {
+  test("passes through metadata from external tool response", async () => {
+    const mockClient: ExternalToolClient = {
       async listTools() {
         return { ok: true, value: [] };
       },
@@ -443,7 +470,7 @@ describe("createWilsonProxyTool", () => {
       },
     };
 
-    const wilsonTool: WilsonTool = {
+    const externalTool: ExternalTool = {
       channel: "calendar",
       name: "create",
       description: "Create",
@@ -451,7 +478,7 @@ describe("createWilsonProxyTool", () => {
       mutatesState: true,
     };
 
-    const proxyTool = createWilsonProxyTool(mockClient, wilsonTool);
+    const proxyTool = createExternalProxyTool(mockClient, externalTool);
     const result = await proxyTool.execute("{}", { topicKey: "test" });
 
     expect(result.ok).toBe(true);

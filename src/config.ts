@@ -18,6 +18,16 @@ const log = createLogger("cortex");
 
 // --- Types ---
 
+/** Configuration for an external tool provider. */
+export interface ToolProviderConfig {
+  /** Namespace for tools from this provider (e.g., "provider" → "provider.calendar.get_events"). */
+  name: string;
+  /** Base URL of the tool provider API (e.g., "http://localhost:7752"). */
+  url: string;
+  /** Optional API key for authentication. */
+  apiKey?: string;
+}
+
 export interface CortexConfig {
   // Server
   host: string;
@@ -74,18 +84,15 @@ export interface CortexConfig {
   debugPipeline?: boolean;
   debugPrompt?: boolean;
 
-  // Wilson (external tool provider)
-  wilson?: {
-    url: string;
-    apiKey?: string;
-  };
+  // External tool providers
+  toolProviders?: ToolProviderConfig[];
 }
 
 // --- Defaults ---
 
 const DEFAULTS: Omit<
   CortexConfig,
-  "ingestApiKey" | "models" | "extractionModels" | "wilson"
+  "ingestApiKey" | "models" | "extractionModels" | "toolProviders"
 > = {
   host: "127.0.0.1",
   port: 7751,
@@ -287,42 +294,69 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     }
   }
 
-  // Wilson config (optional)
-  if (obj.wilson !== undefined) {
-    if (
-      typeof obj.wilson !== "object" ||
-      obj.wilson === null ||
-      Array.isArray(obj.wilson)
-    ) {
-      return err("wilson: must be an object");
-    }
-    const wilson = obj.wilson as Record<string, unknown>;
-
-    // wilson.url is required if wilson is present
-    if (wilson.url === undefined) {
-      return err("wilson.url: is required when wilson config is present");
-    }
-    if (typeof wilson.url !== "string" || wilson.url.length === 0) {
-      return err("wilson.url: must be a non-empty string");
-    }
-    // Validate URL format
-    try {
-      new URL(wilson.url);
-    } catch {
-      return err(`wilson.url: "${wilson.url}" is not a valid URL`);
+  // Tool providers config (optional array)
+  if (obj.toolProviders !== undefined) {
+    if (!Array.isArray(obj.toolProviders)) {
+      return err("toolProviders: must be an array");
     }
 
-    // wilson.apiKey is optional
-    if (wilson.apiKey !== undefined) {
-      if (typeof wilson.apiKey !== "string" || wilson.apiKey.length === 0) {
-        return err("wilson.apiKey: must be a non-empty string if provided");
+    const providers: ToolProviderConfig[] = [];
+    for (let i = 0; i < obj.toolProviders.length; i++) {
+      const provider = obj.toolProviders[i] as Record<string, unknown>;
+      if (
+        typeof provider !== "object" ||
+        provider === null ||
+        Array.isArray(provider)
+      ) {
+        return err(`toolProviders[${i}]: must be an object`);
       }
+
+      // name is required
+      if (provider.name === undefined) {
+        return err(`toolProviders[${i}].name: is required`);
+      }
+      if (typeof provider.name !== "string" || provider.name.length === 0) {
+        return err(`toolProviders[${i}].name: must be a non-empty string`);
+      }
+
+      // url is required
+      if (provider.url === undefined) {
+        return err(`toolProviders[${i}].url: is required`);
+      }
+      if (typeof provider.url !== "string" || provider.url.length === 0) {
+        return err(`toolProviders[${i}].url: must be a non-empty string`);
+      }
+      // Validate URL format
+      try {
+        new URL(provider.url);
+      } catch {
+        return err(
+          `toolProviders[${i}].url: "${provider.url}" is not a valid URL`,
+        );
+      }
+
+      // apiKey is optional
+      if (provider.apiKey !== undefined) {
+        if (
+          typeof provider.apiKey !== "string" ||
+          provider.apiKey.length === 0
+        ) {
+          return err(
+            `toolProviders[${i}].apiKey: must be a non-empty string if provided`,
+          );
+        }
+      }
+
+      providers.push({
+        name: provider.name,
+        url: provider.url,
+        ...(provider.apiKey !== undefined && {
+          apiKey: provider.apiKey as string,
+        }),
+      });
     }
 
-    result.wilson = {
-      url: wilson.url,
-      ...(wilson.apiKey !== undefined && { apiKey: wilson.apiKey as string }),
-    };
+    result.toolProviders = providers;
   }
 
   return ok(result);

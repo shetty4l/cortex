@@ -17,6 +17,7 @@
 import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+import type { StateLoader } from "@shetty4l/core/state";
 import {
   consumeApproval,
   getApprovalForTool,
@@ -41,6 +42,8 @@ export interface AgentConfig {
   synapseTimeoutMs?: number;
   /** Topic key for approval gating. */
   topicKey?: string;
+  /** StateLoader for persisted state (approval tracking). */
+  stateLoader?: StateLoader;
 }
 
 export interface AgentResult {
@@ -196,6 +199,7 @@ async function executeOneToolCall(
       config.topicKey,
       qualifiedName,
       toolCall.function.arguments,
+      config.stateLoader,
     );
 
     if (existingApproval) {
@@ -206,7 +210,7 @@ async function executeOneToolCall(
           log(
             `tool ${qualifiedName} has approved approval (id=${existingApproval.id}), executing`,
           );
-          consumeApproval(existingApproval.id);
+          await consumeApproval(existingApproval.id, config.stateLoader);
           // Fall through to execute the tool
           break;
 
@@ -225,12 +229,15 @@ async function executeOneToolCall(
           log(
             `tool ${qualifiedName} approval expired (id=${existingApproval.id}), reproposing`,
           );
-          const newApproval = proposeApproval({
-            topic_key: config.topicKey,
-            action: `Execute tool ${qualifiedName}`,
-            tool_name: qualifiedName,
-            tool_args_json: toolCall.function.arguments,
-          });
+          const newApproval = proposeApproval(
+            {
+              topic_key: config.topicKey,
+              action: `Execute tool ${qualifiedName}`,
+              tool_name: qualifiedName,
+              tool_args_json: toolCall.function.arguments,
+            },
+            config.stateLoader,
+          );
           return {
             role: "tool",
             content: `Action requires approval: Execute tool ${qualifiedName}. Previous approval expired. Waiting for user confirmation.`,
@@ -257,12 +264,15 @@ async function executeOneToolCall(
           log(
             `tool ${qualifiedName} approval already consumed (id=${existingApproval.id}), proposing new`,
           );
-          const freshApproval = proposeApproval({
-            topic_key: config.topicKey,
-            action: `Execute tool ${qualifiedName}`,
-            tool_name: qualifiedName,
-            tool_args_json: toolCall.function.arguments,
-          });
+          const freshApproval = proposeApproval(
+            {
+              topic_key: config.topicKey,
+              action: `Execute tool ${qualifiedName}`,
+              tool_name: qualifiedName,
+              tool_args_json: toolCall.function.arguments,
+            },
+            config.stateLoader,
+          );
           return {
             role: "tool",
             content: `Action requires approval: Execute tool ${qualifiedName}. Waiting for user confirmation.`,
@@ -276,12 +286,15 @@ async function executeOneToolCall(
           log(
             `tool ${qualifiedName} has unknown approval status (${existingApproval.status}), proposing new`,
           );
-          const unknownApproval = proposeApproval({
-            topic_key: config.topicKey,
-            action: `Execute tool ${qualifiedName}`,
-            tool_name: qualifiedName,
-            tool_args_json: toolCall.function.arguments,
-          });
+          const unknownApproval = proposeApproval(
+            {
+              topic_key: config.topicKey,
+              action: `Execute tool ${qualifiedName}`,
+              tool_name: qualifiedName,
+              tool_args_json: toolCall.function.arguments,
+            },
+            config.stateLoader,
+          );
           return {
             role: "tool",
             content: `Action requires approval: Execute tool ${qualifiedName}. Waiting for user confirmation.`,
@@ -292,12 +305,15 @@ async function executeOneToolCall(
       }
     } else {
       // No existing approval: create new one
-      const approval = proposeApproval({
-        topic_key: config.topicKey,
-        action: `Execute tool ${qualifiedName}`,
-        tool_name: qualifiedName,
-        tool_args_json: toolCall.function.arguments,
-      });
+      const approval = proposeApproval(
+        {
+          topic_key: config.topicKey,
+          action: `Execute tool ${qualifiedName}`,
+          tool_name: qualifiedName,
+          tool_args_json: toolCall.function.arguments,
+        },
+        config.stateLoader,
+      );
 
       log(`tool ${qualifiedName} requires approval (id=${approval.id})`);
 

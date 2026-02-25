@@ -14,6 +14,7 @@ import type { CortexConfig } from "./config";
 import { loadConfig } from "./config";
 import { getDatabase, initDatabase } from "./db";
 import { initDebugLogger } from "./debug-logger";
+import { createExternalToolClient } from "./external-tools";
 import { Hippocampus } from "./hippocampus";
 import { startProcessingLoop } from "./loop";
 import { RAS } from "./ras";
@@ -27,12 +28,11 @@ import {
   type BuiltinToolContext,
   createCombinedRegistry,
 } from "./tools";
+import { createExternalProxyTools } from "./tools/external-proxy";
 import { createSendMessageTool } from "./tools/send-message";
 import { createTaskTools } from "./tools/tasks";
 import { createTopicTools } from "./tools/topics";
-import { createWilsonProxyTools } from "./tools/wilson-proxy";
 import { VERSION } from "./version";
-import { createWilsonClient } from "./wilson";
 
 const log = createLogger("cortex");
 
@@ -94,27 +94,27 @@ export async function startCortexRuntime(
     ...createTopicTools(stateLoader),
   ];
 
-  // Load Wilson tools if configured
-  if (config.wilson) {
-    const wilsonClient = createWilsonClient(
-      config.wilson.url,
-      config.wilson.apiKey,
-    );
-    const toolsResult = await wilsonClient.listTools();
-    if (toolsResult.ok) {
-      const wilsonProxyTools = createWilsonProxyTools(
-        wilsonClient,
-        toolsResult.value,
-        config.toolTimeoutMs,
-      );
-      builtinTools.push(...wilsonProxyTools);
-      deps.log(
-        `loaded ${wilsonProxyTools.length} tools from Wilson (${config.wilson.url})`,
-      );
-    } else {
-      deps.log(
-        `warning: Wilson tools unavailable: ${toolsResult.error}. Continuing without Wilson tools.`,
-      );
+  // Load external tools from all configured providers
+  if (config.toolProviders && config.toolProviders.length > 0) {
+    for (const provider of config.toolProviders) {
+      const client = createExternalToolClient(provider.url, provider.apiKey);
+      const toolsResult = await client.listTools();
+      if (toolsResult.ok) {
+        const proxyTools = createExternalProxyTools(
+          client,
+          toolsResult.value,
+          provider.name,
+          config.toolTimeoutMs,
+        );
+        builtinTools.push(...proxyTools);
+        deps.log(
+          `loaded ${proxyTools.length} tools from provider "${provider.name}" (${provider.url})`,
+        );
+      } else {
+        deps.log(
+          `warning: tools unavailable from provider "${provider.name}": ${toolsResult.error}. Continuing without these tools.`,
+        );
+      }
     }
   }
 

@@ -1,8 +1,8 @@
 /**
- * Thin Wilson client for Cortex.
+ * Thin external tool provider client for Cortex.
  *
- * Wilson is an external tool provider that exposes channel-specific tools
- * (e.g., calendar.get_events) via a REST API. Cortex proxies Wilson tools
+ * External tool providers expose channel-specific tools
+ * (e.g., calendar.get_events) via a REST API. Cortex proxies tools
  * to the LLM, allowing dynamic tool expansion without redeploying Cortex.
  *
  * API endpoints:
@@ -23,8 +23,8 @@ const log = createLogger("cortex");
 
 // --- Types ---
 
-/** Tool definition from Wilson's GET /api/tools response. */
-export interface WilsonTool {
+/** Tool definition from external provider's GET /api/tools response. */
+export interface ExternalTool {
   channel: string;
   name: string;
   description: string;
@@ -32,21 +32,21 @@ export interface WilsonTool {
   mutatesState: boolean;
 }
 
-/** Result of executing a Wilson tool. */
-export interface WilsonToolResult {
+/** Result of executing an external tool. */
+export interface ExternalToolResult {
   content: string;
   metadata?: Record<string, unknown>;
 }
 
-/** Client interface for interacting with Wilson. */
-export interface WilsonClient {
-  listTools(): Promise<Result<WilsonTool[]>>;
+/** Client interface for interacting with external tool providers. */
+export interface ExternalToolClient {
+  listTools(): Promise<Result<ExternalTool[]>>;
   executeTool(
     channel: string,
     tool: string,
     params: Record<string, unknown>,
     timeoutMs?: number,
-  ): Promise<Result<WilsonToolResult>>;
+  ): Promise<Result<ExternalToolResult>>;
 }
 
 // --- Constants ---
@@ -60,12 +60,15 @@ const DEFAULT_EXECUTE_TIMEOUT_MS = 20_000;
 // --- Client implementation ---
 
 /**
- * Create a Wilson client.
+ * Create an external tool client.
  *
- * @param url Base URL of the Wilson API (e.g., "http://localhost:7752")
+ * @param url Base URL of the external tool API (e.g., "http://localhost:7752")
  * @param apiKey Optional API key for authentication
  */
-export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
+export function createExternalToolClient(
+  url: string,
+  apiKey?: string,
+): ExternalToolClient {
   const baseUrl = url.replace(/\/$/, ""); // Remove trailing slash
 
   const headers: Record<string, string> = {
@@ -76,7 +79,7 @@ export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
   }
 
   return {
-    async listTools(): Promise<Result<WilsonTool[]>> {
+    async listTools(): Promise<Result<ExternalTool[]>> {
       const endpoint = `${baseUrl}/api/tools`;
 
       let response: Response;
@@ -88,15 +91,13 @@ export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
         });
       } catch (e) {
         if (e instanceof DOMException && e.name === "TimeoutError") {
-          log(`Wilson listTools timed out after ${LIST_TOOLS_TIMEOUT_MS}ms`);
-          return err(
-            `Wilson listTools timed out after ${LIST_TOOLS_TIMEOUT_MS}ms`,
-          );
+          log(`listTools timed out after ${LIST_TOOLS_TIMEOUT_MS}ms`);
+          return err(`listTools timed out after ${LIST_TOOLS_TIMEOUT_MS}ms`);
         }
         if (e instanceof DOMException && e.name === "AbortError") {
-          return err("Wilson listTools was aborted");
+          return err("listTools was aborted");
         }
-        const msg = `Wilson connection failed: ${e instanceof Error ? e.message : String(e)}`;
+        const msg = `connection failed: ${e instanceof Error ? e.message : String(e)}`;
         log(msg);
         return err(msg);
       }
@@ -108,7 +109,7 @@ export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
         } catch {
           body = "(unreadable)";
         }
-        const msg = `Wilson listTools returned ${response.status}: ${body.slice(0, 500)}`;
+        const msg = `listTools returned ${response.status}: ${body.slice(0, 500)}`;
         log(msg);
         return err(msg);
       }
@@ -117,40 +118,38 @@ export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
       try {
         data = await response.json();
       } catch {
-        return err("Wilson listTools returned invalid JSON");
+        return err("listTools returned invalid JSON");
       }
 
       // Validate response shape
       if (!Array.isArray(data)) {
-        return err("Wilson listTools response must be an array");
+        return err("listTools response must be an array");
       }
 
-      const tools: WilsonTool[] = [];
+      const tools: ExternalTool[] = [];
       for (let i = 0; i < data.length; i++) {
         const item = data[i] as Record<string, unknown>;
         if (typeof item !== "object" || item === null) {
-          return err(`Wilson listTools[${i}]: must be an object`);
+          return err(`listTools[${i}]: must be an object`);
         }
         if (typeof item.channel !== "string" || item.channel.length === 0) {
-          return err(
-            `Wilson listTools[${i}]: channel must be a non-empty string`,
-          );
+          return err(`listTools[${i}]: channel must be a non-empty string`);
         }
         if (typeof item.name !== "string" || item.name.length === 0) {
-          return err(`Wilson listTools[${i}]: name must be a non-empty string`);
+          return err(`listTools[${i}]: name must be a non-empty string`);
         }
         if (typeof item.description !== "string") {
-          return err(`Wilson listTools[${i}]: description must be a string`);
+          return err(`listTools[${i}]: description must be a string`);
         }
         if (
           typeof item.parameters !== "object" ||
           item.parameters === null ||
           Array.isArray(item.parameters)
         ) {
-          return err(`Wilson listTools[${i}]: parameters must be an object`);
+          return err(`listTools[${i}]: parameters must be an object`);
         }
         if (typeof item.mutatesState !== "boolean") {
-          return err(`Wilson listTools[${i}]: mutatesState must be a boolean`);
+          return err(`listTools[${i}]: mutatesState must be a boolean`);
         }
 
         tools.push({
@@ -162,7 +161,7 @@ export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
         });
       }
 
-      log(`Wilson listTools returned ${tools.length} tools`);
+      log(`listTools returned ${tools.length} tools`);
       return ok(tools);
     },
 
@@ -171,7 +170,7 @@ export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
       tool: string,
       params: Record<string, unknown>,
       timeoutMs?: number,
-    ): Promise<Result<WilsonToolResult>> {
+    ): Promise<Result<ExternalToolResult>> {
       const endpoint = `${baseUrl}/api/tools/execute`;
       const effectiveTimeout = timeoutMs ?? DEFAULT_EXECUTE_TIMEOUT_MS;
 
@@ -187,14 +186,14 @@ export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
         });
       } catch (e) {
         if (e instanceof DOMException && e.name === "TimeoutError") {
-          const msg = `Wilson executeTool timed out after ${effectiveTimeout}ms`;
+          const msg = `executeTool timed out after ${effectiveTimeout}ms`;
           log(msg);
           return err(msg);
         }
         if (e instanceof DOMException && e.name === "AbortError") {
-          return err("Wilson executeTool was aborted");
+          return err("executeTool was aborted");
         }
-        const msg = `Wilson connection failed: ${e instanceof Error ? e.message : String(e)}`;
+        const msg = `connection failed: ${e instanceof Error ? e.message : String(e)}`;
         log(msg);
         return err(msg);
       }
@@ -206,7 +205,7 @@ export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
         } catch {
           body = "(unreadable)";
         }
-        const msg = `Wilson executeTool returned ${response.status}: ${body.slice(0, 500)}`;
+        const msg = `executeTool returned ${response.status}: ${body.slice(0, 500)}`;
         log(msg);
         return err(msg);
       }
@@ -215,26 +214,26 @@ export function createWilsonClient(url: string, apiKey?: string): WilsonClient {
       try {
         data = await response.json();
       } catch {
-        return err("Wilson executeTool returned invalid JSON");
+        return err("executeTool returned invalid JSON");
       }
 
       // Validate response shape
       const result = data as Record<string, unknown>;
       if (typeof result !== "object" || result === null) {
-        return err("Wilson executeTool response must be an object");
+        return err("executeTool response must be an object");
       }
       if (typeof result.content !== "string") {
-        return err("Wilson executeTool response.content must be a string");
+        return err("executeTool response.content must be a string");
       }
 
-      const output: WilsonToolResult = { content: result.content };
+      const output: ExternalToolResult = { content: result.content };
       if (result.metadata !== undefined) {
         if (
           typeof result.metadata !== "object" ||
           result.metadata === null ||
           Array.isArray(result.metadata)
         ) {
-          return err("Wilson executeTool response.metadata must be an object");
+          return err("executeTool response.metadata must be an object");
         }
         output.metadata = result.metadata as Record<string, unknown>;
       }

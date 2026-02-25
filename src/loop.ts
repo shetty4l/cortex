@@ -264,6 +264,7 @@ export function startProcessingLoop(
                   skillConfig: config.skillConfig,
                   synapseTimeoutMs: config.synapseTimeoutMs,
                   topicKey: message.topic_key,
+                  stateLoader,
                 },
               });
 

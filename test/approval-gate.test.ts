@@ -17,8 +17,9 @@ import {
   proposeApproval,
   resolveApproval,
 } from "../src/approval";
-import { closeDatabase, initDatabase } from "../src/db";
+import { closeDatabase, getDatabase, initDatabase } from "../src/db";
 import type { SkillRegistry } from "../src/skills";
+import { StateLoader } from "../src/state";
 import type { ChatMessage, OpenAITool } from "../src/synapse";
 
 // --- Mock Synapse server ---
@@ -48,8 +49,11 @@ afterAll(() => {
 
 // --- Database setup ---
 
+let stateLoader: StateLoader;
+
 beforeEach(() => {
   initDatabase(":memory:");
+  stateLoader = new StateLoader(getDatabase());
 });
 
 afterEach(() => {
@@ -66,6 +70,7 @@ function agentConfig(overrides?: Partial<AgentConfig>): AgentConfig {
     maxToolRounds: 8,
     skillConfig: {},
     topicKey: "test-topic",
+    stateLoader,
     ...overrides,
   };
 }
@@ -205,7 +210,7 @@ describe("approval gate - non-mutating tools", () => {
     expect(result.value.turns[1].content).toContain("Read data");
 
     // No pending approvals should be created
-    const pending = listPendingApprovals();
+    const pending = listPendingApprovals(undefined, stateLoader);
     expect(pending).toHaveLength(0);
   });
 
@@ -281,7 +286,7 @@ describe("approval gate - mutating tools", () => {
     expect(toolMsg.metadata?.approval_id).toBeTruthy();
 
     // Pending approval should be created
-    const pending = listPendingApprovals("test-topic");
+    const pending = listPendingApprovals("test-topic", stateLoader);
     expect(pending).toHaveLength(1);
     expect(pending[0].tool_name).toBe("dangerous.delete");
     expect(pending[0].tool_args_json).toBe('{"id":"abc123"}');
@@ -324,13 +329,16 @@ describe("approval resolution flow", () => {
     const argsJson = '{"id":"item-to-delete"}';
 
     // Pre-create an approved approval
-    const approval = proposeApproval({
-      topic_key: "test-topic",
-      action: "Execute tool dangerous.delete",
-      tool_name: "dangerous.delete",
-      tool_args_json: argsJson,
-    });
-    resolveApproval(approval.id, "approved");
+    const approval = proposeApproval(
+      {
+        topic_key: "test-topic",
+        action: "Execute tool dangerous.delete",
+        tool_name: "dangerous.delete",
+        tool_args_json: argsJson,
+      },
+      stateLoader,
+    );
+    await resolveApproval(approval.id, "approved", stateLoader);
 
     let callNum = 0;
     mockHandler = () => {
@@ -363,6 +371,7 @@ describe("approval resolution flow", () => {
       "test-topic",
       "dangerous.delete",
       argsJson,
+      stateLoader,
     );
     expect(stored?.status).toBe("consumed");
   });
@@ -372,13 +381,16 @@ describe("approval resolution flow", () => {
     const argsJson = '{"id":"item-x"}';
 
     // Pre-create a rejected approval
-    const approval = proposeApproval({
-      topic_key: "test-topic",
-      action: "Execute tool dangerous.delete",
-      tool_name: "dangerous.delete",
-      tool_args_json: argsJson,
-    });
-    resolveApproval(approval.id, "rejected");
+    const approval = proposeApproval(
+      {
+        topic_key: "test-topic",
+        action: "Execute tool dangerous.delete",
+        tool_name: "dangerous.delete",
+        tool_args_json: argsJson,
+      },
+      stateLoader,
+    );
+    await resolveApproval(approval.id, "rejected", stateLoader);
 
     let callNum = 0;
     mockHandler = () => {
@@ -413,13 +425,16 @@ describe("approval resolution flow", () => {
     const argsJson = '{"id":"expired-item"}';
 
     // Pre-create an expired approval
-    const oldApproval = proposeApproval({
-      topic_key: "test-topic",
-      action: "Execute tool dangerous.delete",
-      tool_name: "dangerous.delete",
-      tool_args_json: argsJson,
-    });
-    resolveApproval(oldApproval.id, "expired");
+    const oldApproval = proposeApproval(
+      {
+        topic_key: "test-topic",
+        action: "Execute tool dangerous.delete",
+        tool_name: "dangerous.delete",
+        tool_args_json: argsJson,
+      },
+      stateLoader,
+    );
+    await resolveApproval(oldApproval.id, "expired", stateLoader);
 
     let callNum = 0;
     mockHandler = () => {
@@ -456,7 +471,7 @@ describe("approval resolution flow", () => {
     expect(newApprovalId).not.toBe(oldApproval.id);
 
     // There should now be one pending approval
-    const pending = listPendingApprovals("test-topic");
+    const pending = listPendingApprovals("test-topic", stateLoader);
     expect(pending).toHaveLength(1);
     expect(pending[0].id).toBe(newApprovalId);
   });
@@ -466,14 +481,17 @@ describe("approval resolution flow", () => {
     const argsJson = '{"id":"already-used"}';
 
     // Pre-create and consume an approval
-    const oldApproval = proposeApproval({
-      topic_key: "test-topic",
-      action: "Execute tool dangerous.delete",
-      tool_name: "dangerous.delete",
-      tool_args_json: argsJson,
-    });
-    resolveApproval(oldApproval.id, "approved");
-    consumeApproval(oldApproval.id);
+    const oldApproval = proposeApproval(
+      {
+        topic_key: "test-topic",
+        action: "Execute tool dangerous.delete",
+        tool_name: "dangerous.delete",
+        tool_args_json: argsJson,
+      },
+      stateLoader,
+    );
+    await resolveApproval(oldApproval.id, "approved", stateLoader);
+    await consumeApproval(oldApproval.id, stateLoader);
 
     let callNum = 0;
     mockHandler = () => {
@@ -505,7 +523,7 @@ describe("approval resolution flow", () => {
     const newApprovalId = result.value.turns[1].metadata?.approval_id as string;
     expect(newApprovalId).not.toBe(oldApproval.id);
 
-    const pending = listPendingApprovals("test-topic");
+    const pending = listPendingApprovals("test-topic", stateLoader);
     expect(pending).toHaveLength(1);
   });
 
@@ -514,12 +532,15 @@ describe("approval resolution flow", () => {
     const argsJson = '{"id":"pending-item"}';
 
     // Pre-create a pending approval (not resolved)
-    const pendingApproval = proposeApproval({
-      topic_key: "test-topic",
-      action: "Execute tool dangerous.delete",
-      tool_name: "dangerous.delete",
-      tool_args_json: argsJson,
-    });
+    const pendingApproval = proposeApproval(
+      {
+        topic_key: "test-topic",
+        action: "Execute tool dangerous.delete",
+        tool_name: "dangerous.delete",
+        tool_args_json: argsJson,
+      },
+      stateLoader,
+    );
 
     let callNum = 0;
     mockHandler = () => {
@@ -551,7 +572,7 @@ describe("approval resolution flow", () => {
     );
 
     // No new approvals created
-    const pending = listPendingApprovals("test-topic");
+    const pending = listPendingApprovals("test-topic", stateLoader);
     expect(pending).toHaveLength(1);
     expect(pending[0].id).toBe(pendingApproval.id);
   });
@@ -610,7 +631,7 @@ describe("approval gate - edge cases", () => {
     });
 
     // Should have two separate pending approvals
-    const pending = listPendingApprovals("test-topic");
+    const pending = listPendingApprovals("test-topic", stateLoader);
     expect(pending).toHaveLength(2);
     const args = pending.map((p) => p.tool_args_json).sort();
     expect(args).toContain('{"id":"item1"}');
@@ -621,13 +642,16 @@ describe("approval gate - edge cases", () => {
     const { registry, tools } = createMockRegistry();
 
     // Create approval for dangerous.delete
-    const approval = proposeApproval({
-      topic_key: "test-topic",
-      action: "Execute tool dangerous.delete",
-      tool_name: "dangerous.delete",
-      tool_args_json: "{}",
-    });
-    resolveApproval(approval.id, "approved");
+    const approval = proposeApproval(
+      {
+        topic_key: "test-topic",
+        action: "Execute tool dangerous.delete",
+        tool_name: "dangerous.delete",
+        tool_args_json: "{}",
+      },
+      stateLoader,
+    );
+    await resolveApproval(approval.id, "approved", stateLoader);
 
     let callNum = 0;
     mockHandler = () => {
