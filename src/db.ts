@@ -107,20 +107,6 @@ const SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_receptor_buffers_channel_created ON receptor_buffers(channel, created_at);
 
-  CREATE TABLE IF NOT EXISTS pending_approvals (
-    id TEXT PRIMARY KEY,
-    topic_key TEXT NOT NULL,
-    action TEXT NOT NULL,
-    tool_name TEXT,
-    tool_args_json TEXT,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'expired')),
-    proposed_at INTEGER NOT NULL,
-    resolved_at INTEGER,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_pending_approvals_status ON pending_approvals(status);
-
   CREATE TABLE IF NOT EXISTS scheduled_events (
     id TEXT PRIMARY KEY,
     event_type TEXT NOT NULL,

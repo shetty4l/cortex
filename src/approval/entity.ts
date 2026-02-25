@@ -18,6 +18,7 @@ import type { ApprovalStatus } from "./types";
  * PendingApproval entity persisted to SQLite via StateLoader.
  *
  * Uses @PersistedCollection for multi-row table storage with explicit save().
+ * Note: created_at and updated_at are auto-managed by StateLoader.
  */
 @PersistedCollection("pending_approvals")
 export class PendingApproval extends CollectionEntity {
@@ -29,8 +30,6 @@ export class PendingApproval extends CollectionEntity {
   @Field("string") @Index() status: ApprovalStatus = "pending";
   @Field("number") @Index() proposedAt: number = 0;
   @Field("number") resolvedAt: number | null = null;
-  @Field("number") createdAt: number = 0;
-  @Field("number") updatedAt: number = 0;
 
   async save(): Promise<void> {
     throw new Error("Not bound to StateLoader");
