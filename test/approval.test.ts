@@ -1,13 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  consumeApproval,
+  getApprovalForTool,
   listPendingApprovals,
   proposeApproval,
   resolveApproval,
 } from "../src/approval/index";
-import { closeDatabase, initDatabase } from "../src/db";
+import { closeDatabase, getDatabase, initDatabase } from "../src/db";
+import { StateLoader } from "../src/state";
+
+let stateLoader: StateLoader;
 
 beforeEach(() => {
   initDatabase(":memory:");
+  stateLoader = new StateLoader(getDatabase());
 });
 
 afterEach(() => {
@@ -17,84 +23,145 @@ afterEach(() => {
 describe("approval CRUD", () => {
   test("proposeApproval returns PendingApproval with status pending", () => {
     const before = Date.now();
-    const approval = proposeApproval({
-      topic_key: "trip-japan",
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "trip-japan",
       action: "book_hotel",
     });
     const after = Date.now();
 
     expect(approval.id).toBeTruthy();
-    expect(approval.topic_key).toBe("trip-japan");
+    expect(approval.topicKey).toBe("trip-japan");
     expect(approval.action).toBe("book_hotel");
-    expect(approval.tool_name).toBeNull();
-    expect(approval.tool_args_json).toBeNull();
+    expect(approval.toolName).toBeNull();
+    expect(approval.toolArgsJson).toBeNull();
     expect(approval.status).toBe("pending");
-    expect(approval.proposed_at).toBeGreaterThanOrEqual(before);
-    expect(approval.proposed_at).toBeLessThanOrEqual(after);
-    expect(approval.resolved_at).toBeNull();
-    expect(approval.created_at).toBeGreaterThanOrEqual(before);
+    expect(approval.proposedAt).toBeGreaterThanOrEqual(before);
+    expect(approval.proposedAt).toBeLessThanOrEqual(after);
+    expect(approval.resolvedAt).toBeNull();
   });
 
-  test("proposeApproval with tool_name and tool_args_json", () => {
-    const approval = proposeApproval({
-      topic_key: "trip",
+  test("proposeApproval with toolName and toolArgsJson", () => {
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "trip",
       action: "send_email",
-      tool_name: "gmail.send",
-      tool_args_json: '{"to":"test@example.com"}',
+      toolName: "gmail.send",
+      toolArgsJson: '{"to":"test@example.com"}',
     });
 
-    expect(approval.tool_name).toBe("gmail.send");
-    expect(approval.tool_args_json).toBe('{"to":"test@example.com"}');
+    expect(approval.toolName).toBe("gmail.send");
+    expect(approval.toolArgsJson).toBe('{"to":"test@example.com"}');
   });
 
-  test("resolveApproval with approved sets status and resolved_at", () => {
-    const approval = proposeApproval({
-      topic_key: "trip",
+  test("resolveApproval with approved sets status and resolved_at", async () => {
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "trip",
       action: "book_flight",
     });
 
-    const before = Date.now();
-    resolveApproval(approval.id, "approved");
+    await resolveApproval(stateLoader, approval.id, "approved");
 
-    const pending = listPendingApprovals();
+    const pending = listPendingApprovals(stateLoader);
     expect(pending).toHaveLength(0);
   });
 
-  test("resolveApproval with rejected sets status and resolved_at", () => {
-    const approval = proposeApproval({
-      topic_key: "trip",
+  test("resolveApproval with rejected sets status and resolved_at", async () => {
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "trip",
       action: "delete_account",
     });
 
-    resolveApproval(approval.id, "rejected");
+    await resolveApproval(stateLoader, approval.id, "rejected");
 
-    const pending = listPendingApprovals();
+    const pending = listPendingApprovals(stateLoader);
     expect(pending).toHaveLength(0);
   });
 
-  test("listPendingApprovals returns only pending status", () => {
-    const a1 = proposeApproval({ topic_key: "t1", action: "a1" });
-    proposeApproval({ topic_key: "t2", action: "a2" });
-    resolveApproval(a1.id, "approved");
+  test("listPendingApprovals returns only pending status", async () => {
+    const a1 = proposeApproval(stateLoader, { topicKey: "t1", action: "a1" });
+    proposeApproval(stateLoader, { topicKey: "t2", action: "a2" });
+    await resolveApproval(stateLoader, a1.id, "approved");
 
-    const pending = listPendingApprovals();
+    const pending = listPendingApprovals(stateLoader);
     expect(pending).toHaveLength(1);
     expect(pending[0].action).toBe("a2");
   });
 
   test("listPendingApprovals filtered by topicKey", () => {
-    proposeApproval({ topic_key: "trip-japan", action: "a1" });
-    proposeApproval({ topic_key: "trip-paris", action: "a2" });
-    proposeApproval({ topic_key: "trip-japan", action: "a3" });
+    proposeApproval(stateLoader, { topicKey: "trip-japan", action: "a1" });
+    proposeApproval(stateLoader, { topicKey: "trip-paris", action: "a2" });
+    proposeApproval(stateLoader, { topicKey: "trip-japan", action: "a3" });
 
-    const japan = listPendingApprovals("trip-japan");
+    const japan = listPendingApprovals(stateLoader, "trip-japan");
     expect(japan).toHaveLength(2);
     for (const a of japan) {
-      expect(a.topic_key).toBe("trip-japan");
+      expect(a.topicKey).toBe("trip-japan");
     }
 
-    const paris = listPendingApprovals("trip-paris");
+    const paris = listPendingApprovals(stateLoader, "trip-paris");
     expect(paris).toHaveLength(1);
-    expect(paris[0].topic_key).toBe("trip-paris");
+    expect(paris[0].topicKey).toBe("trip-paris");
+  });
+
+  test("getApprovalForTool returns most recent approved approval", async () => {
+    const a1 = proposeApproval(stateLoader, {
+      topicKey: "trip",
+      action: "call_tool",
+      toolName: "gmail.send",
+    });
+    await resolveApproval(stateLoader, a1.id, "approved");
+
+    const approval = getApprovalForTool(stateLoader, "trip", "gmail.send");
+    expect(approval).not.toBeNull();
+    expect(approval!.id).toBe(a1.id);
+    expect(approval!.status).toBe("approved");
+  });
+
+  test("getApprovalForTool returns null when no approval exists", () => {
+    const approval = getApprovalForTool(stateLoader, "trip", "gmail.send");
+    expect(approval).toBeNull();
+  });
+
+  test("consumeApproval marks approved approval as consumed", async () => {
+    const a1 = proposeApproval(stateLoader, {
+      topicKey: "trip",
+      action: "call_tool",
+      toolName: "gmail.send",
+    });
+    await resolveApproval(stateLoader, a1.id, "approved");
+
+    await consumeApproval(stateLoader, a1.id);
+
+    // Should no longer appear in getApprovalForTool
+    const approval = getApprovalForTool(stateLoader, "trip", "gmail.send");
+    expect(approval).toBeNull();
+  });
+
+  test("consumeApproval logs warning for non-existent approval", async () => {
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+
+    await consumeApproval(stateLoader, "non-existent-id");
+
+    console.warn = originalWarn;
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("not found");
+  });
+
+  test("consumeApproval logs warning for non-approved approval", async () => {
+    const a1 = proposeApproval(stateLoader, {
+      topicKey: "trip",
+      action: "call_tool",
+    });
+
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (msg: string) => warnings.push(msg);
+
+    await consumeApproval(stateLoader, a1.id);
+
+    console.warn = originalWarn;
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("not in approved status");
   });
 });
