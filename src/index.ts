@@ -71,10 +71,8 @@ export async function startCortexRuntime(
     thalamusModels: config.thalamusModels,
     synapseTimeoutMs: config.synapseTimeoutMs,
     syncIntervalMs: config.thalamusSyncIntervalMs,
+    stateLoader,
   });
-
-  // Set stateLoader for thalamus to persist sync timestamps
-  thalamus.setStateLoader(stateLoader);
 
   const server = deps.startServer(config, thalamus);
   deps.log(`listening on http://${config.host}:${config.port}`);

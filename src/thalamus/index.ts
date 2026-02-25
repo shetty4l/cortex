@@ -41,6 +41,7 @@ export interface ThalamusConfig {
   thalamusModels: string[];
   synapseTimeoutMs: number;
   syncIntervalMs: number;
+  stateLoader: StateLoader;
 }
 
 // --- Static channel priority map ---
@@ -72,13 +73,11 @@ export class Thalamus {
   private stateLoader: StateLoader | null = null;
   private thalamusState: ThalamusState | null = null;
 
-  constructor(private config?: ThalamusConfig) {}
-
-  /** Set the StateLoader for persistent state. */
-  setStateLoader(stateLoader: StateLoader): void {
-    this.stateLoader = stateLoader;
-    // Load the thalamus state once when stateLoader is set
-    this.thalamusState = stateLoader.load(ThalamusState, "singleton");
+  constructor(private config?: ThalamusConfig) {
+    if (config?.stateLoader) {
+      this.stateLoader = config.stateLoader;
+      this.thalamusState = config.stateLoader.load(ThalamusState, "singleton");
+    }
   }
 
   /** Returns the timestamp of the last syncAll() run, or null if never run. */
