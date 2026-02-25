@@ -1,4 +1,7 @@
 import { getDatabase } from "../db";
+import type { ApprovalStatus } from "./types";
+
+export type { ApprovalStatus } from "./types";
 
 export interface PendingApproval {
   id: string;
@@ -6,7 +9,7 @@ export interface PendingApproval {
   action: string;
   tool_name: string | null;
   tool_args_json: string | null;
-  status: string;
+  status: ApprovalStatus;
   proposed_at: number;
   resolved_at: number | null;
   created_at: number;
@@ -44,7 +47,7 @@ export function proposeApproval(input: ProposeApprovalInput): PendingApproval {
 
 export function resolveApproval(
   id: string,
-  resolution: "approved" | "rejected" | "expired",
+  resolution: Exclude<ApprovalStatus, "pending">,
 ): void {
   const db = getDatabase();
   const now = Date.now();
@@ -58,13 +61,42 @@ export function listPendingApprovals(topicKey?: string): PendingApproval[] {
   if (topicKey) {
     return db
       .prepare(
-        "SELECT * FROM pending_approvals WHERE status = 'pending' AND topic_key = ? ORDER BY created_at DESC",
+        "SELECT * FROM pending_approvals WHERE status = 'pending' AND topic_key = ? ORDER BY proposed_at DESC",
       )
       .all(topicKey) as PendingApproval[];
   }
   return db
     .prepare(
-      "SELECT * FROM pending_approvals WHERE status = 'pending' ORDER BY created_at DESC",
+      "SELECT * FROM pending_approvals WHERE status = 'pending' ORDER BY proposed_at DESC",
     )
     .all() as PendingApproval[];
+}
+
+export function getApprovalForTool(
+  topicKey: string,
+  toolName: string,
+): PendingApproval | null {
+  const db = getDatabase();
+  const approval = db
+    .prepare(
+      `SELECT * FROM pending_approvals 
+       WHERE status = 'approved' AND topic_key = ? AND tool_name = ? 
+       ORDER BY proposed_at DESC 
+       LIMIT 1`,
+    )
+    .get(topicKey, toolName) as PendingApproval | undefined;
+  return approval ?? null;
+}
+
+export function consumeApproval(id: string): void {
+  const db = getDatabase();
+  const result = db
+    .prepare(
+      "UPDATE pending_approvals SET status = 'consumed', updated_at = ? WHERE id = ? AND status = 'approved'",
+    )
+    .run(Date.now(), id);
+
+  if (result.changes === 0) {
+    console.warn(`consumeApproval: approval not found or not approved: ${id}`);
+  }
 }
