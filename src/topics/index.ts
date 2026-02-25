@@ -7,14 +7,12 @@
 
 import {
   CollectionEntity,
+  CollectionField as Field,
   Id,
   Index,
   PersistedCollection,
   type StateLoader,
 } from "@shetty4l/core/state";
-// TODO: Replace with `import { CollectionField as Field } from "@shetty4l/core/state"`
-// once core v0.1.37 is published (see core#54)
-import { Field } from "../../node_modules/@shetty4l/core/src/state/collection/decorators";
 
 /**
  * Topic entity persisted to SQLite via StateLoader.
