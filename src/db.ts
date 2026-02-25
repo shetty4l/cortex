@@ -113,7 +113,7 @@ const SCHEMA = `
     action TEXT NOT NULL,
     tool_name TEXT,
     tool_args_json TEXT,
-    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'expired')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'approved', 'rejected', 'expired', 'consumed')),
     proposed_at INTEGER NOT NULL,
     resolved_at INTEGER,
     created_at INTEGER NOT NULL,
