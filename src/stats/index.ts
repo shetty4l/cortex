@@ -58,7 +58,7 @@ function percentile(sorted: number[], p: number): number {
  * Get aggregated stats for the /stats API endpoint.
  *
  * Returns inbox/outbox counts, receptor sync timestamps, and processing latency percentiles.
- * Time-based metrics use a 24-hour sliding window via the auto-managed `updated_at` field.
+ * Time-based metrics use a 24-hour sliding window based on message timestamps.
  *
  * Uses StateLoader.count() for counts and StateLoader.find() + JS for percentiles.
  */
@@ -66,7 +66,7 @@ export function getStats(
   stateLoader: StateLoader,
   thalamus?: ThalamusSyncInfo,
 ): CortexStats {
-  const oneDayAgo = new Date(Date.now() - 86_400_000);
+  const oneDayAgoMs = Date.now() - 86_400_000;
 
   // --- Inbox stats ---
   // Pending/processing: all time
@@ -75,18 +75,18 @@ export function getStats(
     status: "processing",
   });
 
-  // Done/failed: last 24h using updated_at filter
+  // Done/failed: last 24h using occurred_at filter
   const inboxDone24h = stateLoader
     .find(InboxMessage, {
       where: { status: "done" },
     })
-    .filter((m) => m.updated_at >= oneDayAgo).length;
+    .filter((m) => m.occurred_at >= oneDayAgoMs).length;
 
   const inboxFailed24h = stateLoader
     .find(InboxMessage, {
       where: { status: "failed" },
     })
-    .filter((m) => m.updated_at >= oneDayAgo).length;
+    .filter((m) => m.occurred_at >= oneDayAgoMs).length;
 
   // --- Outbox stats ---
   const outboxPending = stateLoader.count(OutboxMessage, { status: "pending" });
@@ -96,7 +96,7 @@ export function getStats(
     .find(OutboxMessage, {
       where: { status: "delivered" },
     })
-    .filter((m) => m.updated_at >= oneDayAgo).length;
+    .filter((m) => m.created_at_ms >= oneDayAgoMs).length;
 
   // --- Receptor buffer stats ---
   const bufferPendingTotal = stateLoader.count(ReceptorBuffer, {});
@@ -107,7 +107,7 @@ export function getStats(
     .find(InboxMessage, {
       where: { status: "done" },
     })
-    .filter((m) => m.updated_at >= oneDayAgo && m.processing_ms !== null);
+    .filter((m) => m.occurred_at >= oneDayAgoMs && m.processing_ms !== null);
 
   const latencies = doneWithLatency
     .map((m) => m.processing_ms as number)

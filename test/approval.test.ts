@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { StateLoader } from "@shetty4l/core/state";
 import {
+  APPROVAL_TTL_MS,
   consumeApproval,
   getApprovalForTool,
+  isExpired,
   listPendingApprovals,
   proposeApproval,
   resolveApproval,
@@ -39,6 +41,10 @@ describe("approval CRUD", () => {
     expect(approval.proposedAt).toBeGreaterThanOrEqual(before);
     expect(approval.proposedAt).toBeLessThanOrEqual(after);
     expect(approval.resolvedAt).toBeNull();
+    expect(approval.agentStateJson).toBeNull();
+    expect(approval.toolCallsJson).toBeNull();
+    expect(approval.expiresAt).toBeGreaterThanOrEqual(before + APPROVAL_TTL_MS);
+    expect(approval.expiresAt).toBeLessThanOrEqual(after + APPROVAL_TTL_MS);
   });
 
   test("proposeApproval with toolName and toolArgsJson", () => {
@@ -51,6 +57,23 @@ describe("approval CRUD", () => {
 
     expect(approval.toolName).toBe("gmail.send");
     expect(approval.toolArgsJson).toBe('{"to":"test@example.com"}');
+  });
+
+  test("proposeApproval with agentStateJson and toolCallsJson", () => {
+    const agentState = JSON.stringify([{ role: "user", content: "test" }]);
+    const toolCalls = JSON.stringify([
+      { id: "tc1", function: { name: "test" } },
+    ]);
+
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "trip",
+      action: "execute_tool",
+      agentStateJson: agentState,
+      toolCallsJson: toolCalls,
+    });
+
+    expect(approval.agentStateJson).toBe(agentState);
+    expect(approval.toolCallsJson).toBe(toolCalls);
   });
 
   test("resolveApproval with approved sets status and resolved_at", async () => {
@@ -164,5 +187,52 @@ describe("approval CRUD", () => {
     console.warn = originalWarn;
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("not in approved status");
+  });
+});
+
+describe("isExpired", () => {
+  test("returns false when expiresAt is 0", () => {
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "trip",
+      action: "test",
+    });
+    // Manually set expiresAt to 0 to test edge case
+    approval.expiresAt = 0;
+
+    expect(isExpired(approval)).toBe(false);
+  });
+
+  test("returns false when current time is before expiresAt", () => {
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "trip",
+      action: "test",
+    });
+
+    // Check with current time (should not be expired)
+    expect(isExpired(approval)).toBe(false);
+  });
+
+  test("returns true when current time equals expiresAt", () => {
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "trip",
+      action: "test",
+    });
+
+    // Check at exact expiry time
+    expect(isExpired(approval, approval.expiresAt)).toBe(true);
+  });
+
+  test("returns true when current time is after expiresAt", () => {
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "trip",
+      action: "test",
+    });
+
+    // Check after expiry
+    expect(isExpired(approval, approval.expiresAt + 1000)).toBe(true);
+  });
+
+  test("APPROVAL_TTL_MS is 15 minutes", () => {
+    expect(APPROVAL_TTL_MS).toBe(15 * 60 * 1000);
   });
 });

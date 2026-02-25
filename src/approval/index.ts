@@ -12,11 +12,28 @@ import type { ApprovalStatus } from "./types";
 export { PendingApproval } from "./entity";
 export type { ApprovalStatus } from "./types";
 
+/** Approval time-to-live: 15 minutes */
+export const APPROVAL_TTL_MS = 15 * 60 * 1000;
+
 export interface ProposeApprovalInput {
   topicKey: string;
   action: string;
   toolName?: string;
   toolArgsJson?: string;
+  /** Serialized agent state (messages array) for resumption */
+  agentStateJson?: string;
+  /** Serialized tool calls blocked pending approval */
+  toolCallsJson?: string;
+}
+
+/**
+ * Check if an approval has expired based on its expiresAt timestamp.
+ */
+export function isExpired(
+  approval: PendingApproval,
+  now = Date.now(),
+): boolean {
+  return approval.expiresAt > 0 && now >= approval.expiresAt;
 }
 
 /**
@@ -36,6 +53,9 @@ export function proposeApproval(
     status: "pending" as ApprovalStatus,
     proposedAt: now,
     resolvedAt: null,
+    agentStateJson: input.agentStateJson ?? null,
+    toolCallsJson: input.toolCallsJson ?? null,
+    expiresAt: now + APPROVAL_TTL_MS,
   });
 }
 
