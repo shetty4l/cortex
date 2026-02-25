@@ -9,6 +9,8 @@
 
 import { jsonOk } from "@shetty4l/core/http";
 import type { StateLoader } from "@shetty4l/core/state";
+import type { CortexConfig } from "../config";
+import { requireAuth } from "../server";
 import {
   createProvider,
   deleteProvider,
@@ -16,6 +18,11 @@ import {
   updateHeartbeat,
   updateProvider,
 } from "../tools/external-provider";
+
+// --- Constants ---
+
+/** Valid providerId pattern: alphanumeric, hyphens, and underscores only */
+const PROVIDER_ID_PATTERN = /^[a-z0-9_-]+$/i;
 
 // --- Request body types ---
 
@@ -38,6 +45,10 @@ function validateRegisterBody(body: RegisterRequestBody): string[] {
     body.providerId.length === 0
   ) {
     details.push("providerId must be a non-empty string");
+  } else if (!PROVIDER_ID_PATTERN.test(body.providerId)) {
+    details.push(
+      "providerId must contain only alphanumeric characters, hyphens, and underscores",
+    );
   }
 
   if (body.callbackUrl === undefined || body.callbackUrl === null) {
@@ -193,11 +204,14 @@ export async function routeExternalTools(
   req: Request,
   url: URL,
   stateLoader: StateLoader,
+  config: CortexConfig,
 ): Promise<Response | null> {
   const path = url.pathname;
 
   // POST /tools/external/register
   if (req.method === "POST" && path === "/tools/external/register") {
+    const authError = requireAuth(req, config);
+    if (authError) return authError;
     return handleRegister(req, stateLoader);
   }
 
@@ -206,25 +220,31 @@ export async function routeExternalTools(
     req.method === "DELETE" &&
     path.startsWith("/tools/external/unregister/")
   ) {
-    const providerId = path.slice("/tools/external/unregister/".length);
-    if (!providerId) {
+    const authError = requireAuth(req, config);
+    if (authError) return authError;
+    const rawProviderId = path.slice("/tools/external/unregister/".length);
+    if (!rawProviderId) {
       return jsonOk(
         { error: "invalid_request", details: ["providerId is required"] },
         400,
       );
     }
+    const providerId = decodeURIComponent(rawProviderId);
     return handleUnregister(providerId, stateLoader);
   }
 
   // POST /tools/external/heartbeat/:providerId
   if (req.method === "POST" && path.startsWith("/tools/external/heartbeat/")) {
-    const providerId = path.slice("/tools/external/heartbeat/".length);
-    if (!providerId) {
+    const authError = requireAuth(req, config);
+    if (authError) return authError;
+    const rawProviderId = path.slice("/tools/external/heartbeat/".length);
+    if (!rawProviderId) {
       return jsonOk(
         { error: "invalid_request", details: ["providerId is required"] },
         400,
       );
     }
+    const providerId = decodeURIComponent(rawProviderId);
     return handleHeartbeat(providerId, stateLoader);
   }
 

@@ -160,6 +160,12 @@ export interface ExternalToolRegistry {
   /** Get all external tool definitions (re-loads from storage). */
   getTools(stateLoader: StateLoader): ReadonlyArray<ToolDefinition>;
 
+  /** Get a single external tool entry by namespaced name, or undefined if not found. */
+  getTool(
+    stateLoader: StateLoader,
+    name: string,
+  ): ExternalToolEntry | undefined;
+
   /** Execute an external tool by its namespaced name. */
   executeTool(
     stateLoader: StateLoader,
@@ -176,6 +182,14 @@ export const externalToolRegistry: ExternalToolRegistry = {
   getTools(stateLoader: StateLoader): ReadonlyArray<ToolDefinition> {
     const toolMap = loadExternalTools(stateLoader);
     return Array.from(toolMap.values()).map((e) => e.def);
+  },
+
+  getTool(
+    stateLoader: StateLoader,
+    name: string,
+  ): ExternalToolEntry | undefined {
+    const toolMap = loadExternalTools(stateLoader);
+    return toolMap.get(name);
   },
 
   async executeTool(

@@ -68,6 +68,8 @@ function createStateLoader(): StateLoader {
   return new StateLoader(getDatabase());
 }
 
+const API_KEY = "test-key";
+
 // --- HTTP endpoint tests ---
 
 describe("POST /tools/external/register", () => {
@@ -96,23 +98,148 @@ describe("POST /tools/external/register", () => {
     }
   });
 
-  function post(body: unknown) {
+  function post(body: unknown, token?: string) {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (token !== undefined) {
+      headers.Authorization = `Bearer ${token}`;
+    }
     return fetch(`${baseUrl}/tools/external/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(body),
     });
   }
 
-  test("registers provider with tools, tools appear in registry", async () => {
+  // --- Auth tests ---
+
+  test("returns 401 when no auth header", async () => {
     const response = await post({
-      providerId: "calendar",
+      providerId: "test",
       callbackUrl: "http://localhost:9000/tools",
-      tools: [
-        { name: "get_events", description: "Get calendar events" },
-        { name: "create_event", description: "Create a calendar event" },
-      ],
+      tools: [{ name: "test" }],
     });
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toBe("unauthorized");
+  });
+
+  test("returns 401 when wrong auth token", async () => {
+    const response = await post(
+      {
+        providerId: "test",
+        callbackUrl: "http://localhost:9000/tools",
+        tools: [{ name: "test" }],
+      },
+      "wrong-key",
+    );
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toBe("unauthorized");
+  });
+
+  // --- ProviderId validation tests ---
+
+  test("returns 400 when providerId contains dots", async () => {
+    const response = await post(
+      {
+        providerId: "my.provider",
+        callbackUrl: "http://localhost:9000/tools",
+        tools: [{ name: "test" }],
+      },
+      API_KEY,
+    );
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as {
+      error: string;
+      details: string[];
+    };
+    expect(body.error).toBe("invalid_request");
+    expect(
+      body.details.some(
+        (d) => d.includes("providerId") && d.includes("alphanumeric"),
+      ),
+    ).toBe(true);
+  });
+
+  test("returns 400 when providerId contains spaces", async () => {
+    const response = await post(
+      {
+        providerId: "my provider",
+        callbackUrl: "http://localhost:9000/tools",
+        tools: [{ name: "test" }],
+      },
+      API_KEY,
+    );
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as {
+      error: string;
+      details: string[];
+    };
+    expect(body.error).toBe("invalid_request");
+    expect(
+      body.details.some(
+        (d) => d.includes("providerId") && d.includes("alphanumeric"),
+      ),
+    ).toBe(true);
+  });
+
+  test("returns 400 when providerId is empty string", async () => {
+    const response = await post(
+      {
+        providerId: "",
+        callbackUrl: "http://localhost:9000/tools",
+        tools: [{ name: "test" }],
+      },
+      API_KEY,
+    );
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as {
+      error: string;
+      details: string[];
+    };
+    expect(body.error).toBe("invalid_request");
+    expect(body.details.some((d) => d.includes("providerId"))).toBe(true);
+  });
+
+  test("accepts valid providerId with alphanumeric, hyphens, and underscores", async () => {
+    const response = await post(
+      {
+        providerId: "valid-id_123",
+        callbackUrl: "http://localhost:9000/tools",
+        tools: [{ name: "test_tool" }],
+      },
+      API_KEY,
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      success: boolean;
+      toolCount: number;
+    };
+    expect(body.success).toBe(true);
+  });
+
+  // --- Existing tests (now with auth) ---
+
+  test("registers provider with tools, tools appear in registry", async () => {
+    const response = await post(
+      {
+        providerId: "calendar",
+        callbackUrl: "http://localhost:9000/tools",
+        tools: [
+          { name: "get_events", description: "Get calendar events" },
+          { name: "create_event", description: "Create a calendar event" },
+        ],
+      },
+      API_KEY,
+    );
 
     expect(response.status).toBe(200);
     const body = (await response.json()) as {
@@ -131,11 +258,14 @@ describe("POST /tools/external/register", () => {
 
   test("re-register same provider updates tools (idempotent)", async () => {
     // First registration
-    const first = await post({
-      providerId: "email",
-      callbackUrl: "http://localhost:9001/tools",
-      tools: [{ name: "send_email", description: "Send email" }],
-    });
+    const first = await post(
+      {
+        providerId: "email",
+        callbackUrl: "http://localhost:9001/tools",
+        tools: [{ name: "send_email", description: "Send email" }],
+      },
+      API_KEY,
+    );
     expect(first.status).toBe(200);
 
     const provider1 = getProvider(stateLoader, "email");
@@ -146,14 +276,17 @@ describe("POST /tools/external/register", () => {
     await new Promise((r) => setTimeout(r, 10));
 
     // Re-register with different tools
-    const second = await post({
-      providerId: "email",
-      callbackUrl: "http://localhost:9001/tools",
-      tools: [
-        { name: "send_email", description: "Send email v2" },
-        { name: "read_inbox", description: "Read inbox" },
-      ],
-    });
+    const second = await post(
+      {
+        providerId: "email",
+        callbackUrl: "http://localhost:9001/tools",
+        tools: [
+          { name: "send_email", description: "Send email v2" },
+          { name: "read_inbox", description: "Read inbox" },
+        ],
+      },
+      API_KEY,
+    );
     expect(second.status).toBe(200);
     const secondBody = (await second.json()) as {
       success: boolean;
@@ -174,10 +307,13 @@ describe("POST /tools/external/register", () => {
   });
 
   test("returns 400 when providerId is missing", async () => {
-    const response = await post({
-      callbackUrl: "http://localhost:9000/tools",
-      tools: [{ name: "test" }],
-    });
+    const response = await post(
+      {
+        callbackUrl: "http://localhost:9000/tools",
+        tools: [{ name: "test" }],
+      },
+      API_KEY,
+    );
 
     expect(response.status).toBe(400);
     const body = (await response.json()) as {
@@ -189,11 +325,14 @@ describe("POST /tools/external/register", () => {
   });
 
   test("returns 400 when callbackUrl is invalid", async () => {
-    const response = await post({
-      providerId: "test",
-      callbackUrl: "not-a-url",
-      tools: [{ name: "test" }],
-    });
+    const response = await post(
+      {
+        providerId: "test",
+        callbackUrl: "not-a-url",
+        tools: [{ name: "test" }],
+      },
+      API_KEY,
+    );
 
     expect(response.status).toBe(400);
     const body = (await response.json()) as {
@@ -204,11 +343,14 @@ describe("POST /tools/external/register", () => {
   });
 
   test("returns 400 when tools is not an array", async () => {
-    const response = await post({
-      providerId: "test",
-      callbackUrl: "http://localhost:9000/tools",
-      tools: "not-an-array",
-    });
+    const response = await post(
+      {
+        providerId: "test",
+        callbackUrl: "http://localhost:9000/tools",
+        tools: "not-an-array",
+      },
+      API_KEY,
+    );
 
     expect(response.status).toBe(400);
     const body = (await response.json()) as {
@@ -219,11 +361,14 @@ describe("POST /tools/external/register", () => {
   });
 
   test("returns 400 when tool.name is missing", async () => {
-    const response = await post({
-      providerId: "test",
-      callbackUrl: "http://localhost:9000/tools",
-      tools: [{ description: "missing name" }],
-    });
+    const response = await post(
+      {
+        providerId: "test",
+        callbackUrl: "http://localhost:9000/tools",
+        tools: [{ description: "missing name" }],
+      },
+      API_KEY,
+    );
 
     expect(response.status).toBe(400);
     const body = (await response.json()) as {
@@ -234,12 +379,15 @@ describe("POST /tools/external/register", () => {
   });
 
   test("stores optional authHeader", async () => {
-    const response = await post({
-      providerId: "secure-provider",
-      callbackUrl: "http://localhost:9000/tools",
-      authHeader: "Bearer secret-token",
-      tools: [{ name: "secure_action" }],
-    });
+    const response = await post(
+      {
+        providerId: "secure-provider",
+        callbackUrl: "http://localhost:9000/tools",
+        authHeader: "Bearer secret-token",
+        tools: [{ name: "secure_action" }],
+      },
+      API_KEY,
+    );
 
     expect(response.status).toBe(200);
 
@@ -275,17 +423,77 @@ describe("DELETE /tools/external/unregister/:providerId", () => {
     }
   });
 
-  test("unregister provider removes all its tools", async () => {
-    // First register a provider
-    const registerResp = await fetch(`${baseUrl}/tools/external/register`, {
+  function registerProvider(providerId: string) {
+    return fetch(`${baseUrl}/tools/external/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${API_KEY}`,
+      },
       body: JSON.stringify({
-        providerId: "to-remove",
+        providerId,
         callbackUrl: "http://localhost:9000/tools",
         tools: [{ name: "tool_a" }, { name: "tool_b" }],
       }),
     });
+  }
+
+  function unregister(providerId: string, token?: string) {
+    const headers: Record<string, string> = {};
+    if (token !== undefined) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    return fetch(`${baseUrl}/tools/external/unregister/${providerId}`, {
+      method: "DELETE",
+      headers,
+    });
+  }
+
+  // --- Auth tests ---
+
+  test("returns 401 when no auth header", async () => {
+    const response = await unregister("any-provider");
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toBe("unauthorized");
+  });
+
+  test("returns 401 when wrong auth token", async () => {
+    const response = await unregister("any-provider", "wrong-key");
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toBe("unauthorized");
+  });
+
+  // --- URL-encoded providerId tests ---
+
+  test("unregister with URL-encoded providerId decodes correctly", async () => {
+    // Register a provider with hyphen in name
+    const registerResp = await registerProvider("my-provider");
+    expect(registerResp.status).toBe(200);
+
+    // Verify tools exist
+    let tools = externalToolRegistry.getTools(stateLoader);
+    expect(tools.some((t) => t.name === "my-provider.tool_a")).toBe(true);
+
+    // Unregister using URL-encoded providerId (hyphen as %2D)
+    const unregisterResp = await unregister("my%2Dprovider", API_KEY);
+    expect(unregisterResp.status).toBe(200);
+    const body = (await unregisterResp.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+
+    // Verify tools are removed
+    tools = externalToolRegistry.getTools(stateLoader);
+    expect(tools.some((t) => t.name === "my-provider.tool_a")).toBe(false);
+  });
+
+  // --- Existing tests ---
+
+  test("unregister provider removes all its tools", async () => {
+    // First register a provider
+    const registerResp = await registerProvider("to-remove");
     expect(registerResp.status).toBe(200);
 
     // Verify tools exist
@@ -294,10 +502,7 @@ describe("DELETE /tools/external/unregister/:providerId", () => {
     expect(tools.some((t) => t.name === "to-remove.tool_b")).toBe(true);
 
     // Unregister the provider
-    const unregisterResp = await fetch(
-      `${baseUrl}/tools/external/unregister/to-remove`,
-      { method: "DELETE" },
-    );
+    const unregisterResp = await unregister("to-remove", API_KEY);
     expect(unregisterResp.status).toBe(200);
     const body = (await unregisterResp.json()) as { success: boolean };
     expect(body.success).toBe(true);
@@ -309,10 +514,7 @@ describe("DELETE /tools/external/unregister/:providerId", () => {
   });
 
   test("returns 404 for unknown provider", async () => {
-    const response = await fetch(
-      `${baseUrl}/tools/external/unregister/unknown-provider`,
-      { method: "DELETE" },
-    );
+    const response = await unregister("unknown-provider", API_KEY);
 
     expect(response.status).toBe(404);
     const body = (await response.json()) as { error: string };
@@ -346,17 +548,82 @@ describe("POST /tools/external/heartbeat/:providerId", () => {
     }
   });
 
-  test("heartbeat updates timestamp", async () => {
-    // First register a provider
-    await fetch(`${baseUrl}/tools/external/register`, {
+  function registerProvider(providerId: string) {
+    return fetch(`${baseUrl}/tools/external/register`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${API_KEY}`,
+      },
       body: JSON.stringify({
-        providerId: "heartbeat-test",
+        providerId,
         callbackUrl: "http://localhost:9000/tools",
         tools: [{ name: "test" }],
       }),
     });
+  }
+
+  function heartbeat(providerId: string, token?: string) {
+    const headers: Record<string, string> = {};
+    if (token !== undefined) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    return fetch(`${baseUrl}/tools/external/heartbeat/${providerId}`, {
+      method: "POST",
+      headers,
+    });
+  }
+
+  // --- Auth tests ---
+
+  test("returns 401 when no auth header", async () => {
+    const response = await heartbeat("any-provider");
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toBe("unauthorized");
+  });
+
+  test("returns 401 when wrong auth token", async () => {
+    const response = await heartbeat("any-provider", "wrong-key");
+
+    expect(response.status).toBe(401);
+    const body = (await response.json()) as { error: string };
+    expect(body.error).toBe("unauthorized");
+  });
+
+  // --- URL-encoded providerId tests ---
+
+  test("heartbeat with URL-encoded providerId decodes correctly", async () => {
+    // Register a provider with hyphen in name
+    const registerResp = await registerProvider("hb-provider");
+    expect(registerResp.status).toBe(200);
+
+    const provider1 = getProvider(stateLoader, "hb-provider");
+    expect(provider1).not.toBeNull();
+    expect(provider1!.lastHeartbeatAt).toBeNull();
+
+    // Send heartbeat using URL-encoded providerId (hyphen as %2D)
+    const beforeHeartbeat = Date.now();
+    const response = await heartbeat("hb%2Dprovider", API_KEY);
+    const afterHeartbeat = Date.now();
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { success: boolean };
+    expect(body.success).toBe(true);
+
+    const provider2 = getProvider(stateLoader, "hb-provider");
+    expect(provider2).not.toBeNull();
+    expect(provider2!.lastHeartbeatAt).not.toBeNull();
+    expect(provider2!.lastHeartbeatAt).toBeGreaterThanOrEqual(beforeHeartbeat);
+    expect(provider2!.lastHeartbeatAt).toBeLessThanOrEqual(afterHeartbeat);
+  });
+
+  // --- Existing tests ---
+
+  test("heartbeat updates timestamp", async () => {
+    // First register a provider
+    await registerProvider("heartbeat-test");
 
     const provider1 = getProvider(stateLoader, "heartbeat-test");
     expect(provider1).not.toBeNull();
@@ -364,10 +631,7 @@ describe("POST /tools/external/heartbeat/:providerId", () => {
 
     // Send heartbeat
     const beforeHeartbeat = Date.now();
-    const response = await fetch(
-      `${baseUrl}/tools/external/heartbeat/heartbeat-test`,
-      { method: "POST" },
-    );
+    const response = await heartbeat("heartbeat-test", API_KEY);
     const afterHeartbeat = Date.now();
 
     expect(response.status).toBe(200);
@@ -382,10 +646,7 @@ describe("POST /tools/external/heartbeat/:providerId", () => {
   });
 
   test("returns 404 for unknown provider", async () => {
-    const response = await fetch(
-      `${baseUrl}/tools/external/heartbeat/unknown-provider`,
-      { method: "POST" },
-    );
+    const response = await heartbeat("unknown-provider", API_KEY);
 
     expect(response.status).toBe(404);
     const body = (await response.json()) as { error: string };

@@ -13,7 +13,7 @@ import type { Result } from "@shetty4l/core/result";
 import type { StateLoader } from "@shetty4l/core/state";
 import type { CortexConfig } from "../config";
 import type { SkillRegistry, SkillToolResult, ToolDefinition } from "../skills";
-import { externalToolRegistry } from "./external-proxy";
+import { executeExternalTool, externalToolRegistry } from "./external-proxy";
 
 // --- Types ---
 
@@ -110,15 +110,9 @@ export function createCombinedRegistry(
 
       // 2. Check external tool providers (namespaced as providerId.toolName)
       if (stateLoader && name.includes(".")) {
-        const externalTools = externalToolRegistry.getTools(stateLoader);
-        const isExternalTool = externalTools.some((t) => t.name === name);
-        if (isExternalTool) {
-          return externalToolRegistry.executeTool(
-            stateLoader,
-            name,
-            argumentsJson,
-            ctx,
-          );
+        const entry = externalToolRegistry.getTool(stateLoader, name);
+        if (entry) {
+          return executeExternalTool(entry, argumentsJson);
         }
       }
 
@@ -133,10 +127,9 @@ export function createCombinedRegistry(
 
       // 2. Check external tools
       if (stateLoader && name.includes(".")) {
-        const externalTools = externalToolRegistry.getTools(stateLoader);
-        const isExternalTool = externalTools.some((t) => t.name === name);
-        if (isExternalTool) {
-          return externalToolRegistry.isMutating(stateLoader, name);
+        const entry = externalToolRegistry.getTool(stateLoader, name);
+        if (entry) {
+          return entry.def.mutatesState ?? false;
         }
       }
 
