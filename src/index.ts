@@ -74,7 +74,7 @@ export async function startCortexRuntime(
     stateLoader,
   });
 
-  const server = deps.startServer(config, thalamus);
+  const server = deps.startServer(config, thalamus, stateLoader);
   deps.log(`listening on http://${config.host}:${config.port}`);
 
   // Create channel registry (needed by built-in tools)
