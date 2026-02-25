@@ -743,6 +743,6 @@ describe("approval gate - processing loop integration", () => {
 
     const payload = JSON.parse(outbox[0].payload_json!);
     expect(payload.buttons).toHaveLength(2);
-    expect(payload.buttons[0].callback_data).toContain(approval.id);
+    expect(payload.buttons[0].data).toContain(approval.id);
   });
 });

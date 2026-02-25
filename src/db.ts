@@ -14,7 +14,7 @@
  * Tests can override via initDatabase(":memory:").
  */
 
-import type { Database } from "bun:sqlite";
+import { Database } from "bun:sqlite";
 import { getDataDir } from "@shetty4l/core/config";
 import { createDatabaseManager } from "@shetty4l/core/db";
 import { createLogger } from "@shetty4l/core/log";
@@ -73,6 +73,86 @@ export function closeDatabase(): void {
 /** Reset the singleton for tests without closing. */
 export function resetDatabase(): void {
   dbManager.reset();
+}
+
+// --- Connection Pool ---
+
+/**
+ * ConnectionPool: Manages multiple independent database connections.
+ *
+ * SQLite WAL mode allows concurrent reads but only one write at a time.
+ * When using `BEGIN IMMEDIATE` (as StateLoader.transaction does), the
+ * transaction acquires the write lock immediately, blocking other writers.
+ *
+ * Problem: If two components share one StateLoader and both call
+ * transaction() concurrently, SQLite throws "cannot start a transaction
+ * within a transaction".
+ *
+ * Solution: Each logical consumer (e.g., "main" for processing loop,
+ * "channels" for channel sync) gets its own Database connection and
+ * StateLoader. This allows concurrent transactions on separate connections.
+ *
+ * Usage:
+ * ```ts
+ * const pool = createConnectionPool(dbPath);
+ * const mainLoader = pool.getLoader("main");
+ * const channelLoader = pool.getLoader("channels");
+ * // ...
+ * pool.closeAll(); // on shutdown
+ * ```
+ */
+export interface ConnectionPool {
+  /** Get or create a database connection for a consumer. */
+  getConnection(consumerId: string): Database;
+  /** Get or create a StateLoader for a consumer. */
+  getLoader(consumerId: string): StateLoader;
+  /** Close all connections in the pool. */
+  closeAll(): void;
+}
+
+/**
+ * Create a connection pool for the given database path.
+ *
+ * Each consumer ID gets a separate connection with WAL mode enabled.
+ * Connections are lazily created on first access.
+ */
+export function createConnectionPool(dbPath: string): ConnectionPool {
+  const connections = new Map<string, Database>();
+  const loaders = new Map<string, StateLoader>();
+
+  return {
+    getConnection(consumerId: string): Database {
+      let conn = connections.get(consumerId);
+      if (!conn) {
+        conn = new Database(dbPath);
+        // Enable WAL mode for concurrent read/write support
+        if (dbPath !== ":memory:") {
+          conn.exec("PRAGMA journal_mode = WAL;");
+        }
+        conn.exec("PRAGMA foreign_keys = ON");
+        connections.set(consumerId, conn);
+      }
+      return conn;
+    },
+
+    getLoader(consumerId: string): StateLoader {
+      let loader = loaders.get(consumerId);
+      if (!loader) {
+        const conn = this.getConnection(consumerId);
+        loader = new StateLoader(conn);
+        loaders.set(consumerId, loader);
+      }
+      return loader;
+    },
+
+    closeAll(): void {
+      for (const conn of connections.values()) {
+        conn.close();
+      }
+      connections.clear();
+      loaders.clear();
+    },
+  };
 }
 
 // --- Utility functions ---
