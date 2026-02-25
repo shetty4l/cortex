@@ -298,7 +298,10 @@ describe("POST /receive", () => {
     expect(row.channel).toBe(payload.channel);
     expect(row.status).toBe("pending");
     expect(typeof row.occurred_at).toBe("number");
-    expect(typeof row.created_at).toBe("number");
+    // created_at may be number (legacy) or ISO string (StateLoader)
+    expect(
+      typeof row.created_at === "number" || typeof row.created_at === "string",
+    ).toBe(true);
   });
 
   test("stores optional metadata", async () => {

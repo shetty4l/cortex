@@ -1,12 +1,17 @@
 import { createLogger } from "@shetty4l/core/log";
+import { StateLoader } from "@shetty4l/core/state";
+import { getDatabase } from "../db";
+import { enqueueInboxMessage } from "../inbox";
 import {
   deleteProcessedBuffers,
-  type EnqueueResult,
-  enqueueInboxMessage,
   getUnprocessedBuffers,
   insertReceptorBuffer,
-} from "../db";
-import { ReceptorCursorState, type StateLoader, ThalamusState } from "../state";
+} from "../receptor-buffers";
+import {
+  type StateLoader as IStateLoader,
+  ReceptorCursorState,
+  ThalamusState,
+} from "../state";
 import { chat } from "../synapse";
 import { listTopics } from "../topics";
 import { formatChannelData } from "./formatters";
@@ -41,7 +46,7 @@ export interface ThalamusConfig {
   thalamusModels: string[];
   synapseTimeoutMs: number;
   syncIntervalMs: number;
-  stateLoader: StateLoader;
+  stateLoader: IStateLoader;
 }
 
 // --- Static channel priority map ---
@@ -70,7 +75,7 @@ export interface SyncResult {
 
 export class Thalamus {
   private syncTimer: ReturnType<typeof setInterval> | null = null;
-  private stateLoader: StateLoader | null = null;
+  private stateLoader: IStateLoader | null = null;
   private thalamusState: ThalamusState | null = null;
 
   constructor(private config?: ThalamusConfig) {
@@ -78,6 +83,18 @@ export class Thalamus {
       this.stateLoader = config.stateLoader;
       this.thalamusState = config.stateLoader.load(ThalamusState, "singleton");
     }
+  }
+
+  /**
+   * Get or create a StateLoader for backward compatibility.
+   * Uses the configured stateLoader if available, otherwise creates one from getDatabase().
+   */
+  private getStateLoaderOrFallback(): IStateLoader {
+    if (this.stateLoader) {
+      return this.stateLoader;
+    }
+    // Fallback for backward compatibility when no config provided
+    return new StateLoader(getDatabase());
   }
 
   /** Returns the timestamp of the last syncAll() run, or null if never run. */
@@ -121,7 +138,7 @@ export class Thalamus {
     }
 
     try {
-      const buffers = getUnprocessedBuffers();
+      const buffers = getUnprocessedBuffers(this.stateLoader!);
       if (buffers.length === 0) {
         log("thalamus syncAll: no buffered data");
         return { ok: true, groups: 0, buffers: 0 };
@@ -143,7 +160,9 @@ export class Thalamus {
     }
 
     try {
-      const buffers = getUnprocessedBuffers({ channel: channelName });
+      const buffers = getUnprocessedBuffers(this.stateLoader!, {
+        channel: channelName,
+      });
       if (buffers.length === 0) {
         log(`thalamus syncChannel(${channelName}): no buffered data`);
         return { ok: true, groups: 0, buffers: 0 };
@@ -159,7 +178,12 @@ export class Thalamus {
   }
 
   private async processBuffers(
-    buffers: ReturnType<typeof getUnprocessedBuffers>,
+    buffers: Array<{
+      id: string;
+      channel: string;
+      content: string;
+      occurred_at: number;
+    }>,
   ): Promise<number> {
     const config = this.config!;
 
@@ -173,7 +197,7 @@ export class Thalamus {
       items.push({
         id: buf.id,
         content: buf.content,
-        occurredAt: buf.occurredAt,
+        occurredAt: buf.occurred_at,
       });
       grouped.set(buf.channel, items);
     }
@@ -252,7 +276,7 @@ export class Thalamus {
       const idempotencyHash = [...item.rawBufferIds].sort().join(",");
       const idempotencyKey = `thalamus-sync:${item.topicKey}:${idempotencyHash}`;
 
-      enqueueInboxMessage({
+      enqueueInboxMessage(this.stateLoader!, {
         channel: "thalamus",
         externalMessageId: idempotencyKey,
         topicKey: item.topicKey,
@@ -279,7 +303,7 @@ export class Thalamus {
 
     // Delete processed buffers
     const allIds = buffers.map((b) => b.id);
-    deleteProcessedBuffers(allIds);
+    deleteProcessedBuffers(this.stateLoader!, allIds);
 
     log(
       `thalamus sync complete: ${items.length} groups created from ${buffers.length} buffers`,
@@ -298,10 +322,13 @@ export class Thalamus {
   receive(payload: ReceivePayload): ReceiveResult {
     const { channel, externalId, data, occurredAt, metadata, mode } = payload;
 
+    // Use configured stateLoader or create fallback for backward compatibility
+    const loader = this.getStateLoaderOrFallback();
+
     // Buffered mode: write to receptor_buffers, skip inbox
     if (mode === "buffered") {
       const text = formatChannelData(channel, data);
-      const result = insertReceptorBuffer({
+      const result = insertReceptorBuffer(loader, {
         channel,
         externalId,
         content: text,
@@ -336,7 +363,7 @@ export class Thalamus {
 
     const occurredAtMs = new Date(occurredAt).getTime();
 
-    const result: EnqueueResult = enqueueInboxMessage({
+    const result = enqueueInboxMessage(loader, {
       channel,
       externalMessageId: externalId,
       topicKey,
@@ -348,6 +375,6 @@ export class Thalamus {
       priority,
     });
 
-    return { eventId: result.eventId, duplicate: result.duplicate };
+    return { eventId: result.id, duplicate: result.duplicate };
   }
 }

@@ -1,15 +1,40 @@
-import { getDatabase } from "../db";
+/**
+ * Task management using StateLoader collection persistence.
+ *
+ * Tasks are tracked items linked to topics with status and due dates.
+ */
 
-export interface Task {
-  id: string;
-  topic_id: string;
-  title: string;
-  description: string | null;
-  status: string;
-  due_at: number | null;
-  completed_at: number | null;
-  created_at: number;
-  updated_at: number;
+import {
+  CollectionEntity,
+  CollectionField as Field,
+  Id,
+  Index,
+  PersistedCollection,
+  type StateLoader,
+} from "@shetty4l/core/state";
+
+/**
+ * Task entity persisted to SQLite via StateLoader.
+ *
+ * Uses @PersistedCollection for multi-row table storage with explicit save().
+ */
+@PersistedCollection("tasks")
+export class Task extends CollectionEntity {
+  @Id() id: string = "";
+  @Field("string") @Index() topic_id: string = "";
+  @Field("string") title: string = "";
+  @Field("string") description: string | null = null;
+  @Field("string") @Index() status: string = "pending";
+  @Field("number") @Index() due_at: number | null = null;
+  @Field("number") completed_at: number | null = null;
+
+  async save(): Promise<void> {
+    throw new Error("Not bound to StateLoader");
+  }
+
+  async delete(): Promise<void> {
+    throw new Error("Not bound to StateLoader");
+  }
 }
 
 export interface CreateTaskInput {
@@ -19,78 +44,144 @@ export interface CreateTaskInput {
   due_at?: number;
 }
 
-export function createTask(input: CreateTaskInput): Task {
-  const db = getDatabase();
-  const now = Date.now();
-  const id = crypto.randomUUID();
-  db.prepare(
-    `INSERT INTO tasks (id, topic_id, title, description, due_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.topic_id,
-    input.title,
-    input.description ?? null,
-    input.due_at ?? null,
-    now,
-    now,
-  );
-  return db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as Task;
+/**
+ * Create a new task.
+ */
+export function createTask(
+  stateLoader: StateLoader,
+  input: CreateTaskInput,
+): Task {
+  return stateLoader.create(Task, {
+    id: crypto.randomUUID(),
+    topic_id: input.topic_id,
+    title: input.title,
+    description: input.description ?? null,
+    status: "pending",
+    due_at: input.due_at ?? null,
+    completed_at: null,
+  });
 }
 
-export function getTask(id: string): Task | null {
-  const db = getDatabase();
-  return (
-    (db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as Task) ?? null
-  );
+/**
+ * Get a task by ID.
+ */
+export function getTask(stateLoader: StateLoader, id: string): Task | null {
+  return stateLoader.get(Task, id);
 }
 
-export function listTasks(opts?: {
-  topicId?: string;
-  status?: string;
-}): Task[] {
-  const db = getDatabase();
-  const conditions: string[] = [];
-  const values: (string | number | null)[] = [];
+/**
+ * List tasks, optionally filtered by topic ID and/or status.
+ */
+export function listTasks(
+  stateLoader: StateLoader,
+  opts?: {
+    topicId?: string;
+    status?: string;
+  },
+): Task[] {
+  const where: Record<string, unknown> = {};
   if (opts?.topicId) {
-    conditions.push("topic_id = ?");
-    values.push(opts.topicId);
+    where.topic_id = opts.topicId;
   }
   if (opts?.status) {
-    conditions.push("status = ?");
-    values.push(opts.status);
+    where.status = opts.status;
   }
-  const where =
-    conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  return db
-    .prepare(`SELECT * FROM tasks ${where} ORDER BY created_at DESC`)
-    .all(...values) as Task[];
+
+  return stateLoader.find(Task, {
+    where,
+    orderBy: { id: "desc" },
+  });
 }
 
-export function updateTask(
+/**
+ * Update a task's fields.
+ */
+export async function updateTask(
+  stateLoader: StateLoader,
   id: string,
   updates: Partial<Pick<Task, "title" | "description" | "status" | "due_at">>,
-): void {
-  const db = getDatabase();
-  const fields: string[] = [];
-  const values: (string | number | null)[] = [];
-  for (const [key, value] of Object.entries(updates)) {
-    fields.push(`${key} = ?`);
-    values.push(value as string | number | null);
-  }
-  if (fields.length === 0) return;
-  fields.push("updated_at = ?");
-  values.push(Date.now());
-  values.push(id);
-  db.prepare(`UPDATE tasks SET ${fields.join(", ")} WHERE id = ?`).run(
-    ...values,
-  );
+): Promise<void> {
+  const task = stateLoader.get(Task, id);
+  if (!task) return;
+
+  if (updates.title !== undefined) task.title = updates.title;
+  if (updates.description !== undefined) task.description = updates.description;
+  if (updates.status !== undefined) task.status = updates.status;
+  if (updates.due_at !== undefined) task.due_at = updates.due_at;
+
+  await task.save();
 }
 
-export function completeTask(id: string): void {
-  const db = getDatabase();
+/**
+ * Mark a task as completed.
+ */
+export async function completeTask(
+  stateLoader: StateLoader,
+  id: string,
+): Promise<void> {
+  const task = stateLoader.get(Task, id);
+  if (!task) return;
+
+  task.status = "completed";
+  task.completed_at = Date.now();
+  await task.save();
+}
+
+/**
+ * Get tasks that are past their due date.
+ * Returns tasks with status 'pending' or 'in_progress' where due_at < now.
+ *
+ * Boundary: Tasks with due_at exactly equal to now are considered "due soon"
+ * (handled by getTasksDueSoon), not overdue.
+ */
+export function getOverdueTasks(stateLoader: StateLoader): Task[] {
   const now = Date.now();
-  db.prepare(
-    "UPDATE tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?",
-  ).run(now, now, id);
+  // Query for tasks with active statuses and overdue (strictly less than now)
+  const pendingTasks = stateLoader.find(Task, {
+    where: {
+      status: { op: "in", value: ["pending", "in_progress"] } as unknown as {
+        op: "in";
+        value: string;
+      },
+      due_at: { op: "lt", value: now },
+    },
+    orderBy: { due_at: "asc" },
+  });
+
+  // Filter out null due_at (isNotNull isn't combinable with lt in single where)
+  return pendingTasks.filter((t) => t.due_at !== null);
+}
+
+/**
+ * Get tasks due within a specified time window (but not yet overdue).
+ * Returns tasks with status 'pending' or 'in_progress' where due_at is between now and now + withinMs (inclusive).
+ *
+ * Boundary: Tasks with due_at exactly equal to now ARE included here (not in getOverdueTasks).
+ *
+ * @param withinMs Time window in milliseconds (e.g., 86400000 for 24 hours)
+ */
+export function getTasksDueSoon(
+  stateLoader: StateLoader,
+  withinMs: number,
+): Task[] {
+  const now = Date.now();
+  const deadline = now + withinMs;
+
+  // StateLoader find() doesn't support compound range queries (>= now AND <= deadline)
+  // So we filter in memory after fetching tasks due before deadline
+  const tasksDueBeforeDeadline = stateLoader.find(Task, {
+    where: {
+      status: { op: "in", value: ["pending", "in_progress"] } as unknown as {
+        op: "in";
+        value: string;
+      },
+      due_at: { op: "lte", value: deadline },
+    },
+    orderBy: { due_at: "asc" },
+  });
+
+  // Filter to only tasks due at or after now (not yet overdue)
+  return tasksDueBeforeDeadline.filter(
+    (t) => t.due_at !== null && t.due_at >= now,
+  );
 }

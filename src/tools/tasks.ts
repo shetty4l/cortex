@@ -74,7 +74,7 @@ function createTasksCreateTool(stateLoader: StateLoader): BuiltinTool {
 
       const dueAt = args.due_at ? new Date(args.due_at).getTime() : undefined;
 
-      const task = createTask({
+      const task = createTask(stateLoader, {
         topic_id: topic.id,
         title: args.title,
         description: args.description,
@@ -134,7 +134,7 @@ function createTasksListTool(stateLoader: StateLoader): BuiltinTool {
         topicId = topic.id;
       }
 
-      const tasks = listTasks({
+      const tasks = listTasks(stateLoader, {
         topicId,
         status: args.status,
       });
@@ -157,7 +157,7 @@ function createTasksListTool(stateLoader: StateLoader): BuiltinTool {
 
 // --- tasks_complete ---
 
-function createTasksCompleteTool(): BuiltinTool {
+function createTasksCompleteTool(stateLoader: StateLoader): BuiltinTool {
   return {
     definition: {
       name: "tasks_complete",
@@ -182,12 +182,12 @@ function createTasksCompleteTool(): BuiltinTool {
         return err("id is required and must be a string");
       }
 
-      const task = getTask(args.id);
+      const task = getTask(stateLoader, args.id);
       if (!task) {
         return err(`task not found: ${args.id}`);
       }
 
-      completeTask(args.id);
+      await completeTask(stateLoader, args.id);
 
       return ok({
         content: JSON.stringify({
@@ -202,7 +202,7 @@ function createTasksCompleteTool(): BuiltinTool {
 
 // --- tasks_update ---
 
-function createTasksUpdateTool(): BuiltinTool {
+function createTasksUpdateTool(stateLoader: StateLoader): BuiltinTool {
   return {
     definition: {
       name: "tasks_update",
@@ -250,7 +250,7 @@ function createTasksUpdateTool(): BuiltinTool {
         return err("id is required and must be a string");
       }
 
-      const task = getTask(args.id);
+      const task = getTask(stateLoader, args.id);
       if (!task) {
         return err(`task not found: ${args.id}`);
       }
@@ -273,9 +273,9 @@ function createTasksUpdateTool(): BuiltinTool {
         return err("no fields to update");
       }
 
-      updateTask(args.id, updates);
+      await updateTask(stateLoader, args.id, updates);
 
-      const updated = getTask(args.id);
+      const updated = getTask(stateLoader, args.id);
       return ok({
         content: JSON.stringify({
           id: updated!.id,
@@ -298,7 +298,7 @@ export function createTaskTools(stateLoader: StateLoader): BuiltinTool[] {
   return [
     createTasksCreateTool(stateLoader),
     createTasksListTool(stateLoader),
-    createTasksCompleteTool(),
-    createTasksUpdateTool(),
+    createTasksCompleteTool(stateLoader),
+    createTasksUpdateTool(stateLoader),
   ];
 }

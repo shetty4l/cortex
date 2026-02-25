@@ -46,7 +46,12 @@ describe("brain stub lifecycle", () => {
 
     test("fire does not throw", async () => {
       const t = new Tick();
-      await expect(t.fire()).resolves.toBeUndefined();
+      const result = await t.fire();
+      expect(result).toEqual({
+        scheduledEventsFired: 0,
+        overdueWarningsCreated: 0,
+        dueSoonWarningsCreated: 0,
+      });
     });
   });
 

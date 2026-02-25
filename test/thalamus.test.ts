@@ -7,15 +7,15 @@ import {
   expect,
   test,
 } from "bun:test";
+import { StateLoader } from "@shetty4l/core/state";
+import { closeDatabase, getDatabase, initDatabase } from "../src/db";
+import { claimNextInboxMessage, getInboxMessage } from "../src/inbox";
 import {
-  claimNextInboxMessage,
-  closeDatabase,
-  getDatabase,
+  getReceptorBuffer,
   getUnprocessedBuffers,
-  initDatabase,
   insertReceptorBuffer,
-} from "../src/db";
-import { ReceptorCursorState, StateLoader, ThalamusState } from "../src/state";
+} from "../src/receptor-buffers";
+import { ReceptorCursorState, ThalamusState } from "../src/state";
 import {
   type ReceivePayload,
   Thalamus,
@@ -54,7 +54,14 @@ describe("thalamus.receive()", () => {
   beforeEach(() => {
     initDatabase(":memory:");
     stateLoader = new StateLoader(getDatabase());
-    thalamus = new Thalamus();
+    // Pass stateLoader to Thalamus so receive() uses the same loader as tests
+    thalamus = new Thalamus({
+      synapseUrl: "http://localhost:9999", // unused for receive()
+      thalamusModels: ["test-model"],
+      synapseTimeoutMs: 30000,
+      syncIntervalMs: 21_600_000,
+      stateLoader,
+    });
   });
 
   afterEach(async () => {
@@ -68,51 +75,36 @@ describe("thalamus.receive()", () => {
     const result = thalamus.receive(makePayload({ channel: "telegram" }));
     expect(result.duplicate).toBe(false);
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT priority FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { priority: number };
-    expect(row.priority).toBe(0);
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.priority).toBe(0);
   });
 
   test("assigns priority 0 for cli channel", () => {
     const result = thalamus.receive(makePayload({ channel: "cli" }));
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT priority FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { priority: number };
-    expect(row.priority).toBe(0);
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.priority).toBe(0);
   });
 
   test("assigns priority 2 for calendar channel", () => {
     const result = thalamus.receive(makePayload({ channel: "calendar" }));
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT priority FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { priority: number };
-    expect(row.priority).toBe(2);
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.priority).toBe(2);
   });
 
   test("assigns priority 3 for email channel", () => {
     const result = thalamus.receive(makePayload({ channel: "email" }));
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT priority FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { priority: number };
-    expect(row.priority).toBe(3);
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.priority).toBe(3);
   });
 
   test("assigns default priority 5 for unknown channel", () => {
     const result = thalamus.receive(makePayload({ channel: "unknown" }));
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT priority FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { priority: number };
-    expect(row.priority).toBe(5);
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.priority).toBe(5);
   });
 
   // --- Formatting tests ---
@@ -122,11 +114,8 @@ describe("thalamus.receive()", () => {
       makePayload({ channel: "cli", data: { text: "user input" } }),
     );
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT text FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { text: string };
-    expect(row.text).toBe("user input");
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.text).toBe("user input");
   });
 
   test("uses formatChannelData to format data into text (telegram)", () => {
@@ -134,11 +123,8 @@ describe("thalamus.receive()", () => {
       makePayload({ channel: "telegram", data: { text: "telegram message" } }),
     );
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT text FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { text: string };
-    expect(row.text).toBe("telegram message");
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.text).toBe("telegram message");
   });
 
   test("uses formatChannelData for calendar with events", () => {
@@ -152,23 +138,17 @@ describe("thalamus.receive()", () => {
       }),
     );
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT text FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { text: string };
-    expect(row.text).toContain("Calendar sync");
-    expect(row.text).toContain("Meeting");
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.text).toContain("Calendar sync");
+    expect(msg?.text).toContain("Meeting");
   });
 
   test("uses formatDefault (JSON.stringify) for unknown channel", () => {
     const data = { custom: "field", value: 42 };
     const result = thalamus.receive(makePayload({ channel: "unknown", data }));
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT text FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { text: string };
-    expect(row.text).toBe(JSON.stringify(data, null, 2));
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.text).toBe(JSON.stringify(data, null, 2));
   });
 
   // --- topicKey extraction ---
@@ -178,11 +158,8 @@ describe("thalamus.receive()", () => {
       makePayload({ data: { text: "msg", topicKey: "custom-topic" } }),
     );
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT topic_key FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { topic_key: string };
-    expect(row.topic_key).toBe("custom-topic");
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.topic_key).toBe("custom-topic");
   });
 
   test("uses channel name as topicKey when not in data", () => {
@@ -190,11 +167,8 @@ describe("thalamus.receive()", () => {
       makePayload({ channel: "telegram", data: { text: "no topic key" } }),
     );
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT topic_key FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { topic_key: string };
-    expect(row.topic_key).toBe("telegram");
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.topic_key).toBe("telegram");
   });
 
   // --- userId extraction ---
@@ -204,11 +178,8 @@ describe("thalamus.receive()", () => {
       makePayload({ data: { text: "msg", userId: "custom-user" } }),
     );
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT user_id FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { user_id: string };
-    expect(row.user_id).toBe("custom-user");
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.user_id).toBe("custom-user");
   });
 
   test("uses 'system' as userId when not in data", () => {
@@ -216,11 +187,8 @@ describe("thalamus.receive()", () => {
       makePayload({ data: { text: "no user id" } }),
     );
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT user_id FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { user_id: string };
-    expect(row.user_id).toBe("system");
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.user_id).toBe("system");
   });
 
   // --- Dedup ---
@@ -243,11 +211,8 @@ describe("thalamus.receive()", () => {
     const payload = makePayload({ channel: "cli", externalId: "my-ext-id" });
     const result = thalamus.receive(payload);
 
-    const db = getDatabase();
-    const row = db
-      .prepare("SELECT idempotency_key FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId }) as { idempotency_key: string };
-    expect(row.idempotency_key).toBe("cli:my-ext-id");
+    const msg = getInboxMessage(stateLoader, result.eventId);
+    expect(msg?.idempotency_key).toBe("cli:my-ext-id");
   });
 });
 
@@ -256,10 +221,19 @@ describe("thalamus.receive() with mode=buffered", () => {
 
   beforeEach(() => {
     initDatabase(":memory:");
-    thalamus = new Thalamus();
+    stateLoader = new StateLoader(getDatabase());
+    // Pass stateLoader to Thalamus so receive() uses the same loader as tests
+    thalamus = new Thalamus({
+      synapseUrl: "http://localhost:9999", // unused for receive()
+      thalamusModels: ["test-model"],
+      synapseTimeoutMs: 30000,
+      syncIntervalMs: 21_600_000,
+      stateLoader,
+    });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
@@ -269,19 +243,14 @@ describe("thalamus.receive() with mode=buffered", () => {
     );
     expect(result.duplicate).toBe(false);
 
-    const db = getDatabase();
     // Should be in receptor_buffers
-    const bufferRow = db
-      .prepare("SELECT id, channel FROM receptor_buffers WHERE id = $id")
-      .get({ $id: result.eventId }) as { id: string; channel: string } | null;
-    expect(bufferRow).not.toBeNull();
-    expect(bufferRow!.channel).toBe("calendar");
+    const buffer = getReceptorBuffer(stateLoader, result.eventId);
+    expect(buffer).not.toBeNull();
+    expect(buffer!.channel).toBe("calendar");
 
     // Should NOT be in inbox
-    const inboxRow = db
-      .prepare("SELECT id FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId });
-    expect(inboxRow).toBeNull();
+    const inbox = getInboxMessage(stateLoader, result.eventId);
+    expect(inbox).toBeNull();
   });
 
   test("returns eventId and duplicate=false for new entry", () => {
@@ -310,11 +279,8 @@ describe("thalamus.receive() with mode=buffered", () => {
     expect(result.duplicate).toBe(false);
     expect(result.eventId).toMatch(/^evt_/);
 
-    const db = getDatabase();
-    const inboxRow = db
-      .prepare("SELECT id FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId });
-    expect(inboxRow).not.toBeNull();
+    const inbox = getInboxMessage(stateLoader, result.eventId);
+    expect(inbox).not.toBeNull();
   });
 
   test("mode omitted still goes to inbox (backward compat)", () => {
@@ -322,11 +288,8 @@ describe("thalamus.receive() with mode=buffered", () => {
     expect(result.duplicate).toBe(false);
     expect(result.eventId).toMatch(/^evt_/);
 
-    const db = getDatabase();
-    const inboxRow = db
-      .prepare("SELECT id FROM inbox_messages WHERE id = $id")
-      .get({ $id: result.eventId });
-    expect(inboxRow).not.toBeNull();
+    const inbox = getInboxMessage(stateLoader, result.eventId);
+    expect(inbox).not.toBeNull();
   });
 });
 
@@ -414,13 +377,13 @@ describe("thalamus.syncAll()", () => {
 
   test("calls Synapse and creates inbox messages from buffered data", async () => {
     // Insert test buffers
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Meeting with Bob tomorrow",
       occurredAt: Date.now(),
     });
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-2",
       content: "Dentist on Friday",
@@ -443,7 +406,7 @@ describe("thalamus.syncAll()", () => {
     await thalamus.syncAll();
 
     // Inbox should have a message
-    const msg = claimNextInboxMessage();
+    const msg = await claimNextInboxMessage(stateLoader);
     expect(msg).not.toBeNull();
     expect(msg!.channel).toBe("thalamus");
     expect(msg!.topic_key).toBe("weekly-schedule");
@@ -457,18 +420,18 @@ describe("thalamus.syncAll()", () => {
     expect(metadata.rawBufferIds).toEqual(["rb_1", "rb_2"]);
 
     // Buffers should be deleted
-    const remaining = getUnprocessedBuffers();
+    const remaining = getUnprocessedBuffers(stateLoader);
     expect(remaining).toHaveLength(0);
   });
 
   test("groups buffers by channel in the prompt", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Meeting",
       occurredAt: Date.now(),
     });
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "email",
       externalId: "email-1",
       content: "Invoice",
@@ -496,7 +459,7 @@ describe("thalamus.syncAll()", () => {
   });
 
   test("handles Synapse failure gracefully — buffers NOT deleted", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Meeting",
@@ -513,22 +476,22 @@ describe("thalamus.syncAll()", () => {
     await thalamus.syncAll();
 
     // Buffers should still exist (not deleted on error)
-    const remaining = getUnprocessedBuffers();
+    const remaining = getUnprocessedBuffers(stateLoader);
     expect(remaining).toHaveLength(1);
 
     // No inbox messages created
-    const msg = claimNextInboxMessage();
+    const msg = await claimNextInboxMessage(stateLoader);
     expect(msg).toBeNull();
   });
 
   test("updates receptor cursors per channel", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Meeting",
       occurredAt: Date.now(),
     });
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "email",
       externalId: "email-1",
       content: "Invoice",
@@ -551,7 +514,7 @@ describe("thalamus.syncAll()", () => {
   });
 
   test("sends correct model and temperature to Synapse", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Meeting",
@@ -575,7 +538,7 @@ describe("thalamus.syncAll()", () => {
   });
 
   test("handles empty LLM items gracefully", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Nothing interesting",
@@ -588,16 +551,16 @@ describe("thalamus.syncAll()", () => {
     await thalamus.syncAll();
 
     // No inbox messages
-    const msg = claimNextInboxMessage();
+    const msg = await claimNextInboxMessage(stateLoader);
     expect(msg).toBeNull();
 
     // Buffers still cleaned up
-    const remaining = getUnprocessedBuffers();
+    const remaining = getUnprocessedBuffers(stateLoader);
     expect(remaining).toHaveLength(0);
   });
 
   test("retries with correction prompt on parse failure", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Meeting tomorrow",
@@ -644,17 +607,17 @@ describe("thalamus.syncAll()", () => {
     expect(callCount).toBe(2);
 
     // Inbox should have the message from retry
-    const msg = claimNextInboxMessage();
+    const msg = await claimNextInboxMessage(stateLoader);
     expect(msg).not.toBeNull();
     expect(msg!.topic_key).toBe("meeting");
 
     // Buffers should be deleted after successful retry
-    const remaining = getUnprocessedBuffers();
+    const remaining = getUnprocessedBuffers(stateLoader);
     expect(remaining).toHaveLength(0);
   });
 
   test("preserves buffers when all parse attempts fail", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Meeting tomorrow",
@@ -688,16 +651,16 @@ describe("thalamus.syncAll()", () => {
     expect(callCount).toBe(2);
 
     // No inbox messages created
-    const msg = claimNextInboxMessage();
+    const msg = await claimNextInboxMessage(stateLoader);
     expect(msg).toBeNull();
 
     // Buffers should be PRESERVED (not deleted)
-    const remaining = getUnprocessedBuffers();
+    const remaining = getUnprocessedBuffers(stateLoader);
     expect(remaining).toHaveLength(1);
   });
 
   test("uses lower temperature (0.1) on retry", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Meeting tomorrow",
@@ -737,7 +700,7 @@ describe("thalamus.syncAll()", () => {
   });
 
   test("includes correction prompt in retry request", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Meeting tomorrow",
@@ -804,13 +767,13 @@ describe("thalamus.syncChannel()", () => {
   });
 
   test("filters to specific channel only", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-1",
       content: "Calendar event",
       occurredAt: Date.now(),
     });
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "email",
       externalId: "email-1",
       content: "Email message",
@@ -836,13 +799,13 @@ describe("thalamus.syncChannel()", () => {
     expect(userMsg!.content).not.toContain("### Channel: email");
 
     // Calendar buffer deleted, email buffer still exists
-    const remaining = getUnprocessedBuffers();
+    const remaining = getUnprocessedBuffers(stateLoader);
     expect(remaining).toHaveLength(1);
     expect(remaining[0].channel).toBe("email");
   });
 
   test("returns early with no buffered data for channel", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "email",
       externalId: "email-1",
       content: "Email",
@@ -875,7 +838,7 @@ describe("thalamus.start()", () => {
 
   test("triggers immediate syncAll on startup", async () => {
     // Insert a buffer that should be processed on startup
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-startup-1",
       content: "Startup test event",
@@ -901,7 +864,7 @@ describe("thalamus.start()", () => {
   });
 
   test("does not sync on startup when config is missing", async () => {
-    insertReceptorBuffer({
+    insertReceptorBuffer(stateLoader, {
       channel: "calendar",
       externalId: "cal-startup-2",
       content: "Test event",

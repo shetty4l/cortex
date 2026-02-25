@@ -7,21 +7,12 @@ import {
   expect,
   test,
 } from "bun:test";
+import { StateLoader } from "@shetty4l/core/state";
 import type { CortexConfig } from "../src/config";
-import {
-  closeDatabase,
-  getDatabase,
-  initDatabase,
-  loadTurnsSinceCursor,
-  saveAgentTurns,
-  saveTurn,
-} from "../src/db";
+import { closeDatabase, getDatabase, initDatabase } from "../src/db";
 import { maybeExtract, trimToBudget } from "../src/extraction";
-import {
-  ExtractionCursorState,
-  StateLoader,
-  TopicSummaryState,
-} from "../src/state";
+import { ExtractionCursorState, TopicSummaryState } from "../src/state";
+import { loadTurnsSinceCursor, saveAgentTurns, saveTurn } from "../src/turns";
 
 // --- Mock Synapse server (extraction model) ---
 
@@ -187,10 +178,18 @@ function extractionResponse(
 }
 
 /** Save N turn pairs (does not touch extraction cursor). */
-function seedTurns(topicKey: string, count: number): void {
+async function seedTurns(topicKey: string, count: number): Promise<void> {
   for (let i = 0; i < count; i++) {
-    saveTurn(topicKey, "user", `User message ${i + 1}`);
-    saveTurn(topicKey, "assistant", `Assistant reply ${i + 1}`);
+    await saveTurn(stateLoader, {
+      topicKey,
+      role: "user",
+      content: `User message ${i + 1}`,
+    });
+    await saveTurn(stateLoader, {
+      topicKey,
+      role: "assistant",
+      content: `Assistant reply ${i + 1}`,
+    });
   }
 }
 
@@ -277,37 +276,65 @@ describe("extraction cursors (DB)", () => {
     expect(cursor.turns_since_extraction).toBe(0);
   });
 
-  test("loadTurnsSinceCursor returns turns after rowid", () => {
-    saveTurn("topic-1", "user", "Old message");
-    saveTurn("topic-1", "assistant", "Old reply");
+  test("loadTurnsSinceCursor returns turns after seq", async () => {
+    await saveTurn(stateLoader, {
+      topicKey: "topic-1",
+      role: "user",
+      content: "Old message",
+    });
+    await saveTurn(stateLoader, {
+      topicKey: "topic-1",
+      role: "assistant",
+      content: "Old reply",
+    });
 
-    // Get the rowid of the last old turn
-    const oldTurns = loadTurnsSinceCursor("topic-1", 0);
-    const lastOldRowid = oldTurns[oldTurns.length - 1].rowid;
+    // Get the seq of the last old turn
+    const oldTurns = loadTurnsSinceCursor(stateLoader, "topic-1", 0);
+    const lastOldSeq = oldTurns[oldTurns.length - 1].seq;
 
-    saveTurn("topic-1", "user", "New message");
-    saveTurn("topic-1", "assistant", "New reply");
+    await saveTurn(stateLoader, {
+      topicKey: "topic-1",
+      role: "user",
+      content: "New message",
+    });
+    await saveTurn(stateLoader, {
+      topicKey: "topic-1",
+      role: "assistant",
+      content: "New reply",
+    });
 
-    const newTurns = loadTurnsSinceCursor("topic-1", lastOldRowid);
+    const newTurns = loadTurnsSinceCursor(stateLoader, "topic-1", lastOldSeq);
     expect(newTurns).toHaveLength(2);
     expect(newTurns[0].content).toBe("New message");
     expect(newTurns[1].content).toBe("New reply");
   });
 
-  test("loadTurnsSinceCursor returns empty when no turns after cursor", () => {
-    saveTurn("topic-1", "user", "A message");
-    const turns = loadTurnsSinceCursor("topic-1", 0);
-    const lastRowid = turns[turns.length - 1].rowid;
+  test("loadTurnsSinceCursor returns empty when no turns after cursor", async () => {
+    await saveTurn(stateLoader, {
+      topicKey: "topic-1",
+      role: "user",
+      content: "A message",
+    });
+    const turns = loadTurnsSinceCursor(stateLoader, "topic-1", 0);
+    const lastSeq = turns[turns.length - 1].seq;
 
-    const newTurns = loadTurnsSinceCursor("topic-1", lastRowid);
+    const newTurns = loadTurnsSinceCursor(stateLoader, "topic-1", lastSeq);
     expect(newTurns).toHaveLength(0);
   });
 
-  test("loadTurnsSinceCursor isolates by topic", () => {
-    saveTurn("topic-a", "user", "Topic A message");
-    saveTurn("topic-b", "user", "Topic B message");
+  test("loadTurnsSinceCursor isolates by topic", async () => {
+    await saveTurn(stateLoader, {
+      topicKey: "topic-a",
+      role: "user",
+      content: "Topic A message",
+    });
+    await saveTurn(stateLoader, {
+      topicKey: "topic-b",
+      role: "user",
+      content: "Topic B message",
+    });
 
-    const turnsA = loadTurnsSinceCursor("topic-a", 0);
+    const turnsA = loadTurnsSinceCursor(stateLoader, "topic-a", 0);
     expect(turnsA).toHaveLength(1);
     expect(turnsA[0].content).toBe("Topic A message");
   });
@@ -691,7 +718,7 @@ describe("maybeExtract", () => {
     const config = testConfig({ extractionInterval: 1 });
 
     // Save an agent loop with tool calls (user → assistant+tool_calls → tool → final assistant)
-    saveAgentTurns("topic-tool", [
+    await saveAgentTurns(stateLoader, "topic-tool", [
       { role: "user", content: "What is 2+2?" },
       {
         role: "assistant",
@@ -806,8 +833,16 @@ describe("maybeExtract with oversized batches", () => {
     // Seed many turns with large content to exceed MAX_EXTRACTION_CHARS (50k)
     // Each turn pair is ~6k chars, so 10 pairs = ~60k chars (exceeds 50k budget)
     for (let i = 0; i < 10; i++) {
-      saveTurn("topic-1", "user", `Message ${i + 1}: ${"x".repeat(3000)}`);
-      saveTurn("topic-1", "assistant", `Reply ${i + 1}: ${"y".repeat(3000)}`);
+      await saveTurn(stateLoader, {
+        topicKey: "topic-1",
+        role: "user",
+        content: `Message ${i + 1}: ${"x".repeat(3000)}`,
+      });
+      await saveTurn(stateLoader, {
+        topicKey: "topic-1",
+        role: "assistant",
+        content: `Reply ${i + 1}: ${"y".repeat(3000)}`,
+      });
     }
 
     mockSynapseHandler = async (req: Request) => {
@@ -834,6 +869,7 @@ describe("maybeExtract with oversized batches", () => {
 
     // Verify all turns are behind the cursor
     const remaining = loadTurnsSinceCursor(
+      stateLoader,
       "topic-1",
       cursor.last_extracted_rowid,
     );
@@ -1033,8 +1069,16 @@ describe("topic summary generation", () => {
       return Response.json(extractionResponse([]));
     };
 
-    saveTurn("topic-1", "user", "I want to plan a trip to Japan");
-    saveTurn("topic-1", "assistant", "Great! When are you thinking of going?");
+    await saveTurn(stateLoader, {
+      topicKey: "topic-1",
+      role: "user",
+      content: "I want to plan a trip to Japan",
+    });
+    await saveTurn(stateLoader, {
+      topicKey: "topic-1",
+      role: "assistant",
+      content: "Great! When are you thinking of going?",
+    });
 
     await processAndExtract("topic-1", config);
 

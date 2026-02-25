@@ -20,7 +20,6 @@ import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
 import type { CortexConfig } from "./config";
-import { loadTurnsSinceCursor } from "./db";
 import { getDebugLogger } from "./debug-logger";
 import { recall, remember } from "./engram";
 import {
@@ -31,6 +30,7 @@ import {
 import type { ChatMessage } from "./synapse";
 import { chat } from "./synapse";
 import { getTraceId } from "./trace";
+import { loadTurnsSinceCursor } from "./turns";
 
 // --- Constants ---
 
@@ -97,7 +97,7 @@ export async function maybeExtract(
     `[${topicKey}] extraction triggered (${cursor.turnsSinceExtraction} turns since last)`,
   );
 
-  let afterRowid = cursor.lastExtractedRowid;
+  let afterSeq = cursor.lastExtractedRowid;
 
   // Loop to drain the backlog — each iteration processes up to
   // MAX_TURNS_PER_EXTRACTION turns, trimmed to fit within
@@ -113,8 +113,9 @@ export async function maybeExtract(
 
   while (true) {
     const loaded = loadTurnsSinceCursor(
+      stateLoader,
       topicKey,
-      afterRowid,
+      afterSeq,
       MAX_TURNS_PER_EXTRACTION,
     );
     if (loaded.length === 0) {
@@ -151,11 +152,11 @@ export async function maybeExtract(
     // assistant tool_calls are noise for summary generation.
     lastBatchTurns = extractableTurns;
 
-    const lastRowid = turns[turns.length - 1].rowid;
-    // Advance cursor and reset counter
-    cursor.lastExtractedRowid = lastRowid;
+    const lastSeq = turns[turns.length - 1].seq;
+    // Advance cursor and reset counter (lastExtractedRowid now stores seq)
+    cursor.lastExtractedRowid = lastSeq;
     cursor.turnsSinceExtraction = 0;
-    afterRowid = lastRowid;
+    afterSeq = lastSeq;
 
     // Continue draining if the batch was trimmed (more turns remain at
     // the same cursor position) or if the DB returned a full page
@@ -186,7 +187,7 @@ export async function maybeExtract(
  */
 async function extractBatch(
   topicKey: string,
-  turns: Array<{ role: string; content: string | null; rowid: number }>,
+  turns: Array<{ role: string; content: string | null; seq: number }>,
   config: CortexConfig,
 ): Promise<Result<void>> {
   // Recall existing memories for dedup context (graceful on failure)

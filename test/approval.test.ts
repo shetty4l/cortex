@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { StateLoader } from "@shetty4l/core/state";
 import {
   consumeApproval,
   getApprovalForTool,
@@ -7,7 +8,6 @@ import {
   resolveApproval,
 } from "../src/approval/index";
 import { closeDatabase, getDatabase, initDatabase } from "../src/db";
-import { StateLoader } from "../src/state";
 
 let stateLoader: StateLoader;
 
@@ -16,7 +16,8 @@ beforeEach(() => {
   stateLoader = new StateLoader(getDatabase());
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await stateLoader.flush();
   closeDatabase();
 });
 

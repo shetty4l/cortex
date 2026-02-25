@@ -6,18 +6,20 @@ import {
   expect,
   test,
 } from "bun:test";
+import { StateLoader } from "@shetty4l/core/state";
 import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
   computeBackoffDelay,
-  enqueueOutboxMessage,
   getDatabase,
-  getOutboxMessage,
   initDatabase,
 } from "../src/db";
+import { enqueueOutboxMessage, getOutboxMessage } from "../src/outbox";
 import { startServer } from "../src/server";
 
 const API_KEY = "test-poll-key";
+
+let stateLoader: StateLoader;
 
 function makeConfig(): CortexConfig {
   return {
@@ -114,6 +116,7 @@ describe("POST /outbox/poll", () => {
 
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
   });
 
   function post(body: unknown, token?: string) {
@@ -137,7 +140,7 @@ describe("POST /outbox/poll", () => {
       text: string;
     }> = {},
   ): string {
-    return enqueueOutboxMessage({
+    return enqueueOutboxMessage(stateLoader, {
       channel: overrides.channel ?? "telegram",
       topicKey: overrides.topicKey ?? "topic-1",
       text: overrides.text ?? "Hello from assistant",
@@ -279,7 +282,7 @@ describe("POST /outbox/poll", () => {
 
     await post({ channel: "telegram", leaseSeconds: 30 }, API_KEY);
 
-    const row = getOutboxMessage(outboxId);
+    const row = getOutboxMessage(stateLoader, outboxId);
     expect(row).not.toBeNull();
     expect(row!.status).toBe("leased");
     expect(row!.lease_token).toMatch(/^lease_/);
@@ -321,7 +324,7 @@ describe("POST /outbox/poll", () => {
     expect(body.messages[0].messageId).toBe(outboxId);
 
     // Attempts should now be 2
-    const row = getOutboxMessage(outboxId);
+    const row = getOutboxMessage(stateLoader, outboxId);
     expect(row!.attempts).toBe(2);
   });
 
@@ -343,7 +346,7 @@ describe("POST /outbox/poll", () => {
     expect(body.messages).toHaveLength(0);
 
     // Row should be dead
-    const row = getOutboxMessage(outboxId);
+    const row = getOutboxMessage(stateLoader, outboxId);
     expect(row!.status).toBe("dead");
     expect(row!.attempts).toBe(11);
     expect(row!.last_error).toBe("max attempts exceeded");
@@ -357,7 +360,7 @@ describe("POST /outbox/poll", () => {
     const before = Date.now();
     await post({ channel: "telegram" }, API_KEY);
 
-    const row = getOutboxMessage(outboxId);
+    const row = getOutboxMessage(stateLoader, outboxId);
     expect(row).not.toBeNull();
     // next_attempt_at should be in the future (backoff for attempt 1: ~4000-6000ms)
     expect(row!.next_attempt_at).toBeGreaterThan(before);
@@ -366,7 +369,7 @@ describe("POST /outbox/poll", () => {
   // --- Payload ---
 
   test("returns parsed payload from outbox message", async () => {
-    enqueueOutboxMessage({
+    enqueueOutboxMessage(stateLoader, {
       channel: "telegram",
       topicKey: "topic-1",
       text: "text with payload",
