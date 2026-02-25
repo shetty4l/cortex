@@ -33,7 +33,10 @@ const log = createLogger("cortex");
 
 // --- Helpers ---
 
-function requireAuth(req: Request, config: CortexConfig): Response | null {
+export function requireAuth(
+  req: Request,
+  config: CortexConfig,
+): Response | null {
   const authHeader = req.headers.get("authorization");
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return jsonError(401, "unauthorized");
@@ -396,7 +399,7 @@ export function startServer(
           }
         }
       } else if (url.pathname.startsWith("/tools/external/") && stateLoader) {
-        response = await routeExternalTools(req, url, stateLoader);
+        response = await routeExternalTools(req, url, stateLoader, config);
       }
 
       if (response && url.pathname !== "/stats") {
