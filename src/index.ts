@@ -15,6 +15,7 @@ import { loadConfig } from "./config";
 import { getDatabase, initDatabase } from "./db";
 import { initDebugLogger } from "./debug-logger";
 import { Hippocampus } from "./hippocampus";
+import { type EnqueueInboxInput, enqueueInboxMessage } from "./inbox";
 import { startProcessingLoop } from "./loop";
 import { RAS } from "./ras";
 import { startServer } from "./server";
@@ -31,11 +32,16 @@ import { VERSION } from "./version";
 const log = createLogger("cortex");
 
 interface RuntimeDeps {
-  startServer: typeof startServer;
+  startServer: (
+    config: CortexConfig,
+    thalamus?: Thalamus,
+    stateLoader?: StateLoader,
+  ) => ReturnType<typeof startServer>;
   startProcessingLoop: typeof startProcessingLoop;
   createChannelRegistry: (
     config: CortexConfig,
     thalamus?: Thalamus,
+    stateLoader?: StateLoader,
   ) => ChannelRegistry;
   log: (message: string) => void;
 }
@@ -43,9 +49,14 @@ interface RuntimeDeps {
 function defaultCreateChannelRegistry(
   _config: CortexConfig,
   _thalamus?: Thalamus,
+  stateLoader?: StateLoader,
 ): ChannelRegistry {
   const registry = new ChannelRegistry();
-  registry.register(new SilentChannel());
+  const silentChannel = new SilentChannel();
+  if (stateLoader) {
+    silentChannel.init(stateLoader);
+  }
+  registry.register(silentChannel);
   return registry;
 }
 
@@ -78,12 +89,12 @@ export async function startCortexRuntime(
   deps.log(`listening on http://${config.host}:${config.port}`);
 
   // Create channel registry (needed by built-in tools)
-  const channels = deps.createChannelRegistry(config, thalamus);
+  const channels = deps.createChannelRegistry(config, thalamus, stateLoader);
 
   // Create built-in tools with mutable per-message context
   const builtinCtx: BuiltinToolContext = { topicKey: "" };
   const builtinTools = [
-    createSendMessageTool(channels),
+    createSendMessageTool(channels, stateLoader),
     ...createTaskTools(stateLoader),
     ...createTopicTools(stateLoader),
   ];
@@ -105,6 +116,14 @@ export async function startCortexRuntime(
   await thalamus.start();
 
   const tick = new Tick();
+  tick.init({
+    config,
+    enqueueInboxMessage: (input: EnqueueInboxInput) =>
+      enqueueInboxMessage(stateLoader, input),
+    stateLoader,
+  });
+  await tick.start();
+
   const hippocampus = new Hippocampus();
   const ras = new RAS();
 
@@ -138,9 +157,12 @@ export async function run(): Promise<void> {
     debugPrompt: config.debugPrompt,
   });
 
-  const dbResult = initDatabase();
-  if (!dbResult.ok) {
-    log(dbResult.error);
+  try {
+    initDatabase();
+  } catch (e) {
+    log(
+      `Failed to initialize database: ${e instanceof Error ? e.message : String(e)}`,
+    );
     process.exit(1);
   }
 

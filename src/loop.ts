@@ -17,21 +17,27 @@
 import { createLogger } from "@shetty4l/core/log";
 import { runAgentLoop } from "./agent";
 import type { CortexConfig } from "./config";
-import {
-  claimNextInboxMessage,
-  completeInboxMessage,
-  enqueueOutboxMessage,
-  retryInboxMessage,
-} from "./db";
+import { getDatabase } from "./db";
 import { getDebugLogger } from "./debug-logger";
 import { recallDual } from "./engram";
 import { maybeExtract } from "./extraction";
-import { loadHistory, saveAgentHistory, saveTurnPair } from "./history";
+import {
+  loadHistoryWithLoader,
+  saveAgentHistoryWithLoader,
+  saveTurnPairWithLoader,
+} from "./history";
+import {
+  claimNextInboxMessage,
+  completeInboxMessage,
+  retryInboxMessage,
+} from "./inbox";
+import { enqueueOutboxMessage } from "./outbox";
 import { buildPrompt, loadAndRenderSystemPrompt } from "./prompt";
 import type { SkillRegistry } from "./skills";
 import {
   ExtractionCursorState,
-  type StateLoader,
+  type StateLoader as IStateLoader,
+  StateLoader,
   TopicSummaryState,
 } from "./state";
 import type { OpenAITool } from "./synapse";
@@ -94,7 +100,7 @@ export interface ProcessingLoopOptions {
   /** Mutable context shared with built-in tools (topicKey updated per message). */
   builtinContext?: BuiltinToolContext;
   /** StateLoader for persisted state classes. */
-  stateLoader?: StateLoader;
+  stateLoader?: IStateLoader;
 }
 
 /**
@@ -114,7 +120,12 @@ export function startProcessingLoop(
   const pollBusyMs = options?.pollBusyMs ?? DEFAULT_POLL_BUSY_MS;
   const pollIdleMs = options?.pollIdleMs ?? DEFAULT_POLL_IDLE_MS;
   const builtinCtx = options?.builtinContext;
-  const stateLoader = options?.stateLoader;
+
+  // Helper to get a StateLoader - uses provided one or creates from current database
+  // Creating from getDatabase() each time allows tests to re-init the database
+  const getLoader = (): IStateLoader => {
+    return options?.stateLoader ?? new StateLoader(getDatabase());
+  };
 
   if (!config.extractionModels) {
     log("extraction disabled — no extractionModels configured");
@@ -143,7 +154,10 @@ export function startProcessingLoop(
       let delay = pollIdleMs;
 
       try {
-        const message = claimNextInboxMessage();
+        // Get a fresh StateLoader on each iteration to handle test DB resets
+        const stateLoader = getLoader();
+
+        const message = await claimNextInboxMessage(stateLoader);
 
         if (message) {
           delay = pollBusyMs;
@@ -188,7 +202,7 @@ export function startProcessingLoop(
             );
 
             // 2. Load recent turn history
-            const turns = loadHistory(message.topic_key);
+            const turns = loadHistoryWithLoader(stateLoader, message.topic_key);
 
             // 3. Load topic summary (fast SQLite read via StateLoader)
             const topicSummary = stateLoader
@@ -275,10 +289,11 @@ export function startProcessingLoop(
                   role: "user" as const,
                   content: message.text,
                 };
-                saveAgentHistory(message.topic_key, [
-                  userMessage,
-                  ...agentResult.value.turns,
-                ]);
+                await saveAgentHistoryWithLoader(
+                  stateLoader,
+                  message.topic_key,
+                  [userMessage, ...agentResult.value.turns],
+                );
               } else {
                 ok = false;
                 responseText = "";
@@ -296,7 +311,12 @@ export function startProcessingLoop(
               if (result.ok) {
                 ok = true;
                 responseText = result.value.content;
-                saveTurnPair(message.topic_key, message.text, responseText);
+                await saveTurnPairWithLoader(
+                  stateLoader,
+                  message.topic_key,
+                  message.text,
+                  responseText,
+                );
               } else {
                 ok = false;
                 responseText = "";
@@ -332,13 +352,13 @@ export function startProcessingLoop(
               }
 
               // 8. Write to outbox
-              enqueueOutboxMessage({
+              enqueueOutboxMessage(stateLoader, {
                 channel: resolveOutputChannel(message.channel, config),
                 topicKey: message.topic_key,
                 text: responseText,
               });
 
-              completeInboxMessage(message.id, processingMs);
+              await completeInboxMessage(stateLoader, message.id, processingMs);
 
               const responsePreview =
                 responseText.length > 120
@@ -374,14 +394,20 @@ export function startProcessingLoop(
               }
 
               if (isTransientError(errorMsg!)) {
-                retryInboxMessage(
+                await retryInboxMessage(
+                  stateLoader,
                   message.id,
                   message.attempts,
                   config.inboxMaxAttempts,
                   errorMsg!,
                 );
               } else {
-                completeInboxMessage(message.id, processingMs, errorMsg);
+                await completeInboxMessage(
+                  stateLoader,
+                  message.id,
+                  processingMs,
+                  errorMsg,
+                );
               }
             }
           });

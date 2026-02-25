@@ -6,18 +6,19 @@ import {
   expect,
   test,
 } from "bun:test";
+import { StateLoader } from "@shetty4l/core/state";
 import type { CortexConfig } from "../src/config";
+import { closeDatabase, getDatabase, initDatabase } from "../src/db";
 import {
-  closeDatabase,
   enqueueOutboxMessage,
-  getDatabase,
   getOutboxMessage,
-  initDatabase,
   pollOutboxMessages,
-} from "../src/db";
+} from "../src/outbox";
 import { startServer } from "../src/server";
 
 const API_KEY = "test-ack-key";
+
+let stateLoader: StateLoader;
 
 function makeConfig(): CortexConfig {
   return {
@@ -70,6 +71,7 @@ describe("POST /outbox/ack", () => {
 
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
   });
 
   function post(body: unknown, token?: string) {
@@ -87,14 +89,23 @@ describe("POST /outbox/ack", () => {
   }
 
   /** Seed an outbox message and claim it, returning messageId + leaseToken. */
-  function seedAndClaim(): { messageId: string; leaseToken: string } {
-    const outboxId = enqueueOutboxMessage({
+  async function seedAndClaim(): Promise<{
+    messageId: string;
+    leaseToken: string;
+  }> {
+    const outboxId = enqueueOutboxMessage(stateLoader, {
       channel: "telegram",
       topicKey: "topic-1",
       text: "Hello",
     });
 
-    const results = pollOutboxMessages("telegram", 1, 60, 10);
+    const results = await pollOutboxMessages(
+      stateLoader,
+      "telegram",
+      1,
+      60,
+      10,
+    );
     expect(results).toHaveLength(1);
     expect(results[0].messageId).toBe(outboxId);
 
@@ -165,7 +176,7 @@ describe("POST /outbox/ack", () => {
   // --- Successful ack ---
 
   test("acks a leased message successfully", async () => {
-    const { messageId, leaseToken } = seedAndClaim();
+    const { messageId, leaseToken } = await seedAndClaim();
 
     const response = await post({ messageId, leaseToken }, API_KEY);
     expect(response.status).toBe(200);
@@ -175,12 +186,12 @@ describe("POST /outbox/ack", () => {
     expect(body.status).toBe("delivered");
 
     // Row should be delivered
-    const row = getOutboxMessage(messageId);
+    const row = getOutboxMessage(stateLoader, messageId);
     expect(row!.status).toBe("delivered");
   });
 
   test("idempotent re-ack returns already_delivered", async () => {
-    const { messageId, leaseToken } = seedAndClaim();
+    const { messageId, leaseToken } = await seedAndClaim();
 
     // First ack
     await post({ messageId, leaseToken }, API_KEY);
@@ -197,7 +208,7 @@ describe("POST /outbox/ack", () => {
   // --- Conflict cases ---
 
   test("returns 409 for wrong lease token", async () => {
-    const { messageId } = seedAndClaim();
+    const { messageId } = await seedAndClaim();
 
     const response = await post(
       { messageId, leaseToken: "lease_wrong" },
@@ -210,7 +221,7 @@ describe("POST /outbox/ack", () => {
   });
 
   test("returns 409 for expired lease", async () => {
-    const { messageId, leaseToken } = seedAndClaim();
+    const { messageId, leaseToken } = await seedAndClaim();
 
     // Manually expire the lease
     const db = getDatabase();
@@ -227,7 +238,7 @@ describe("POST /outbox/ack", () => {
   });
 
   test("returns 409 when acking a delivered message with different token", async () => {
-    const { messageId, leaseToken } = seedAndClaim();
+    const { messageId, leaseToken } = await seedAndClaim();
 
     // Ack successfully first
     await post({ messageId, leaseToken }, API_KEY);

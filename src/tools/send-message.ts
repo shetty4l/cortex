@@ -7,12 +7,28 @@
  */
 
 import { err, ok } from "@shetty4l/core/result";
+import {
+  type StateLoader as IStateLoader,
+  StateLoader,
+} from "@shetty4l/core/state";
 import type { ChannelRegistry } from "../channels";
-import { enqueueOutboxMessage } from "../db";
+import { getDatabase } from "../db";
+import { enqueueOutboxMessage } from "../outbox";
 import type { BuiltinTool, BuiltinToolContext } from "./index";
+
+// Internal shim StateLoader for backward compatibility in tests
+let _shimStateLoader: StateLoader | null = null;
+
+function getShimStateLoader(): StateLoader {
+  if (!_shimStateLoader) {
+    _shimStateLoader = new StateLoader(getDatabase());
+  }
+  return _shimStateLoader;
+}
 
 export function createSendMessageTool(
   channelRegistry: ChannelRegistry,
+  stateLoader?: IStateLoader,
 ): BuiltinTool {
   return {
     definition: {
@@ -58,7 +74,10 @@ export function createSendMessageTool(
         return err(`channel '${args.channel}' cannot deliver messages`);
       }
 
-      enqueueOutboxMessage({
+      // Use provided stateLoader or fall back to internal shim
+      const loader = stateLoader ?? getShimStateLoader();
+
+      enqueueOutboxMessage(loader, {
         channel: args.channel,
         topicKey: ctx.topicKey,
         text: args.text,

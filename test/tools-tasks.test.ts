@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { closeDatabase, getDatabase, initDatabase } from "../src/db";
 import { StateLoader } from "../src/state";
-import { getTask, listTasks } from "../src/tasks/index";
+import {
+  completeTask,
+  createTask,
+  getTask,
+  listTasks,
+} from "../src/tasks/index";
 import type { BuiltinToolContext } from "../src/tools";
 import { createTaskTools } from "../src/tools/tasks";
 import { createTopic, getTopicByKey } from "../src/topics/index";
@@ -90,7 +95,7 @@ describe("tasks_create tool", () => {
     );
 
     expect(result.ok).toBe(true);
-    const task = listTasks()[0];
+    const task = listTasks(stateLoader)[0];
     expect(task.topic_id).toBe(existing.id);
   });
 
@@ -150,9 +155,8 @@ describe("tasks_list tool", () => {
     const ctx: BuiltinToolContext = { topicKey: "" };
 
     // Create tasks via the underlying function
-    const { createTask } = await import("../src/tasks/index");
-    createTask({ topic_id: topic.id, title: "Task 1" });
-    createTask({ topic_id: topic.id, title: "Task 2" });
+    createTask(stateLoader, { topic_id: topic.id, title: "Task 1" });
+    createTask(stateLoader, { topic_id: topic.id, title: "Task 2" });
 
     const result = await tool.execute(JSON.stringify({}), ctx);
 
@@ -172,9 +176,8 @@ describe("tasks_list tool", () => {
       key: "topic-b",
       name: "Topic B",
     });
-    const { createTask } = await import("../src/tasks/index");
-    createTask({ topic_id: topic1.id, title: "Task A" });
-    createTask({ topic_id: topic2.id, title: "Task B" });
+    createTask(stateLoader, { topic_id: topic1.id, title: "Task A" });
+    createTask(stateLoader, { topic_id: topic2.id, title: "Task B" });
 
     const tool = getTool("tasks_list");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -197,10 +200,12 @@ describe("tasks_list tool", () => {
       key: "status-test",
       name: "Status Test",
     });
-    const { createTask, completeTask } = await import("../src/tasks/index");
-    const t1 = createTask({ topic_id: topic.id, title: "Pending" });
-    const t2 = createTask({ topic_id: topic.id, title: "Done" });
-    completeTask(t2.id);
+    const t1 = createTask(stateLoader, {
+      topic_id: topic.id,
+      title: "Pending",
+    });
+    const t2 = createTask(stateLoader, { topic_id: topic.id, title: "Done" });
+    await completeTask(stateLoader, t2.id);
 
     const tool = getTool("tasks_list");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -253,8 +258,10 @@ describe("tasks_complete tool", () => {
       key: "complete-test",
       name: "Complete Test",
     });
-    const { createTask } = await import("../src/tasks/index");
-    const task = createTask({ topic_id: topic.id, title: "To complete" });
+    const task = createTask(stateLoader, {
+      topic_id: topic.id,
+      title: "To complete",
+    });
 
     const tool = getTool("tasks_complete");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -269,7 +276,7 @@ describe("tasks_complete tool", () => {
     }
 
     // Verify in database
-    const fetched = getTask(task.id);
+    const fetched = getTask(stateLoader, task.id);
     expect(fetched!.status).toBe("completed");
     expect(fetched!.completed_at).not.toBeNull();
   });
@@ -304,8 +311,10 @@ describe("tasks_update tool", () => {
       key: "update-test",
       name: "Update Test",
     });
-    const { createTask } = await import("../src/tasks/index");
-    const task = createTask({ topic_id: topic.id, title: "Original" });
+    const task = createTask(stateLoader, {
+      topic_id: topic.id,
+      title: "Original",
+    });
 
     const tool = getTool("tasks_update");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -322,7 +331,7 @@ describe("tasks_update tool", () => {
     }
 
     // Verify in database
-    const fetched = getTask(task.id);
+    const fetched = getTask(stateLoader, task.id);
     expect(fetched!.title).toBe("Updated");
   });
 
@@ -331,8 +340,10 @@ describe("tasks_update tool", () => {
       key: "status-update",
       name: "Status Update",
     });
-    const { createTask } = await import("../src/tasks/index");
-    const task = createTask({ topic_id: topic.id, title: "Status task" });
+    const task = createTask(stateLoader, {
+      topic_id: topic.id,
+      title: "Status task",
+    });
 
     const tool = getTool("tasks_update");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -354,8 +365,10 @@ describe("tasks_update tool", () => {
       key: "due-update",
       name: "Due Update",
     });
-    const { createTask } = await import("../src/tasks/index");
-    const task = createTask({ topic_id: topic.id, title: "Due task" });
+    const task = createTask(stateLoader, {
+      topic_id: topic.id,
+      title: "Due task",
+    });
 
     const tool = getTool("tasks_update");
     const ctx: BuiltinToolContext = { topicKey: "" };
@@ -401,8 +414,10 @@ describe("tasks_update tool", () => {
       key: "no-update",
       name: "No Update",
     });
-    const { createTask } = await import("../src/tasks/index");
-    const task = createTask({ topic_id: topic.id, title: "No change" });
+    const task = createTask(stateLoader, {
+      topic_id: topic.id,
+      title: "No change",
+    });
 
     const tool = getTool("tasks_update");
     const ctx: BuiltinToolContext = { topicKey: "" };

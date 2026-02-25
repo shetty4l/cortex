@@ -11,28 +11,27 @@ import { unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ok } from "@shetty4l/core/result";
+import { StateLoader } from "@shetty4l/core/state";
 import type { CortexConfig } from "../src/config";
 import {
-  claimNextInboxMessage,
   closeDatabase,
   computeBackoffDelay,
-  enqueueInboxMessage,
   getDatabase,
-  getInboxMessage,
   initDatabase,
-  listOutboxMessagesByTopic,
-  loadRecentTurns,
-  retryInboxMessage,
 } from "../src/db";
+import {
+  claimNextInboxMessage,
+  enqueueInboxMessage,
+  getInboxMessage,
+  retryInboxMessage,
+} from "../src/inbox";
 import { isTransientError, startProcessingLoop } from "../src/loop";
+import { listOutboxMessagesByTopic } from "../src/outbox";
 import { DEFAULT_SYSTEM_PROMPT_TEMPLATE } from "../src/prompt";
 import type { SkillRegistry } from "../src/skills";
 import { createEmptyRegistry } from "../src/skills";
-import {
-  ExtractionCursorState,
-  StateLoader,
-  TopicSummaryState,
-} from "../src/state";
+import { ExtractionCursorState, TopicSummaryState } from "../src/state";
+import { loadRecentTurns } from "../src/turns";
 
 // --- StateLoader instance (initialized in beforeEach) ---
 
@@ -168,7 +167,7 @@ function ingestMessage(
   }> = {},
 ) {
   const id = crypto.randomUUID().slice(0, 8);
-  return enqueueInboxMessage({
+  return enqueueInboxMessage(stateLoader, {
     channel: overrides.channel ?? "test",
     externalMessageId: overrides.externalMessageId ?? `msg-${id}`,
     topicKey: overrides.topicKey ?? "topic-1",
@@ -236,19 +235,19 @@ describe("processing loop", () => {
     );
 
     await waitFor(() => {
-      const msg = getInboxMessage(eventId);
+      const msg = getInboxMessage(stateLoader, eventId);
       return msg?.status === "done";
     });
 
     await loop.stop();
 
     // Inbox message should be done
-    const inbox = getInboxMessage(eventId);
+    const inbox = getInboxMessage(stateLoader, eventId);
     expect(inbox?.status).toBe("done");
     expect(inbox?.error).toBeNull();
 
     // Outbox should have the assistant response
-    const outbox = listOutboxMessagesByTopic("topic-1");
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-1");
     expect(outbox).toHaveLength(1);
     expect(outbox[0].text).toBe("Hi there!");
     expect(outbox[0].channel).toBe("test");
@@ -318,22 +317,22 @@ describe("processing loop", () => {
     );
 
     await waitFor(() => {
-      const msg = getInboxMessage(id2);
+      const msg = getInboxMessage(stateLoader, id2);
       return msg?.status === "done";
     });
 
     await loop.stop();
 
     // Both should be done
-    expect(getInboxMessage(id1)?.status).toBe("done");
-    expect(getInboxMessage(id2)?.status).toBe("done");
+    expect(getInboxMessage(stateLoader, id1)?.status).toBe("done");
+    expect(getInboxMessage(stateLoader, id2)?.status).toBe("done");
 
     // First message was sent to Synapse first
     expect(responses[0]).toBe("First message");
     expect(responses[1]).toBe("Second message");
 
     // Both outbox messages present
-    const outbox = listOutboxMessagesByTopic("topic-a");
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-a");
     expect(outbox).toHaveLength(2);
   });
 
@@ -362,15 +361,15 @@ describe("processing loop", () => {
     );
 
     await waitFor(() => {
-      const a = getInboxMessage(id1);
-      const b = getInboxMessage(id2);
+      const a = getInboxMessage(stateLoader, id1);
+      const b = getInboxMessage(stateLoader, id2);
       return a?.status === "done" && b?.status === "done";
     });
 
     await loop.stop();
 
-    const outboxA = listOutboxMessagesByTopic("topic-a");
-    const outboxB = listOutboxMessagesByTopic("topic-b");
+    const outboxA = listOutboxMessagesByTopic(stateLoader, "topic-a");
+    const outboxB = listOutboxMessagesByTopic(stateLoader, "topic-b");
 
     expect(outboxA).toHaveLength(1);
     expect(outboxA[0].text).toBe("Echo: Topic A msg");
@@ -394,18 +393,18 @@ describe("processing loop", () => {
     );
 
     await waitFor(() => {
-      const msg = getInboxMessage(eventId);
+      const msg = getInboxMessage(stateLoader, eventId);
       return msg?.status === "failed";
     });
 
     await loop.stop();
 
-    const inbox = getInboxMessage(eventId);
+    const inbox = getInboxMessage(stateLoader, eventId);
     expect(inbox?.status).toBe("failed");
     expect(inbox?.error).toContain("400");
 
     // No outbox message should be written on failure
-    const outbox = listOutboxMessagesByTopic("topic-1");
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-1");
     expect(outbox).toHaveLength(0);
   });
 
@@ -440,11 +439,11 @@ describe("processing loop", () => {
 
     // First call: 502 → transient → retry (but with backoff delay)
     await waitFor(() => {
-      const msg = getInboxMessage(eventId);
+      const msg = getInboxMessage(stateLoader, eventId);
       return msg?.status === "pending" && msg.attempts > 0;
     });
 
-    const msg = getInboxMessage(eventId);
+    const msg = getInboxMessage(stateLoader, eventId);
     expect(msg?.status).toBe("pending");
     expect(msg?.error).toContain("502");
     // Message should have a future next_attempt_at (backoff)
@@ -453,7 +452,7 @@ describe("processing loop", () => {
     await loop.stop();
 
     // No outbox message yet — still retrying
-    const outbox = listOutboxMessagesByTopic("topic-transient");
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-transient");
     expect(outbox).toHaveLength(0);
   });
 
@@ -503,14 +502,14 @@ describe("processing loop", () => {
     );
 
     await waitFor(() => {
-      const msg = getInboxMessage(successId);
+      const msg = getInboxMessage(stateLoader, successId);
       return msg?.status === "done";
     });
 
     await loop.stop();
 
-    expect(getInboxMessage(failId)?.status).toBe("failed");
-    expect(getInboxMessage(successId)?.status).toBe("done");
+    expect(getInboxMessage(stateLoader, failId)?.status).toBe("failed");
+    expect(getInboxMessage(stateLoader, successId)?.status).toBe("done");
   });
 
   // --- Slice 4: Turn history tests ---
@@ -529,10 +528,12 @@ describe("processing loop", () => {
       makeFastLoop(),
     );
 
-    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await waitFor(
+      () => getInboxMessage(stateLoader, eventId)?.status === "done",
+    );
     await loop.stop();
 
-    const turns = loadRecentTurns("topic-turns");
+    const turns = loadRecentTurns(stateLoader, "topic-turns");
     expect(turns).toHaveLength(2);
     expect(turns[0].role).toBe("user");
     expect(turns[0].content).toBe("What is 2+2?");
@@ -557,10 +558,12 @@ describe("processing loop", () => {
       makeFastLoop(),
     );
 
-    await waitFor(() => getInboxMessage(eventId)?.status === "failed");
+    await waitFor(
+      () => getInboxMessage(stateLoader, eventId)?.status === "failed",
+    );
     await loop.stop();
 
-    const turns = loadRecentTurns("topic-fail");
+    const turns = loadRecentTurns(stateLoader, "topic-fail");
     expect(turns).toHaveLength(0);
   });
 
@@ -588,7 +591,7 @@ describe("processing loop", () => {
       createEmptyRegistry(),
       makeFastLoop(),
     );
-    await waitFor(() => getInboxMessage(id1)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, id1)?.status === "done");
 
     // Second message on same topic
     await Bun.sleep(5);
@@ -598,7 +601,7 @@ describe("processing loop", () => {
       externalMessageId: "msg-second",
     });
 
-    await waitFor(() => getInboxMessage(id2)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, id2)?.status === "done");
     await loop.stop();
 
     // First call: system + user only (no history yet)
@@ -640,7 +643,7 @@ describe("processing loop", () => {
       createEmptyRegistry(),
       makeFastLoop(),
     );
-    await waitFor(() => getInboxMessage(idA)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, idA)?.status === "done");
 
     // Message on topic-b
     await Bun.sleep(5);
@@ -650,7 +653,7 @@ describe("processing loop", () => {
       externalMessageId: "msg-b",
     });
 
-    await waitFor(() => getInboxMessage(idB)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, idB)?.status === "done");
     await loop.stop();
 
     // topic-b call should NOT include topic-a's turns
@@ -694,7 +697,9 @@ describe("processing loop", () => {
       makeFastLoop(),
     );
 
-    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await waitFor(
+      () => getInboxMessage(stateLoader, eventId)?.status === "done",
+    );
     await loop.stop();
 
     const messages = capturedBody.messages!;
@@ -720,10 +725,12 @@ describe("processing loop", () => {
       makeFastLoop(),
     );
 
-    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await waitFor(
+      () => getInboxMessage(stateLoader, eventId)?.status === "done",
+    );
     await loop.stop();
 
-    const outbox = listOutboxMessagesByTopic("topic-no-engram");
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-no-engram");
     expect(outbox).toHaveLength(1);
     expect(outbox[0].text).toBe("Still works!");
   });
@@ -749,7 +756,9 @@ describe("processing loop", () => {
       makeFastLoop(),
     );
 
-    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await waitFor(
+      () => getInboxMessage(stateLoader, eventId)?.status === "done",
+    );
     await loop.stop();
 
     // recallDual makes two calls: one with scope_id, one without
@@ -802,7 +811,9 @@ describe("processing loop", () => {
       makeFastLoop(),
     );
 
-    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await waitFor(
+      () => getInboxMessage(stateLoader, eventId)?.status === "done",
+    );
 
     // Give extraction time to complete (fire-and-forget)
     await Bun.sleep(500);
@@ -856,7 +867,7 @@ describe("processing loop", () => {
       createEmptyRegistry(),
       makeFastLoop(),
     );
-    await waitFor(() => getInboxMessage(idA)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, idA)?.status === "done");
     // Wait for extraction to start (it will be blocked)
     await waitFor(() => extractionCallCount >= 1);
 
@@ -867,7 +878,7 @@ describe("processing loop", () => {
       topicKey: "topic-inflight",
       externalMessageId: "msg-b-inflight",
     });
-    await waitFor(() => getInboxMessage(idB)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, idB)?.status === "done");
 
     // The cursor should have counted BOTH A's and B's turns even though
     // extraction was in-flight when B was processed.
@@ -937,7 +948,7 @@ describe("processing loop", () => {
       createEmptyRegistry(),
       makeFastLoop(),
     );
-    await waitFor(() => getInboxMessage(idA)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, idA)?.status === "done");
     await waitFor(() => extractionCallCount >= 1);
 
     // Message B processed while A's extraction is in-flight
@@ -947,7 +958,7 @@ describe("processing loop", () => {
       topicKey: "topic-catchup",
       externalMessageId: "msg-b-catchup",
     });
-    await waitFor(() => getInboxMessage(idB)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, idB)?.status === "done");
 
     // Release A's extraction so it completes
     resolveExtraction!();
@@ -960,7 +971,7 @@ describe("processing loop", () => {
       topicKey: "topic-catchup",
       externalMessageId: "msg-c-catchup",
     });
-    await waitFor(() => getInboxMessage(idC)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, idC)?.status === "done");
     await Bun.sleep(500);
     await loop.stop();
 
@@ -1012,15 +1023,15 @@ describe("processing loop", () => {
       makeFastLoop(),
     );
 
-    await waitFor(() => getInboxMessage(id2)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, id2)?.status === "done");
     await Bun.sleep(200);
     await loop.stop();
 
     // Both messages processed successfully despite extraction failures
-    expect(getInboxMessage(id1)?.status).toBe("done");
-    expect(getInboxMessage(id2)?.status).toBe("done");
+    expect(getInboxMessage(stateLoader, id1)?.status).toBe("done");
+    expect(getInboxMessage(stateLoader, id2)?.status).toBe("done");
 
-    const outbox = listOutboxMessagesByTopic("topic-ext-fail");
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-ext-fail");
     expect(outbox).toHaveLength(2);
   });
 
@@ -1065,7 +1076,7 @@ describe("processing loop", () => {
       createEmptyRegistry(),
       makeFastLoop(),
     );
-    await waitFor(() => getInboxMessage(id1)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, id1)?.status === "done");
     // Wait for fire-and-forget extraction + summary to complete
     await waitFor(() => getTopicSummary("topic-summary-e2e") !== null);
 
@@ -1079,7 +1090,7 @@ describe("processing loop", () => {
       topicKey: "topic-summary-e2e",
       externalMessageId: "msg-2-summary",
     });
-    await waitFor(() => getInboxMessage(id2)?.status === "done");
+    await waitFor(() => getInboxMessage(stateLoader, id2)?.status === "done");
     await loop.stop();
 
     // The conversation prompt for message 2 should include the topic summary
@@ -1168,15 +1179,17 @@ describe("processing loop", () => {
       makeFastLoop(),
     );
 
-    await waitFor(() => getInboxMessage(eventId)?.status === "done");
+    await waitFor(
+      () => getInboxMessage(stateLoader, eventId)?.status === "done",
+    );
     await loop.stop();
 
     // Inbox done, outbox has response
-    const inbox = getInboxMessage(eventId);
+    const inbox = getInboxMessage(stateLoader, eventId);
     expect(inbox?.status).toBe("done");
     expect(inbox?.error).toBeNull();
 
-    const outbox = listOutboxMessagesByTopic("topic-tools");
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-tools");
     expect(outbox).toHaveLength(1);
     expect(outbox[0].text).toBe("The greeting is: Hello, Watson!");
 
@@ -1185,7 +1198,7 @@ describe("processing loop", () => {
 
     // Tool turns saved to history:
     // user + assistant(tool_calls) + tool(result) + assistant(final)
-    const turns = loadRecentTurns("topic-tools");
+    const turns = loadRecentTurns(stateLoader, "topic-tools");
     expect(turns.length).toBeGreaterThanOrEqual(4);
 
     // Check roles in order
@@ -1219,14 +1232,14 @@ describe("processing loop", () => {
       getDatabase().exec(
         `UPDATE inbox_messages SET status = 'processing' WHERE id = '${eventId}'`,
       );
-      expect(getInboxMessage(eventId)?.status).toBe("processing");
+      expect(getInboxMessage(stateLoader, eventId)?.status).toBe("processing");
 
       // Re-init the database (simulates a restart) — should recover the message
       initDatabase(tmpDb);
       stateLoader = new StateLoader(getDatabase());
 
       // The message should be back to 'pending'
-      expect(getInboxMessage(eventId)?.status).toBe("pending");
+      expect(getInboxMessage(stateLoader, eventId)?.status).toBe("pending");
 
       // Processing loop should pick it up and complete it
       const loop = startProcessingLoop(
@@ -1235,11 +1248,13 @@ describe("processing loop", () => {
         makeFastLoop(),
       );
 
-      await waitFor(() => getInboxMessage(eventId)?.status === "done");
+      await waitFor(
+        () => getInboxMessage(stateLoader, eventId)?.status === "done",
+      );
       await loop.stop();
 
-      expect(getInboxMessage(eventId)?.status).toBe("done");
-      const outbox = listOutboxMessagesByTopic("topic-1");
+      expect(getInboxMessage(stateLoader, eventId)?.status).toBe("done");
+      const outbox = listOutboxMessagesByTopic(stateLoader, "topic-1");
       expect(outbox).toHaveLength(1);
       expect(outbox[0].text).toBe("Recovered!");
     } finally {
@@ -1313,16 +1328,20 @@ describe("isTransientError", () => {
 // --- retryInboxMessage tests ---
 
 describe("retryInboxMessage", () => {
+  let localStateLoader: StateLoader;
+
   beforeEach(() => {
     initDatabase(":memory:");
+    localStateLoader = new StateLoader(getDatabase());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await localStateLoader.flush();
     closeDatabase();
   });
 
-  test("schedules retry with exponential backoff", () => {
-    const { eventId } = enqueueInboxMessage({
+  test("schedules retry with exponential backoff", async () => {
+    const { eventId } = enqueueInboxMessage(localStateLoader, {
       channel: "test",
       externalMessageId: "msg-retry-1",
       topicKey: "topic-retry",
@@ -1333,14 +1352,20 @@ describe("retryInboxMessage", () => {
     });
 
     // Simulate the message being claimed (attempts = 1)
-    const claimed = claimNextInboxMessage();
+    const claimed = await claimNextInboxMessage(localStateLoader);
     expect(claimed).not.toBeNull();
     expect(claimed!.attempts).toBe(1);
 
     const beforeRetry = Date.now();
-    retryInboxMessage(eventId, 1, 5, "Synapse returned 429: rate limited");
+    await retryInboxMessage(
+      localStateLoader,
+      eventId,
+      1,
+      5,
+      "Synapse returned 429: rate limited",
+    );
 
-    const msg = getInboxMessage(eventId);
+    const msg = getInboxMessage(localStateLoader, eventId);
     expect(msg?.status).toBe("pending");
     expect(msg?.error).toContain("429");
     // Backoff for attempt 1: 2^0 * 5000 = 5000ms ±20% → [4000, 6000]
@@ -1349,8 +1374,8 @@ describe("retryInboxMessage", () => {
     expect(msg!.next_attempt_at - beforeRetry).toBeLessThanOrEqual(6000);
   });
 
-  test("marks as permanently failed when max attempts reached", () => {
-    const { eventId } = enqueueInboxMessage({
+  test("marks as permanently failed when max attempts reached", async () => {
+    const { eventId } = enqueueInboxMessage(localStateLoader, {
       channel: "test",
       externalMessageId: "msg-retry-max",
       topicKey: "topic-retry",
@@ -1360,9 +1385,15 @@ describe("retryInboxMessage", () => {
       idempotencyKey: "key-retry-max",
     });
 
-    retryInboxMessage(eventId, 5, 5, "Synapse returned 502: upstream error");
+    await retryInboxMessage(
+      localStateLoader,
+      eventId,
+      5,
+      5,
+      "Synapse returned 502: upstream error",
+    );
 
-    const msg = getInboxMessage(eventId);
+    const msg = getInboxMessage(localStateLoader, eventId);
     expect(msg?.status).toBe("failed");
     expect(msg?.error).toContain("502");
   });
@@ -1394,16 +1425,20 @@ describe("retryInboxMessage", () => {
 // --- claimNextInboxMessage + next_attempt_at tests ---
 
 describe("claimNextInboxMessage with next_attempt_at", () => {
+  let localStateLoader: StateLoader;
+
   beforeEach(() => {
     initDatabase(":memory:");
+    localStateLoader = new StateLoader(getDatabase());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await localStateLoader.flush();
     closeDatabase();
   });
 
-  test("skips messages with future next_attempt_at", () => {
-    const { eventId } = enqueueInboxMessage({
+  test("skips messages with future next_attempt_at", async () => {
+    const { eventId } = enqueueInboxMessage(localStateLoader, {
       channel: "test",
       externalMessageId: "msg-future",
       topicKey: "topic-future",
@@ -1420,12 +1455,12 @@ describe("claimNextInboxMessage with next_attempt_at", () => {
     );
 
     // Claim should return null — message isn't ready yet
-    const claimed = claimNextInboxMessage();
+    const claimed = await claimNextInboxMessage(localStateLoader);
     expect(claimed).toBeNull();
   });
 
-  test("claims messages with past next_attempt_at", () => {
-    const { eventId } = enqueueInboxMessage({
+  test("claims messages with past next_attempt_at", async () => {
+    const { eventId } = enqueueInboxMessage(localStateLoader, {
       channel: "test",
       externalMessageId: "msg-past",
       topicKey: "topic-past",
@@ -1441,13 +1476,13 @@ describe("claimNextInboxMessage with next_attempt_at", () => {
       `UPDATE inbox_messages SET next_attempt_at = ${pastTime} WHERE id = '${eventId}'`,
     );
 
-    const claimed = claimNextInboxMessage();
+    const claimed = await claimNextInboxMessage(localStateLoader);
     expect(claimed).not.toBeNull();
     expect(claimed!.id).toBe(eventId);
   });
 
-  test("claims messages with default next_attempt_at = 0", () => {
-    enqueueInboxMessage({
+  test("claims messages with default next_attempt_at = 0", async () => {
+    enqueueInboxMessage(localStateLoader, {
       channel: "test",
       externalMessageId: "msg-default",
       topicKey: "topic-default",
@@ -1458,7 +1493,7 @@ describe("claimNextInboxMessage with next_attempt_at", () => {
     });
 
     // Default next_attempt_at is 0 — should be immediately claimable
-    const claimed = claimNextInboxMessage();
+    const claimed = await claimNextInboxMessage(localStateLoader);
     expect(claimed).not.toBeNull();
     expect(claimed!.text).toBe("Default retry");
   });

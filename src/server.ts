@@ -21,11 +21,16 @@ import {
   jsonOk,
 } from "@shetty4l/core/http";
 import { createLogger } from "@shetty4l/core/log";
-import type { StateLoader } from "@shetty4l/core/state";
+import {
+  type StateLoader as IStateLoader,
+  StateLoader,
+} from "@shetty4l/core/state";
 import { timingSafeEqual } from "crypto";
 import type { CortexConfig } from "./config";
-import { ackOutboxMessage, getStats, pollOutboxMessages } from "./db";
+import { getDatabase } from "./db";
+import { ackOutboxMessage, pollOutboxMessages } from "./outbox";
 import { routeExternalTools } from "./routes/external-tools";
+import { getStats } from "./stats";
 import type { Thalamus } from "./thalamus";
 import { VERSION } from "./version";
 
@@ -233,6 +238,7 @@ function validatePollBody(body: PollRequestBody): string[] {
 async function handleOutboxPoll(
   req: Request,
   config: CortexConfig,
+  stateLoader: IStateLoader,
 ): Promise<Response> {
   const authError = requireAuth(req, config);
   if (authError) return authError;
@@ -268,7 +274,8 @@ async function handleOutboxPoll(
   const max = body.max ?? config.outboxPollDefaultBatch;
   const leaseSeconds = body.leaseSeconds ?? config.outboxLeaseSeconds;
 
-  const messages = pollOutboxMessages(
+  const messages = await pollOutboxMessages(
+    stateLoader,
     body.channel!,
     max,
     leaseSeconds,
@@ -291,6 +298,7 @@ interface AckRequestBody {
 async function handleOutboxAck(
   req: Request,
   config: CortexConfig,
+  stateLoader: IStateLoader,
 ): Promise<Response> {
   const authError = requireAuth(req, config);
   if (authError) return authError;
@@ -339,7 +347,11 @@ async function handleOutboxAck(
     return jsonOk({ error: "invalid_request", details }, 400);
   }
 
-  const result = ackOutboxMessage(body.messageId!, body.leaseToken!);
+  const result = await ackOutboxMessage(
+    stateLoader,
+    body.messageId!,
+    body.leaseToken!,
+  );
 
   switch (result) {
     case "delivered":
@@ -358,8 +370,14 @@ async function handleOutboxAck(
 export function startServer(
   config: CortexConfig,
   thalamus?: Thalamus,
-  stateLoader?: StateLoader,
+  stateLoader?: IStateLoader,
 ): HttpServer {
+  // Helper to get a StateLoader - uses provided one or creates from current database
+  // Creating from getDatabase() each time allows tests to re-init the database
+  const getLoader = (): IStateLoader => {
+    return stateLoader ?? new StateLoader(getDatabase());
+  };
+
   return createServer({
     name: "cortex",
     port: config.port,
@@ -371,7 +389,7 @@ export function startServer(
       let response: Response | null = null;
 
       if (req.method === "GET" && url.pathname === "/stats") {
-        response = jsonOk(getStats(thalamus));
+        response = jsonOk(getStats(getLoader(), thalamus));
       } else if (req.method === "POST" && url.pathname === "/ingest") {
         response = handleIngestDeprecated();
       } else if (req.method === "POST" && url.pathname === "/receive") {
@@ -381,9 +399,9 @@ export function startServer(
           response = await handleReceive(req, config, thalamus);
         }
       } else if (req.method === "POST" && url.pathname === "/outbox/poll") {
-        response = await handleOutboxPoll(req, config);
+        response = await handleOutboxPoll(req, config, getLoader());
       } else if (req.method === "POST" && url.pathname === "/outbox/ack") {
-        response = await handleOutboxAck(req, config);
+        response = await handleOutboxAck(req, config, getLoader());
       } else if (req.method === "POST" && url.pathname === "/thalamus/sync") {
         if (!thalamus) {
           response = jsonError(503, "Thalamus not initialized");

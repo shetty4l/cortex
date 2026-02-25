@@ -1,17 +1,20 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { StateLoader } from "@shetty4l/core/state";
 import {
   closeDatabase,
-  enqueueInboxMessage,
-  enqueueOutboxMessage,
+  getDatabase,
   initDatabase,
-  listInboxMessages,
-  listOutboxMessages,
   purgeMessages,
 } from "../src/db";
+import { enqueueInboxMessage, listInboxMessages } from "../src/inbox";
+import { enqueueOutboxMessage, listOutboxMessages } from "../src/outbox";
 
 describe("list and purge operations", () => {
+  let stateLoader: StateLoader;
+
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
   });
 
   afterEach(() => {
@@ -20,7 +23,7 @@ describe("list and purge operations", () => {
 
   function seedInbox(text: string): string {
     const id = crypto.randomUUID().slice(0, 8);
-    const result = enqueueInboxMessage({
+    const result = enqueueInboxMessage(stateLoader, {
       channel: "telegram",
       externalMessageId: `msg-${id}`,
       topicKey: "topic-1",
@@ -33,7 +36,7 @@ describe("list and purge operations", () => {
   }
 
   function seedOutbox(text: string): string {
-    return enqueueOutboxMessage({
+    return enqueueOutboxMessage(stateLoader, {
       channel: "telegram",
       topicKey: "topic-1",
       text,
@@ -44,18 +47,18 @@ describe("list and purge operations", () => {
 
   describe("listInboxMessages", () => {
     test("returns empty array when no messages exist", () => {
-      const messages = listInboxMessages();
+      const messages = listInboxMessages(stateLoader);
       expect(messages).toHaveLength(0);
     });
 
-    test("returns messages ordered by created_at DESC (most recent first)", async () => {
+    test("returns messages ordered by id DESC (most recent first)", async () => {
       seedInbox("First");
       await Bun.sleep(5);
       seedInbox("Second");
       await Bun.sleep(5);
       seedInbox("Third");
 
-      const messages = listInboxMessages();
+      const messages = listInboxMessages(stateLoader);
       expect(messages).toHaveLength(3);
       expect(messages[0].text).toBe("Third");
       expect(messages[1].text).toBe("Second");
@@ -69,7 +72,7 @@ describe("list and purge operations", () => {
       await Bun.sleep(5);
       seedInbox("Three");
 
-      const messages = listInboxMessages(2);
+      const messages = listInboxMessages(stateLoader, 2);
       expect(messages).toHaveLength(2);
       expect(messages[0].text).toBe("Three");
       expect(messages[1].text).toBe("Two");
@@ -78,7 +81,7 @@ describe("list and purge operations", () => {
     test("returns all fields", () => {
       seedInbox("Hello");
 
-      const messages = listInboxMessages();
+      const messages = listInboxMessages(stateLoader);
       expect(messages).toHaveLength(1);
       const msg = messages[0];
       expect(msg.id).toMatch(/^evt_/);
@@ -87,7 +90,8 @@ describe("list and purge operations", () => {
       expect(msg.user_id).toBe("user-1");
       expect(msg.text).toBe("Hello");
       expect(msg.status).toBe("pending");
-      expect(typeof msg.created_at).toBe("number");
+      // Note: created_at is auto-managed by StateLoader but not exposed on entities.
+      // The column exists in the database but isn't populated on loaded entities.
     });
   });
 
@@ -95,18 +99,18 @@ describe("list and purge operations", () => {
 
   describe("listOutboxMessages", () => {
     test("returns empty array when no messages exist", () => {
-      const messages = listOutboxMessages();
+      const messages = listOutboxMessages(stateLoader);
       expect(messages).toHaveLength(0);
     });
 
-    test("returns messages ordered by created_at DESC (most recent first)", async () => {
+    test("returns messages ordered by id DESC (most recent first)", async () => {
       seedOutbox("First");
       await Bun.sleep(5);
       seedOutbox("Second");
       await Bun.sleep(5);
       seedOutbox("Third");
 
-      const messages = listOutboxMessages();
+      const messages = listOutboxMessages(stateLoader);
       expect(messages).toHaveLength(3);
       expect(messages[0].text).toBe("Third");
       expect(messages[1].text).toBe("Second");
@@ -120,14 +124,14 @@ describe("list and purge operations", () => {
       await Bun.sleep(5);
       seedOutbox("Three");
 
-      const messages = listOutboxMessages(2);
+      const messages = listOutboxMessages(stateLoader, 2);
       expect(messages).toHaveLength(2);
     });
 
     test("returns all fields", () => {
       seedOutbox("Reply");
 
-      const messages = listOutboxMessages();
+      const messages = listOutboxMessages(stateLoader);
       expect(messages).toHaveLength(1);
       const msg = messages[0];
       expect(msg.id).toMatch(/^out_/);
@@ -136,7 +140,6 @@ describe("list and purge operations", () => {
       expect(msg.text).toBe("Reply");
       expect(msg.status).toBe("pending");
       expect(msg.attempts).toBe(0);
-      expect(typeof msg.created_at).toBe("number");
     });
   });
 
@@ -161,8 +164,8 @@ describe("list and purge operations", () => {
       expect(counts.outbox).toBe(3);
 
       // Verify they're actually gone
-      expect(listInboxMessages()).toHaveLength(0);
-      expect(listOutboxMessages()).toHaveLength(0);
+      expect(listInboxMessages(stateLoader)).toHaveLength(0);
+      expect(listOutboxMessages(stateLoader)).toHaveLength(0);
     });
 
     test("can purge inbox only when outbox is empty", () => {

@@ -40,15 +40,13 @@ import { createDaemonManager } from "@shetty4l/core/daemon";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { loadConfig } from "./config";
-import {
-  initDatabase,
-  listInboxMessages,
-  listOutboxMessages,
-  purgeMessages,
-} from "./db";
+import { getDatabase, initDatabase, purgeMessages } from "./db";
 import { DebugLogger } from "./debug-logger";
+import { listInboxMessages } from "./inbox";
 import { run } from "./index";
+import { listOutboxMessages } from "./outbox";
 import { sendMessage } from "./send";
+import { StateLoader } from "./state";
 import { VERSION } from "./version";
 
 const HELP = `
@@ -98,14 +96,19 @@ function getDaemon() {
 
 // --- Helpers ---
 
+// Lazy StateLoader for CLI commands
+let _cliStateLoader: StateLoader | null = null;
+function getCliStateLoader(): StateLoader {
+  if (!_cliStateLoader) {
+    _cliStateLoader = new StateLoader(getDatabase());
+  }
+  return _cliStateLoader;
+}
+
 /** Wrap a command handler so initDatabase() is called before dispatch. */
 function withDb(fn: CommandHandler): CommandHandler {
   return (args, json) => {
-    const dbResult = initDatabase();
-    if (!dbResult.ok) {
-      console.error(`cortex: ${dbResult.error}`);
-      return 1;
-    }
+    initDatabase();
     return fn(args, json);
   };
 }
@@ -344,7 +347,8 @@ async function cmdLogs(args: string[], json: boolean): Promise<number> {
 // --- Inbox/outbox/purge/send commands ---
 
 function cmdInbox(_args: string[], json: boolean): number {
-  const messages = listInboxMessages(20);
+  const stateLoader = getCliStateLoader();
+  const messages = listInboxMessages(stateLoader, 20);
 
   if (json) {
     console.log(JSON.stringify(messages, null, 2));
@@ -368,7 +372,7 @@ function cmdInbox(_args: string[], json: boolean): number {
       msg.topic_key.length > 24
         ? `${msg.topic_key.slice(0, 21)}...`
         : msg.topic_key;
-    const time = new Date(msg.created_at).toISOString().slice(0, 19);
+    const time = new Date(msg.occurred_at).toISOString().slice(0, 19);
     console.log(
       `${msg.status.padEnd(12)}${msg.channel.padEnd(14)}${topic.padEnd(28)}${text.padEnd(32)}${time}`,
     );
@@ -379,7 +383,8 @@ function cmdInbox(_args: string[], json: boolean): number {
 }
 
 function cmdOutbox(_args: string[], json: boolean): number {
-  const messages = listOutboxMessages(20);
+  const stateLoader = getCliStateLoader();
+  const messages = listOutboxMessages(stateLoader, 20);
 
   if (json) {
     console.log(JSON.stringify(messages, null, 2));
