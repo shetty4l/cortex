@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { closeDatabase, initDatabase } from "../src/db";
+import { closeDatabase, getDatabase, initDatabase } from "../src/db";
+import { StateLoader } from "../src/state";
 import {
   completeTask,
   createTask,
@@ -9,15 +10,18 @@ import {
 } from "../src/tasks/index";
 import { createTopic } from "../src/topics/index";
 
+let stateLoader: StateLoader;
 let topicId: string;
 
 beforeEach(() => {
   initDatabase(":memory:");
-  const topic = createTopic({ name: "Test Topic" });
+  stateLoader = new StateLoader(getDatabase());
+  const topic = createTopic(stateLoader, { name: "Test Topic" });
   topicId = topic.id;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await stateLoader.flush();
   closeDatabase();
 });
 
@@ -62,7 +66,7 @@ describe("tasks CRUD", () => {
   });
 
   test("listTasks filtered by topicId", () => {
-    const topic2 = createTopic({ name: "Other Topic" });
+    const topic2 = createTopic(stateLoader, { name: "Other Topic" });
     createTask({ topic_id: topicId, title: "Task A" });
     createTask({ topic_id: topic2.id, title: "Task B" });
 

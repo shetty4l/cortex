@@ -405,6 +405,7 @@ describe("thalamus.syncAll()", () => {
     };
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     expect(synapseCalled).toBe(false);
@@ -438,6 +439,7 @@ describe("thalamus.syncAll()", () => {
       );
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     // Inbox should have a message
@@ -483,6 +485,7 @@ describe("thalamus.syncAll()", () => {
     };
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     const userMsg = capturedBody.messages?.find((m) => m.role === "user");
@@ -508,6 +511,7 @@ describe("thalamus.syncAll()", () => {
       );
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     // Buffers should still exist (not deleted on error)
@@ -567,6 +571,7 @@ describe("thalamus.syncAll()", () => {
     const thalamus = new Thalamus(
       makeThalamusConfig({ thalamusModels: ["gpt-oss:20b"] }),
     );
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     expect(capturedBody.model).toBe("gpt-oss:20b");
@@ -584,6 +589,7 @@ describe("thalamus.syncAll()", () => {
     mockSynapseHandler = () => Response.json(makeSynapseResponse([]));
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     // No inbox messages
@@ -638,6 +644,7 @@ describe("thalamus.syncAll()", () => {
     };
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     expect(callCount).toBe(2);
@@ -682,6 +689,7 @@ describe("thalamus.syncAll()", () => {
     };
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     expect(callCount).toBe(2);
@@ -728,6 +736,7 @@ describe("thalamus.syncAll()", () => {
     };
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     expect(capturedTemperatures).toHaveLength(2);
@@ -771,6 +780,7 @@ describe("thalamus.syncAll()", () => {
     };
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     expect(capturedMessages).toHaveLength(2);
@@ -794,9 +804,11 @@ describe("thalamus.syncAll()", () => {
 describe("thalamus.syncChannel()", () => {
   beforeEach(() => {
     initDatabase(":memory:");
+    stateLoader = new StateLoader(getDatabase());
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await stateLoader.flush();
     closeDatabase();
   });
 
@@ -824,6 +836,7 @@ describe("thalamus.syncChannel()", () => {
     };
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncChannel("calendar");
 
     // Should only include calendar data
@@ -853,6 +866,7 @@ describe("thalamus.syncChannel()", () => {
     };
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.syncChannel("calendar");
 
     expect(synapseCalled).toBe(false);
@@ -886,6 +900,7 @@ describe("thalamus.start()", () => {
     };
 
     const thalamus = new Thalamus(makeThalamusConfig());
+    thalamus.setStateLoader(stateLoader);
     await thalamus.start();
 
     // Give a small delay for the async syncAll to run

@@ -180,7 +180,7 @@ export class Thalamus {
     }
 
     // Get existing topics for routing
-    const topics = listTopics();
+    const topics = listTopics(this.stateLoader!);
     const existingTopics = topics.map((t) => ({
       key: t.id,
       name: t.name,
