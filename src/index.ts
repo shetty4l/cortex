@@ -22,11 +22,17 @@ import { createEmptyRegistry, loadSkills, type SkillRegistry } from "./skills";
 import { StateLoader } from "./state";
 import { Thalamus } from "./thalamus";
 import { Tick } from "./tick";
-import { type BuiltinToolContext, createCombinedRegistry } from "./tools";
+import {
+  type BuiltinTool,
+  type BuiltinToolContext,
+  createCombinedRegistry,
+} from "./tools";
 import { createSendMessageTool } from "./tools/send-message";
 import { createTaskTools } from "./tools/tasks";
 import { createTopicTools } from "./tools/topics";
+import { createWilsonProxyTools } from "./tools/wilson-proxy";
 import { VERSION } from "./version";
+import { createWilsonClient } from "./wilson";
 
 const log = createLogger("cortex");
 
@@ -82,11 +88,36 @@ export async function startCortexRuntime(
 
   // Create built-in tools with mutable per-message context
   const builtinCtx: BuiltinToolContext = { topicKey: "" };
-  const builtinTools = [
+  const builtinTools: BuiltinTool[] = [
     createSendMessageTool(channels),
     ...createTaskTools(stateLoader),
     ...createTopicTools(stateLoader),
   ];
+
+  // Load Wilson tools if configured
+  if (config.wilson) {
+    const wilsonClient = createWilsonClient(
+      config.wilson.url,
+      config.wilson.apiKey,
+    );
+    const toolsResult = await wilsonClient.listTools();
+    if (toolsResult.ok) {
+      const wilsonProxyTools = createWilsonProxyTools(
+        wilsonClient,
+        toolsResult.value,
+        config.toolTimeoutMs,
+      );
+      builtinTools.push(...wilsonProxyTools);
+      deps.log(
+        `loaded ${wilsonProxyTools.length} tools from Wilson (${config.wilson.url})`,
+      );
+    } else {
+      deps.log(
+        `warning: Wilson tools unavailable: ${toolsResult.error}. Continuing without Wilson tools.`,
+      );
+    }
+  }
+
   const combinedRegistry = createCombinedRegistry(
     builtinTools,
     registry,
