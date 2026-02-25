@@ -3,19 +3,28 @@
  *
  * Polls the inbox for pending messages and processes them sequentially:
  *   1. Claim the oldest pending inbox message
- *   2. Recall relevant memories from Engram (topic-scoped + global)
- *   3. Load recent turn history from SQLite
- *   4. Load topic summary from SQLite (if available)
- *   5. Build prompt (system + memories + summary + history + user message)
- *   6. Call Synapse (plain chat or agent loop with tools)
- *   7. Save turns to history
- *   8. Trigger async fact extraction + summary update (fire-and-forget)
- *   9. Write the assistant response to the outbox
- *  10. Mark the inbox message as done (or failed on error)
+ *   2. Check for pending approvals - block new messages if approval pending
+ *   3. Handle approval_response messages specially
+ *   4. Recall relevant memories from Engram (topic-scoped + global)
+ *   5. Load recent turn history from SQLite
+ *   6. Load topic summary from SQLite (if available)
+ *   7. Build prompt (system + memories + summary + history + user message)
+ *   8. Call Synapse (plain chat or agent loop with tools)
+ *   9. If agent returns needsApproval, send approval request with buttons
+ *  10. Save turns to history
+ *  11. Trigger async fact extraction + summary update (fire-and-forget)
+ *  12. Write the assistant response to the outbox
+ *  13. Mark the inbox message as done (or failed on error)
  */
 
 import { createLogger } from "@shetty4l/core/log";
 import { runAgentLoop } from "./agent";
+import {
+  isExpired,
+  listPendingApprovals,
+  PendingApproval,
+  resolveApproval,
+} from "./approval";
 import type { CortexConfig } from "./config";
 import { getDatabase } from "./db";
 import { getDebugLogger } from "./debug-logger";
@@ -40,7 +49,7 @@ import {
   StateLoader,
   TopicSummaryState,
 } from "./state";
-import type { OpenAITool } from "./synapse";
+import type { ChatMessage, OpenAITool, ToolCall } from "./synapse";
 import { chat } from "./synapse";
 import type { BuiltinToolContext } from "./tools";
 import { resolveOutputChannel } from "./tools";
@@ -194,6 +203,109 @@ export function startProcessingLoop(
               });
             }
 
+            // Handle approval_response messages specially
+            const metadata = message.metadata_json
+              ? (JSON.parse(message.metadata_json) as Record<string, unknown>)
+              : null;
+            if (metadata?.type === "approval_response") {
+              const approvalId = metadata.approvalId as string;
+              const action = metadata.action as "approve" | "reject";
+
+              log(
+                `[${message.topic_key}] approval response: ${approvalId} -> ${action}`,
+              );
+
+              const result = await handleApprovalResponse(
+                stateLoader,
+                approvalId,
+                action,
+                config,
+                registry,
+                openAITools,
+              );
+
+              if (result) {
+                // Save turns to history if any
+                if (result.turns.length > 0) {
+                  await saveAgentHistoryWithLoader(
+                    stateLoader,
+                    message.topic_key,
+                    result.turns,
+                  );
+                }
+
+                // Enqueue response to outbox
+                enqueueOutboxMessage(stateLoader, {
+                  channel: resolveOutputChannel(message.channel, config),
+                  topicKey: message.topic_key,
+                  text: result.response,
+                });
+              }
+
+              const processingMs = Math.round(performance.now() - startMs);
+              await completeInboxMessage(stateLoader, message.id, processingMs);
+
+              if (debug.isEnabled()) {
+                debug.log({
+                  type: "done",
+                  traceId,
+                  timestamp: new Date().toISOString(),
+                  totalMs: processingMs,
+                  ok: true,
+                  approvalId,
+                  action,
+                });
+              }
+
+              return; // Exit trace context, continue loop
+            }
+
+            // Check for pending approvals - block new messages if approval pending
+            const pendingApprovals = listPendingApprovals(
+              stateLoader,
+              message.topic_key,
+            );
+            if (pendingApprovals.length > 0) {
+              const approval = pendingApprovals[0]; // Most recent
+
+              if (!isExpired(approval)) {
+                // Re-present approval buttons
+                log(
+                  `[${message.topic_key}] blocked by pending approval: ${approval.id}`,
+                );
+
+                enqueueOutboxMessage(stateLoader, {
+                  channel: resolveOutputChannel(message.channel, config),
+                  topicKey: message.topic_key,
+                  text: "Please respond to the pending approval request first.",
+                  payload: {
+                    buttons: [
+                      {
+                        text: "✓ Approve",
+                        callback_data: `approval:${approval.id}:approve`,
+                      },
+                      {
+                        text: "✗ Reject",
+                        callback_data: `approval:${approval.id}:reject`,
+                      },
+                    ],
+                  },
+                });
+
+                // Mark inbox message as done (we handled it by re-presenting)
+                const processingMs = Math.round(performance.now() - startMs);
+                await completeInboxMessage(
+                  stateLoader,
+                  message.id,
+                  processingMs,
+                );
+                return; // Exit the trace context, continue loop
+              }
+
+              // Approval expired - resolve it and continue processing
+              await resolveApproval(stateLoader, approval.id, "expired");
+            }
+
             // 1. Recall memories from Engram (graceful on failure)
             const memories = await recallDual(
               message.text,
@@ -264,6 +376,9 @@ export function startProcessingLoop(
             let responseText: string;
             let ok: boolean;
             let errorMsg: string | undefined;
+            let needsApproval = false;
+            let approvalId: string | undefined;
+            let blockedToolCalls: ToolCall[] | undefined;
 
             if (hasTools) {
               const agentResult = await runAgentLoop({
@@ -278,22 +393,46 @@ export function startProcessingLoop(
                   skillConfig: config.skillConfig,
                   synapseTimeoutMs: config.synapseTimeoutMs,
                 },
+                stateLoader,
+                topicKey: message.topic_key,
               });
 
               if (agentResult.ok) {
-                ok = true;
-                responseText = agentResult.value.response;
+                // Check if agent needs approval
+                if (agentResult.value.needsApproval) {
+                  needsApproval = true;
+                  approvalId = agentResult.value.approvalId;
+                  blockedToolCalls = agentResult.value.blockedToolCalls;
+                  ok = true;
+                  responseText = "";
 
-                // Save full agent history (user message + all loop turns)
-                const userMessage = {
-                  role: "user" as const,
-                  content: message.text,
-                };
-                await saveAgentHistoryWithLoader(
-                  stateLoader,
-                  message.topic_key,
-                  [userMessage, ...agentResult.value.turns],
-                );
+                  // Save partial history (up to where we blocked)
+                  if (agentResult.value.turns.length > 0) {
+                    const userMessage = {
+                      role: "user" as const,
+                      content: message.text,
+                    };
+                    await saveAgentHistoryWithLoader(
+                      stateLoader,
+                      message.topic_key,
+                      [userMessage, ...agentResult.value.turns],
+                    );
+                  }
+                } else {
+                  ok = true;
+                  responseText = agentResult.value.response;
+
+                  // Save full agent history (user message + all loop turns)
+                  const userMessage = {
+                    role: "user" as const,
+                    content: message.text,
+                  };
+                  await saveAgentHistoryWithLoader(
+                    stateLoader,
+                    message.topic_key,
+                    [userMessage, ...agentResult.value.turns],
+                  );
+                }
               } else {
                 ok = false;
                 responseText = "";
@@ -328,55 +467,111 @@ export function startProcessingLoop(
             const processingMs = Math.round(performance.now() - startMs);
 
             if (ok) {
-              // 7. Trigger async extraction (fire-and-forget, serialized per topic)
-              //    Always increment the turn counter — even when extraction is
-              //    already in-flight — so the cadence stays accurate.
-              if (config.extractionModels && stateLoader) {
-                const cursor = stateLoader.load(
-                  ExtractionCursorState,
-                  message.topic_key,
+              // Handle approval request case
+              if (needsApproval && approvalId && blockedToolCalls) {
+                // Generate approval request message with buttons
+                const approvalMessage = await generateApprovalMessage(
+                  blockedToolCalls,
+                  registry,
+                  config,
                 );
-                cursor.turnsSinceExtraction += 1;
-                // Flush immediately so maybeExtract sees the updated counter
-                await stateLoader.flush();
-              }
-              if (stateLoader && !extractionInFlight.has(message.topic_key)) {
-                const p = maybeExtract(message.topic_key, config, stateLoader)
-                  .catch((e) =>
-                    log(
-                      `[${message.topic_key}] extraction error: ${e instanceof Error ? e.message : String(e)}`,
-                    ),
-                  )
-                  .finally(() => extractionInFlight.delete(message.topic_key));
-                extractionInFlight.set(message.topic_key, p);
-              }
 
-              // 8. Write to outbox
-              enqueueOutboxMessage(stateLoader, {
-                channel: resolveOutputChannel(message.channel, config),
-                topicKey: message.topic_key,
-                text: responseText,
-              });
-
-              await completeInboxMessage(stateLoader, message.id, processingMs);
-
-              const responsePreview =
-                responseText.length > 120
-                  ? `${responseText.slice(0, 117)}...`
-                  : responseText;
-              log(
-                `[${message.topic_key}] done in ${elapsed}s: ${responsePreview}`,
-              );
-
-              // Emit done event
-              if (debug.isEnabled()) {
-                debug.log({
-                  type: "done",
-                  traceId,
-                  timestamp: new Date().toISOString(),
-                  totalMs: processingMs,
-                  ok: true,
+                // Enqueue approval request to outbox with buttons
+                enqueueOutboxMessage(stateLoader, {
+                  channel: resolveOutputChannel(message.channel, config),
+                  topicKey: message.topic_key,
+                  text: approvalMessage,
+                  payload: {
+                    buttons: [
+                      {
+                        text: "✓ Approve",
+                        callback_data: `approval:${approvalId}:approve`,
+                      },
+                      {
+                        text: "✗ Reject",
+                        callback_data: `approval:${approvalId}:reject`,
+                      },
+                    ],
+                  },
                 });
+
+                await completeInboxMessage(
+                  stateLoader,
+                  message.id,
+                  processingMs,
+                );
+
+                log(`[${message.topic_key}] approval required: ${approvalId}`);
+
+                // Emit done event
+                if (debug.isEnabled()) {
+                  debug.log({
+                    type: "done",
+                    traceId,
+                    timestamp: new Date().toISOString(),
+                    totalMs: processingMs,
+                    ok: true,
+                    approvalId,
+                  });
+                }
+              } else {
+                // Normal success path
+                // 7. Trigger async extraction (fire-and-forget, serialized per topic)
+                //    Always increment the turn counter — even when extraction is
+                //    already in-flight — so the cadence stays accurate.
+                if (config.extractionModels && stateLoader) {
+                  const cursor = stateLoader.load(
+                    ExtractionCursorState,
+                    message.topic_key,
+                  );
+                  cursor.turnsSinceExtraction += 1;
+                  // Flush immediately so maybeExtract sees the updated counter
+                  await stateLoader.flush();
+                }
+                if (stateLoader && !extractionInFlight.has(message.topic_key)) {
+                  const p = maybeExtract(message.topic_key, config, stateLoader)
+                    .catch((e) =>
+                      log(
+                        `[${message.topic_key}] extraction error: ${e instanceof Error ? e.message : String(e)}`,
+                      ),
+                    )
+                    .finally(() =>
+                      extractionInFlight.delete(message.topic_key),
+                    );
+                  extractionInFlight.set(message.topic_key, p);
+                }
+
+                // 8. Write to outbox
+                enqueueOutboxMessage(stateLoader, {
+                  channel: resolveOutputChannel(message.channel, config),
+                  topicKey: message.topic_key,
+                  text: responseText,
+                });
+
+                await completeInboxMessage(
+                  stateLoader,
+                  message.id,
+                  processingMs,
+                );
+
+                const responsePreview =
+                  responseText.length > 120
+                    ? `${responseText.slice(0, 117)}...`
+                    : responseText;
+                log(
+                  `[${message.topic_key}] done in ${elapsed}s: ${responsePreview}`,
+                );
+
+                // Emit done event
+                if (debug.isEnabled()) {
+                  debug.log({
+                    type: "done",
+                    traceId,
+                    timestamp: new Date().toISOString(),
+                    totalMs: processingMs,
+                    ok: true,
+                  });
+                }
               }
             } else {
               log(`[${message.topic_key}] failed in ${elapsed}s: ${errorMsg}`);
@@ -432,4 +627,160 @@ export function startProcessingLoop(
       await done;
     },
   };
+}
+
+// --- Approval helpers ---
+
+/**
+ * Generate an approval request message describing the blocked tools.
+ * Uses the LLM without tools to generate a human-readable approval prompt.
+ */
+async function generateApprovalMessage(
+  blockedToolCalls: ToolCall[],
+  _registry: SkillRegistry,
+  config: CortexConfig,
+): Promise<string> {
+  // Build tool descriptions for the approval message
+  const toolDescriptions = blockedToolCalls
+    .map((tc) => {
+      const name = tc.function.name;
+      let argsDisplay: string;
+      try {
+        const args = JSON.parse(tc.function.arguments);
+        argsDisplay = JSON.stringify(args, null, 2);
+      } catch {
+        argsDisplay = tc.function.arguments;
+      }
+      return `**${name}**\n\`\`\`json\n${argsDisplay}\n\`\`\``;
+    })
+    .join("\n\n");
+
+  // Create a prompt for the LLM to generate an approval message
+  const approvalPromptMessages: ChatMessage[] = [
+    {
+      role: "system",
+      content: `You are an assistant helping a user approve or reject a tool execution request.
+Generate a brief, clear message explaining what action is about to be taken and asking for approval.
+Be concise but informative. The user will see Approve/Reject buttons below your message.
+Do not include the buttons in your response - they will be added automatically.`,
+    },
+    {
+      role: "user",
+      content: `The following tool(s) require approval before execution:\n\n${toolDescriptions}\n\nGenerate an approval request message.`,
+    },
+  ];
+
+  // Call LLM without tools to generate approval message
+  const result = await chat(
+    approvalPromptMessages,
+    config.models,
+    config.synapseUrl,
+    { timeoutMs: config.synapseTimeoutMs },
+  );
+
+  if (result.ok) {
+    return result.value.content;
+  }
+
+  // Fallback to a simple message if LLM fails
+  const toolNames = blockedToolCalls.map((tc) => tc.function.name).join(", ");
+  return `The following action requires your approval: **${toolNames}**\n\nPlease review and approve or reject.`;
+}
+
+/**
+ * Handle an approval response (approve/reject callback from button click).
+ * Returns the response text to send to the user, or null if the approval
+ * should be handled by resuming the agent loop.
+ */
+export async function handleApprovalResponse(
+  stateLoader: IStateLoader,
+  approvalId: string,
+  action: "approve" | "reject",
+  config: CortexConfig,
+  registry: SkillRegistry,
+  openAITools: OpenAITool[],
+): Promise<{ response: string; turns: ChatMessage[] } | null> {
+  const approval = stateLoader.get(PendingApproval, approvalId);
+
+  if (!approval) {
+    return {
+      response:
+        "This approval request was not found or has already been processed.",
+      turns: [],
+    };
+  }
+
+  if (approval.status !== "pending") {
+    return {
+      response: "This approval request has already been processed.",
+      turns: [],
+    };
+  }
+
+  if (isExpired(approval)) {
+    await resolveApproval(stateLoader, approvalId, "expired");
+    return {
+      response:
+        "This approval request has expired. Please try your request again.",
+      turns: [],
+    };
+  }
+
+  if (action === "reject") {
+    await resolveApproval(stateLoader, approvalId, "rejected");
+    return { response: "Action cancelled.", turns: [] };
+  }
+
+  // Approve: mark as approved and resume agent loop
+  await resolveApproval(stateLoader, approvalId, "approved");
+
+  // Deserialize state and resume
+  if (!approval.agentStateJson || !approval.toolCallsJson) {
+    return { response: "Unable to resume: missing state data.", turns: [] };
+  }
+
+  try {
+    const messages = JSON.parse(approval.agentStateJson) as ChatMessage[];
+    const toolCalls = JSON.parse(approval.toolCallsJson) as ToolCall[];
+
+    // Resume the agent loop with the restored state and execute blocked tools directly
+    const agentResult = await runAgentLoop({
+      messages,
+      tools: openAITools,
+      registry,
+      config: {
+        models: config.models,
+        synapseUrl: config.synapseUrl,
+        toolTimeoutMs: config.toolTimeoutMs,
+        maxToolRounds: config.maxToolRounds,
+        skillConfig: config.skillConfig,
+        synapseTimeoutMs: config.synapseTimeoutMs,
+      },
+      stateLoader,
+      topicKey: approval.topicKey,
+      resumeToolCalls: toolCalls,
+    });
+
+    if (agentResult.ok) {
+      if (agentResult.value.needsApproval) {
+        // Shouldn't happen since we just approved, but handle gracefully
+        return {
+          response: "Additional approval required.",
+          turns: agentResult.value.turns,
+        };
+      }
+      return {
+        response: agentResult.value.response,
+        turns: agentResult.value.turns,
+      };
+    }
+
+    return {
+      response: `Error executing action: ${agentResult.error}`,
+      turns: [],
+    };
+  } catch (e) {
+    const errorMsg = e instanceof Error ? e.message : String(e);
+    return { response: `Error resuming action: ${errorMsg}`, turns: [] };
+  }
 }

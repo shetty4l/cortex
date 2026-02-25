@@ -12,11 +12,19 @@
  * - Per-tool timeout via Promise.race with config.toolTimeoutMs
  * - Tool errors are returned to the model as structured results, not thrown
  * - SkillRuntimeContext.db is deferred (undefined for now)
+ * - Mutating tools require approval before execution
  */
 
 import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+import type { StateLoader } from "@shetty4l/core/state";
+import {
+  consumeApproval,
+  getApprovalForTool,
+  isExpired,
+  proposeApproval,
+} from "./approval";
 import { getDebugLogger } from "./debug-logger";
 import type { SkillRegistry, SkillRuntimeContext } from "./skills";
 import type { ChatMessage, OpenAITool, ToolCall } from "./synapse";
@@ -41,6 +49,12 @@ export interface AgentResult {
   response: string;
   /** All NEW assistant+tool messages from the loop (for history). */
   turns: ChatMessage[];
+  /** If set, the agent is blocked waiting for approval. */
+  needsApproval?: boolean;
+  /** The approval ID if needsApproval is true. */
+  approvalId?: string;
+  /** The tool calls blocked pending approval. */
+  blockedToolCalls?: ToolCall[];
 }
 
 // --- Loop ---
@@ -53,6 +67,10 @@ export interface AgentResult {
  * and loops. Continues until the model produces a text response without
  * tool calls or the max rounds are exhausted.
  *
+ * If any requested tool is mutating, the loop blocks and returns a
+ * needsApproval result. The caller must handle the approval flow and
+ * resume execution by calling runAgentLoop again with the approved state.
+ *
  * Returns all new messages generated during the loop (assistant + tool)
  * for the caller to persist to history.
  */
@@ -61,11 +79,39 @@ export async function runAgentLoop(opts: {
   tools: OpenAITool[];
   registry: SkillRegistry;
   config: AgentConfig;
+  /** StateLoader for approval persistence (optional for backward compatibility) */
+  stateLoader?: StateLoader;
+  /** Topic key for approval scoping (required if stateLoader is provided) */
+  topicKey?: string;
+  /**
+   * Tool calls to execute immediately without calling the LLM first.
+   * Used when resuming from an approved approval to execute the blocked tools.
+   */
+  resumeToolCalls?: ToolCall[];
 }): Promise<Result<AgentResult>> {
-  const { tools, registry, config } = opts;
+  const { tools, registry, config, stateLoader, topicKey, resumeToolCalls } =
+    opts;
   const messages = [...opts.messages]; // Don't mutate caller's array
   const newTurns: ChatMessage[] = [];
   let rounds = 0;
+
+  // If resuming with tool calls, execute them first before entering the loop
+  if (resumeToolCalls && resumeToolCalls.length > 0) {
+    // Execute the resumed tool calls directly (approval already granted)
+    const toolResults = await executeToolCalls(
+      resumeToolCalls,
+      registry,
+      config,
+    );
+
+    // Append tool results
+    for (const toolMsg of toolResults) {
+      messages.push(toolMsg);
+      newTurns.push(toolMsg);
+    }
+
+    rounds++;
+  }
 
   while (true) {
     // Call LLM
@@ -98,6 +144,32 @@ export async function runAgentLoop(opts: {
     messages.push(assistantMsg);
     newTurns.push(assistantMsg);
 
+    // Check if any tool is mutating — if so, we need approval
+    const hasMutating = response.toolCalls.some((tc) =>
+      registry.isMutating(tc.function.name),
+    );
+
+    if (hasMutating && stateLoader && topicKey) {
+      // Check for existing approved approval for these tools
+      const approvalResult = await checkAndConsumeApproval(
+        response.toolCalls,
+        registry,
+        stateLoader,
+        topicKey,
+        messages,
+        newTurns,
+        config,
+      );
+
+      if (approvalResult.needsApproval) {
+        // Create new approval and return blocked state
+        return ok(approvalResult);
+      }
+
+      // Approval was consumed, execute the tools normally
+      // (toolResults are already in approvalResult.toolResults if consumed)
+    }
+
     // Execute all tool calls in parallel
     const toolResults = await executeToolCalls(
       response.toolCalls,
@@ -122,6 +194,82 @@ export async function runAgentLoop(opts: {
       return ok({ response: fallback, turns: newTurns });
     }
   }
+}
+
+// --- Approval check ---
+
+/**
+ * Check if we have an approved (and not expired) approval for the mutating tools.
+ * If approved, consume it and return needsApproval: false.
+ * If not approved or no approval exists, create a new pending approval and return
+ * needsApproval: true with the approval details.
+ */
+async function checkAndConsumeApproval(
+  toolCalls: ToolCall[],
+  registry: SkillRegistry,
+  stateLoader: StateLoader,
+  topicKey: string,
+  messages: ChatMessage[],
+  newTurns: ChatMessage[],
+  _config: AgentConfig,
+): Promise<AgentResult> {
+  // Find the first mutating tool for approval lookup
+  const mutatingToolCall = toolCalls.find((tc) =>
+    registry.isMutating(tc.function.name),
+  );
+
+  if (!mutatingToolCall) {
+    // No mutating tool (shouldn't happen if we get here, but be safe)
+    return { response: "", turns: newTurns, needsApproval: false };
+  }
+
+  const toolName = mutatingToolCall.function.name;
+
+  // Check for existing approved approval
+  const existingApproval = getApprovalForTool(stateLoader, topicKey, toolName);
+
+  if (existingApproval && !isExpired(existingApproval)) {
+    // Consume the approval and allow execution
+    await consumeApproval(stateLoader, existingApproval.id);
+    return { response: "", turns: newTurns, needsApproval: false };
+  }
+
+  // No valid approval — create a new pending approval
+  // Serialize the current state for resumption
+  const agentStateJson = JSON.stringify(messages);
+  const toolCallsJson = JSON.stringify(toolCalls);
+
+  // Build tool description for the approval action
+  const toolDescriptions = toolCalls
+    .filter((tc) => registry.isMutating(tc.function.name))
+    .map((tc) => {
+      try {
+        const args = JSON.parse(tc.function.arguments);
+        return `${tc.function.name}(${JSON.stringify(args)})`;
+      } catch {
+        return `${tc.function.name}(${tc.function.arguments})`;
+      }
+    })
+    .join(", ");
+
+  const approval = proposeApproval(stateLoader, {
+    topicKey,
+    action: `execute: ${toolDescriptions}`,
+    toolName,
+    toolArgsJson: mutatingToolCall.function.arguments,
+    agentStateJson,
+    toolCallsJson,
+  });
+
+  log(`[${topicKey}] approval required for ${toolName}: ${approval.id}`);
+
+  return {
+    response: "",
+    turns: newTurns,
+    needsApproval: true,
+    approvalId: approval.id,
+    blockedToolCalls: toolCalls,
+  };
 }
 
 // --- Helpers ---
