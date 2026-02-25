@@ -375,13 +375,15 @@ function makeSynapseResponse(items: unknown[]) {
 }
 
 function makeThalamusConfig(
-  overrides?: Partial<ThalamusConfig>,
+  stateLoader: StateLoader,
+  overrides?: Partial<Omit<ThalamusConfig, "stateLoader">>,
 ): ThalamusConfig {
   return {
     synapseUrl: mockSynapseUrl,
     thalamusModels: ["test-model"],
     synapseTimeoutMs: 30000,
     syncIntervalMs: 21_600_000,
+    stateLoader,
     ...overrides,
   };
 }
@@ -404,8 +406,7 @@ describe("thalamus.syncAll()", () => {
       return Response.json(makeSynapseResponse([]));
     };
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
 
     expect(synapseCalled).toBe(false);
@@ -438,8 +439,7 @@ describe("thalamus.syncAll()", () => {
         ]),
       );
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
 
     // Inbox should have a message
@@ -484,8 +484,7 @@ describe("thalamus.syncAll()", () => {
       return Response.json(makeSynapseResponse([]));
     };
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
 
     const userMsg = capturedBody.messages?.find((m) => m.role === "user");
@@ -510,8 +509,7 @@ describe("thalamus.syncAll()", () => {
         { status: 500 },
       );
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
 
     // Buffers should still exist (not deleted on error)
@@ -539,8 +537,7 @@ describe("thalamus.syncAll()", () => {
 
     mockSynapseHandler = () => Response.json(makeSynapseResponse([]));
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
     await stateLoader.flush();
 
@@ -569,9 +566,8 @@ describe("thalamus.syncAll()", () => {
     };
 
     const thalamus = new Thalamus(
-      makeThalamusConfig({ thalamusModels: ["gpt-oss:20b"] }),
+      makeThalamusConfig(stateLoader, { thalamusModels: ["gpt-oss:20b"] }),
     );
-    thalamus.setStateLoader(stateLoader);
     await thalamus.syncAll();
 
     expect(capturedBody.model).toBe("gpt-oss:20b");
@@ -588,8 +584,7 @@ describe("thalamus.syncAll()", () => {
 
     mockSynapseHandler = () => Response.json(makeSynapseResponse([]));
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
 
     // No inbox messages
@@ -643,8 +638,7 @@ describe("thalamus.syncAll()", () => {
       );
     };
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
 
     expect(callCount).toBe(2);
@@ -688,8 +682,7 @@ describe("thalamus.syncAll()", () => {
       });
     };
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
 
     expect(callCount).toBe(2);
@@ -735,8 +728,7 @@ describe("thalamus.syncAll()", () => {
       return Response.json(makeSynapseResponse([]));
     };
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
 
     expect(capturedTemperatures).toHaveLength(2);
@@ -779,8 +771,7 @@ describe("thalamus.syncAll()", () => {
       return Response.json(makeSynapseResponse([]));
     };
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncAll();
 
     expect(capturedMessages).toHaveLength(2);
@@ -835,8 +826,7 @@ describe("thalamus.syncChannel()", () => {
       return Response.json(makeSynapseResponse([]));
     };
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncChannel("calendar");
 
     // Should only include calendar data
@@ -865,8 +855,7 @@ describe("thalamus.syncChannel()", () => {
       return Response.json(makeSynapseResponse([]));
     };
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.syncChannel("calendar");
 
     expect(synapseCalled).toBe(false);
@@ -899,8 +888,7 @@ describe("thalamus.start()", () => {
       return Response.json(makeSynapseResponse([]));
     };
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     await thalamus.start();
 
     // Give a small delay for the async syncAll to run
@@ -941,8 +929,7 @@ describe("thalamus.start()", () => {
   test("sets lastSyncAt after startup sync", async () => {
     mockSynapseHandler = () => Response.json(makeSynapseResponse([]));
 
-    const thalamus = new Thalamus(makeThalamusConfig());
-    thalamus.setStateLoader(stateLoader);
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
     expect(thalamus.getLastSyncAt()).toBeNull();
 
     await thalamus.start();

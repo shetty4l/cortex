@@ -12,10 +12,8 @@ import {
   PersistedCollection,
   type StateLoader,
 } from "@shetty4l/core/state";
-// Workaround: Import Field from collection decorators directly
-// The @shetty4l/core/state exports the singleton Field decorator,
-// but @PersistedCollection requires the collection Field decorator.
-// Using relative path until package exports are fixed.
+// TODO: Replace with `import { CollectionField as Field } from "@shetty4l/core/state"`
+// once core v0.1.37 is published (see core#54)
 import { Field } from "../../node_modules/@shetty4l/core/src/state/collection/decorators";
 
 /**
