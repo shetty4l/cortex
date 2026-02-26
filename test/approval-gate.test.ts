@@ -3,11 +3,11 @@
  *
  * Tests the end-to-end approval flow for mutating tools:
  * - Non-mutating tools execute immediately
- * - Mutating tools block and create approval request
- * - Approved approvals execute blocked tools
- * - Rejected approvals cancel execution
- * - Expired approvals return error
- * - State serialization/deserialization works
+ * - Mutating tools block and return needsApproval
+ * - Re-run with approvalGranted=true executes blocked tools
+ * - Rejected approvals complete message without execution
+ * - Expired approvals mark message as failed
+ * - One approval per message (uniqueness constraint)
  * - Pending approvals block new messages
  */
 
@@ -25,7 +25,7 @@ import { StateLoader } from "@shetty4l/core/state";
 import { runAgentLoop } from "../src/agent";
 import {
   APPROVAL_TTL_MS,
-  getApprovalForTool,
+  getApprovalById,
   isExpired,
   listPendingApprovals,
   PendingApproval,
@@ -34,8 +34,12 @@ import {
 } from "../src/approval";
 import type { CortexConfig } from "../src/config";
 import { closeDatabase, getDatabase, initDatabase } from "../src/db";
-import { enqueueInboxMessage, getInboxMessage } from "../src/inbox";
-import { handleApprovalResponse, startProcessingLoop } from "../src/loop";
+import {
+  enqueueInboxMessage,
+  getInboxMessage,
+  InboxMessage,
+} from "../src/inbox";
+import { startProcessingLoop } from "../src/loop";
 import { listOutboxMessagesByTopic } from "../src/outbox";
 import type { SkillRegistry, SkillToolResult } from "../src/skills";
 import type { OpenAITool } from "../src/synapse";
@@ -255,7 +259,6 @@ describe("approval gate - agent loop", () => {
         maxToolRounds: 8,
         skillConfig: {},
       },
-      stateLoader,
       topicKey: "topic-1",
     });
 
@@ -263,13 +266,9 @@ describe("approval gate - agent loop", () => {
     if (!result.ok) throw new Error("Expected ok result");
     expect(result.value.needsApproval).toBeFalsy();
     expect(result.value.response).toBe("Read complete");
-
-    // No approvals created
-    const pending = listPendingApprovals(stateLoader);
-    expect(pending).toHaveLength(0);
   });
 
-  test("mutating tools block and create pending approval", async () => {
+  test("mutating tools block and return needsApproval", async () => {
     const registry = createMockRegistry({});
     const openAITools: OpenAITool[] = registry.tools.map((t) => ({
       type: "function",
@@ -299,28 +298,19 @@ describe("approval gate - agent loop", () => {
         maxToolRounds: 8,
         skillConfig: {},
       },
-      stateLoader,
       topicKey: "topic-1",
     });
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("Expected ok result");
     expect(result.value.needsApproval).toBe(true);
-    expect(result.value.approvalId).toBeTruthy();
     expect(result.value.blockedToolCalls).toHaveLength(1);
     expect(result.value.blockedToolCalls?.[0].function.name).toBe(
       "dangerous.delete",
     );
-
-    // Approval created
-    const pending = listPendingApprovals(stateLoader, "topic-1");
-    expect(pending).toHaveLength(1);
-    expect(pending[0].toolName).toBe("dangerous.delete");
-    expect(pending[0].agentStateJson).toBeTruthy();
-    expect(pending[0].toolCallsJson).toBeTruthy();
   });
 
-  test("approved approval is consumed and tools execute", async () => {
+  test("approvalGranted=true allows mutating tools to execute", async () => {
     const registry = createMockRegistry({});
     const openAITools: OpenAITool[] = registry.tools.map((t) => ({
       type: "function",
@@ -330,15 +320,6 @@ describe("approval gate - agent loop", () => {
         parameters: t.inputSchema,
       },
     }));
-
-    // First create an approved approval
-    const approval = proposeApproval(stateLoader, {
-      topicKey: "topic-1",
-      action: "test",
-      toolName: "dangerous.delete",
-      toolArgsJson: '{"id":"123"}',
-    });
-    await resolveApproval(stateLoader, approval.id, "approved");
 
     let callNum = 0;
     mockSynapseHandler = async () => {
@@ -364,354 +345,114 @@ describe("approval gate - agent loop", () => {
         maxToolRounds: 8,
         skillConfig: {},
       },
-      stateLoader,
       topicKey: "topic-1",
+      approvalGranted: true, // User approved
     });
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error("Expected ok result");
     expect(result.value.needsApproval).toBeFalsy();
     expect(result.value.response).toBe("Deleted");
-
-    // Approval consumed
-    const consumed = stateLoader.get(PendingApproval, approval.id);
-    expect(consumed?.status).toBe("consumed");
   });
 });
 
 describe("approval gate - expiration", () => {
   test("isExpired returns true for expired approval", () => {
+    const { id: inboxMessageId } = ingestMessage({});
     const approval = proposeApproval(stateLoader, {
       topicKey: "topic-1",
       action: "test",
+      inboxMessageId,
     });
 
     // Check at future time past expiry
     const futureTime = approval.proposedAt + APPROVAL_TTL_MS + 1000;
     expect(isExpired(approval, futureTime)).toBe(true);
   });
+});
 
-  test("expired approval is not consumed", async () => {
-    const registry = createMockRegistry({});
-    const openAITools: OpenAITool[] = registry.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
+describe("approval gate - uniqueness", () => {
+  test("proposeApproval throws if message already has pending approval", () => {
+    const { id: inboxMessageId } = ingestMessage({});
 
-    // Create an approved but expired approval
-    const approval = proposeApproval(stateLoader, {
+    // First approval should succeed
+    proposeApproval(stateLoader, {
       topicKey: "topic-1",
-      action: "test",
-      toolName: "dangerous.delete",
-    });
-    // Manually set expiresAt to past
-    approval.expiresAt = Date.now() - 1000;
-    await approval.save();
-    await resolveApproval(stateLoader, approval.id, "approved");
-
-    mockSynapseHandler = async () => {
-      return Response.json(
-        openaiToolCallResponse([
-          { name: "dangerous.delete", arguments: '{"id":"123"}' },
-        ]),
-      );
-    };
-
-    const result = await runAgentLoop({
-      messages: [{ role: "user", content: "Delete" }],
-      tools: openAITools,
-      registry,
-      config: {
-        models: ["test-model"],
-        synapseUrl: mockSynapseUrl,
-        toolTimeoutMs: 10000,
-        maxToolRounds: 8,
-        skillConfig: {},
-      },
-      stateLoader,
-      topicKey: "topic-1",
+      action: "first",
+      inboxMessageId,
     });
 
-    // Should need new approval since the existing one is expired
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("Expected ok result");
-    expect(result.value.needsApproval).toBe(true);
+    // Second approval for same message should throw
+    expect(() =>
+      proposeApproval(stateLoader, {
+        topicKey: "topic-1",
+        action: "second",
+        inboxMessageId,
+      }),
+    ).toThrow(/already has a pending approval/);
+  });
+
+  test("can create new approval after first is resolved", async () => {
+    const { id: inboxMessageId } = ingestMessage({});
+
+    const first = proposeApproval(stateLoader, {
+      topicKey: "topic-1",
+      action: "first",
+      inboxMessageId,
+    });
+    await resolveApproval(stateLoader, first.id, "rejected");
+
+    // Should succeed after first is resolved
+    const second = proposeApproval(stateLoader, {
+      topicKey: "topic-1",
+      action: "second",
+      inboxMessageId,
+    });
+    expect(second.id).toBeTruthy();
   });
 });
 
-describe("approval gate - state serialization", () => {
-  test("agent state is correctly serialized in approval", async () => {
-    const registry = createMockRegistry({});
-    const openAITools: OpenAITool[] = registry.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
-
-    mockSynapseHandler = async () => {
-      return Response.json(
-        openaiToolCallResponse([
-          { name: "dangerous.delete", arguments: '{"id":"456"}' },
-        ]),
-      );
-    };
-
-    const result = await runAgentLoop({
-      messages: [
-        { role: "system", content: "You are helpful" },
-        { role: "user", content: "Delete item 456" },
-      ],
-      tools: openAITools,
-      registry,
-      config: {
-        models: ["test-model"],
-        synapseUrl: mockSynapseUrl,
-        toolTimeoutMs: 10000,
-        maxToolRounds: 8,
-        skillConfig: {},
-      },
-      stateLoader,
-      topicKey: "topic-1",
-    });
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error("Expected ok result");
-    expect(result.value.needsApproval).toBe(true);
-
-    const pending = listPendingApprovals(stateLoader, "topic-1");
-    expect(pending).toHaveLength(1);
-
-    // Verify state is correctly serialized
-    const agentState = JSON.parse(pending[0].agentStateJson!);
-    expect(agentState).toBeArray();
-    // Should include system, user, and assistant (with tool_calls) messages
-    expect(agentState.length).toBeGreaterThanOrEqual(3);
-    expect(agentState[0].role).toBe("system");
-    expect(agentState[1].role).toBe("user");
-    expect(agentState[2].role).toBe("assistant");
-    expect(agentState[2].tool_calls).toBeTruthy();
-
-    // Verify tool calls are serialized
-    const toolCalls = JSON.parse(pending[0].toolCallsJson!);
-    expect(toolCalls).toHaveLength(1);
-    expect(toolCalls[0].function.name).toBe("dangerous.delete");
-    expect(toolCalls[0].function.arguments).toBe('{"id":"456"}');
-  });
-});
-
-describe("approval gate - handleApprovalResponse", () => {
-  test("reject action returns cancellation message", async () => {
-    const registry = createMockRegistry({});
-    const openAITools: OpenAITool[] = registry.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
-
-    const approval = proposeApproval(stateLoader, {
+describe("approval gate - getApprovalById", () => {
+  test("getApprovalById returns approval", () => {
+    const { id: inboxMessageId } = ingestMessage({});
+    const created = proposeApproval(stateLoader, {
       topicKey: "topic-1",
       action: "test",
-      toolName: "dangerous.delete",
-      agentStateJson: "[]",
-      toolCallsJson: "[]",
+      inboxMessageId,
     });
 
-    const result = await handleApprovalResponse(
-      stateLoader,
-      approval.id,
-      "reject",
-      testConfig(),
-      registry,
-      openAITools,
-    );
-
-    expect(result).not.toBeNull();
-    expect(result!.response).toBe("Action cancelled.");
-
-    // Approval should be rejected
-    const updated = stateLoader.get(PendingApproval, approval.id);
-    expect(updated?.status).toBe("rejected");
+    const found = getApprovalById(stateLoader, created.id);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(created.id);
   });
 
-  test("not found approval returns error message", async () => {
-    const registry = createMockRegistry({});
-    const openAITools: OpenAITool[] = registry.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
-
-    const result = await handleApprovalResponse(
-      stateLoader,
-      "non-existent-id",
-      "approve",
-      testConfig(),
-      registry,
-      openAITools,
-    );
-
-    expect(result).not.toBeNull();
-    expect(result!.response).toContain("not found");
-  });
-
-  test("already processed approval returns error message", async () => {
-    const registry = createMockRegistry({});
-    const openAITools: OpenAITool[] = registry.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
-
-    const approval = proposeApproval(stateLoader, {
-      topicKey: "topic-1",
-      action: "test",
-    });
-    await resolveApproval(stateLoader, approval.id, "approved");
-
-    const result = await handleApprovalResponse(
-      stateLoader,
-      approval.id,
-      "approve",
-      testConfig(),
-      registry,
-      openAITools,
-    );
-
-    expect(result).not.toBeNull();
-    expect(result!.response).toContain("already been processed");
-  });
-
-  test("expired approval returns expiry message", async () => {
-    const registry = createMockRegistry({});
-    const openAITools: OpenAITool[] = registry.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
-
-    const approval = proposeApproval(stateLoader, {
-      topicKey: "topic-1",
-      action: "test",
-    });
-    // Manually expire
-    approval.expiresAt = Date.now() - 1000;
-    await approval.save();
-
-    const result = await handleApprovalResponse(
-      stateLoader,
-      approval.id,
-      "approve",
-      testConfig(),
-      registry,
-      openAITools,
-    );
-
-    expect(result).not.toBeNull();
-    expect(result!.response).toContain("expired");
-
-    // Should be marked as expired
-    const updated = stateLoader.get(PendingApproval, approval.id);
-    expect(updated?.status).toBe("expired");
-  });
-
-  test("approve action resumes agent loop and executes tools", async () => {
-    const registry = createMockRegistry({
-      executeResult: { content: "Tool executed!" },
-    });
-    const openAITools: OpenAITool[] = registry.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
-
-    // Create approval with serialized state
-    const agentState = [
-      { role: "system", content: "You are helpful" },
-      { role: "user", content: "Delete item" },
-      {
-        role: "assistant",
-        content: "",
-        tool_calls: [
-          {
-            id: "call_0",
-            type: "function",
-            function: { name: "dangerous.delete", arguments: '{"id":"999"}' },
-          },
-        ],
-      },
-    ];
-    const toolCalls = [
-      {
-        id: "call_0",
-        type: "function",
-        function: { name: "dangerous.delete", arguments: '{"id":"999"}' },
-      },
-    ];
-
-    const approval = proposeApproval(stateLoader, {
-      topicKey: "topic-1",
-      action: "test",
-      toolName: "dangerous.delete",
-      toolArgsJson: '{"id":"999"}',
-      agentStateJson: JSON.stringify(agentState),
-      toolCallsJson: JSON.stringify(toolCalls),
-    });
-
-    let callNum = 0;
-    mockSynapseHandler = async () => {
-      callNum++;
-      // After tool execution, return final response
-      return Response.json(openaiResponse("Item deleted successfully"));
-    };
-
-    const result = await handleApprovalResponse(
-      stateLoader,
-      approval.id,
-      "approve",
-      testConfig(),
-      registry,
-      openAITools,
-    );
-
-    expect(result).not.toBeNull();
-    expect(result!.response).toBe("Item deleted successfully");
-
-    // Approval should be approved
-    const updated = stateLoader.get(PendingApproval, approval.id);
-    expect(updated?.status).toBe("approved");
+  test("getApprovalById returns null for non-existent", () => {
+    const found = getApprovalById(stateLoader, "non-existent");
+    expect(found).toBeNull();
   });
 });
 
 describe("approval gate - processing loop integration", () => {
   test("pending approval blocks new messages and re-presents buttons", async () => {
-    // Create a pending approval
+    // Create a pending approval (original message already processed/waiting)
+    const { id: inboxMessageId } = ingestMessage({
+      text: "Original message",
+      topicKey: "topic-block",
+    });
+    // Mark original message as waiting for approval (won't be claimed)
+    const origMsg = getInboxMessage(stateLoader, inboxMessageId)!;
+    origMsg.status = "pending";
+    origMsg.next_attempt_at = Date.now() + 24 * 60 * 60 * 1000; // Far future
+    await origMsg.save();
+
     const approval = proposeApproval(stateLoader, {
       topicKey: "topic-block",
       action: "test",
+      inboxMessageId,
       toolName: "dangerous.delete",
     });
+    origMsg.approvalId = approval.id;
+    await origMsg.save();
 
     mockSynapseHandler = () =>
       Response.json(openaiResponse("Should not reach here"));
@@ -744,5 +485,283 @@ describe("approval gate - processing loop integration", () => {
     const payload = JSON.parse(outbox[0].payload_json!);
     expect(payload.buttons).toHaveLength(2);
     expect(payload.buttons[0].data).toContain(approval.id);
+  });
+
+  test("approval response with approve re-queues message and it gets processed", async () => {
+    // Create inbox message and approval
+    const { id: inboxMessageId } = ingestMessage({
+      text: "Delete something",
+      topicKey: "topic-approve",
+    });
+    const inboxMsg = getInboxMessage(stateLoader, inboxMessageId)!;
+    inboxMsg.status = "pending";
+    inboxMsg.next_attempt_at = Date.now() + 24 * 60 * 60 * 1000; // Far future
+    await inboxMsg.save();
+
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "topic-approve",
+      action: "test",
+      inboxMessageId,
+    });
+    inboxMsg.approvalId = approval.id;
+    await inboxMsg.save();
+
+    // Ingest approval response
+    const { eventId: responseId } = ingestMessage({
+      text: "approve",
+      topicKey: "topic-approve",
+      metadata: {
+        type: "approval_response",
+        approvalId: approval.id,
+        action: "approve",
+      },
+    });
+
+    mockSynapseHandler = () =>
+      Response.json(openaiResponse("Processing approved request"));
+
+    const loop = startProcessingLoop(
+      testConfig(),
+      createMockRegistry({}),
+      makeFastLoop(),
+    );
+
+    // Wait for response message to be processed
+    await waitFor(
+      () => getInboxMessage(stateLoader, responseId)?.status === "done",
+    );
+
+    // Wait a bit for original message to be re-queued and processed
+    await waitFor(
+      () => getInboxMessage(stateLoader, inboxMessageId)?.status === "done",
+    );
+
+    await loop.stop();
+
+    // Approval should be resolved as approved
+    const resolvedApproval = getApprovalById(stateLoader, approval.id);
+    expect(resolvedApproval?.status).toBe("approved");
+
+    // Original message should be done (was re-queued and processed)
+    const originalMsg = getInboxMessage(stateLoader, inboxMessageId);
+    expect(originalMsg?.status).toBe("done");
+
+    // Outbox should have the response
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-approve");
+    expect(
+      outbox.some(
+        (m) =>
+          m.text.includes("Approved") || m.text.includes("Processing approved"),
+      ),
+    ).toBe(true);
+  });
+
+  test("approval response with reject completes message", async () => {
+    // Create inbox message and approval
+    const { id: inboxMessageId } = ingestMessage({
+      text: "Delete something",
+      topicKey: "topic-reject",
+    });
+    const inboxMsg = getInboxMessage(stateLoader, inboxMessageId)!;
+    inboxMsg.status = "pending";
+    inboxMsg.next_attempt_at = Date.now() + 24 * 60 * 60 * 1000;
+    await inboxMsg.save();
+
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "topic-reject",
+      action: "test",
+      inboxMessageId,
+    });
+    inboxMsg.approvalId = approval.id;
+    await inboxMsg.save();
+
+    // Ingest rejection response
+    const { eventId: responseId } = ingestMessage({
+      text: "reject",
+      topicKey: "topic-reject",
+      metadata: {
+        type: "approval_response",
+        approvalId: approval.id,
+        action: "reject",
+      },
+    });
+
+    mockSynapseHandler = () =>
+      Response.json(openaiResponse("Should not be called"));
+
+    const loop = startProcessingLoop(
+      testConfig(),
+      createMockRegistry({}),
+      makeFastLoop(),
+    );
+
+    await waitFor(
+      () => getInboxMessage(stateLoader, responseId)?.status === "done",
+    );
+    await loop.stop();
+
+    // Original message should be marked done
+    const originalMsg = getInboxMessage(stateLoader, inboxMessageId);
+    expect(originalMsg?.status).toBe("done");
+
+    // Approval should be rejected
+    const resolvedApproval = getApprovalById(stateLoader, approval.id);
+    expect(resolvedApproval?.status).toBe("rejected");
+
+    // Outbox should have cancellation message
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-reject");
+    expect(outbox.some((m) => m.text.includes("cancelled"))).toBe(true);
+  });
+
+  test("expired approval during response marks message as failed", async () => {
+    // Create inbox message and expired approval
+    const { id: inboxMessageId } = ingestMessage({
+      text: "Delete something",
+      topicKey: "topic-expired",
+    });
+    const inboxMsg = getInboxMessage(stateLoader, inboxMessageId)!;
+    inboxMsg.status = "pending";
+    inboxMsg.next_attempt_at = Date.now() + 24 * 60 * 60 * 1000;
+    await inboxMsg.save();
+
+    const approval = proposeApproval(stateLoader, {
+      topicKey: "topic-expired",
+      action: "test",
+      inboxMessageId,
+    });
+    // Manually expire
+    approval.expiresAt = Date.now() - 1000;
+    await approval.save();
+    inboxMsg.approvalId = approval.id;
+    await inboxMsg.save();
+
+    // Try to approve expired
+    const { eventId: responseId } = ingestMessage({
+      text: "approve",
+      topicKey: "topic-expired",
+      metadata: {
+        type: "approval_response",
+        approvalId: approval.id,
+        action: "approve",
+      },
+    });
+
+    mockSynapseHandler = () =>
+      Response.json(openaiResponse("Should not be called"));
+
+    const loop = startProcessingLoop(
+      testConfig(),
+      createMockRegistry({}),
+      makeFastLoop(),
+    );
+
+    await waitFor(
+      () => getInboxMessage(stateLoader, responseId)?.status === "done",
+    );
+    await loop.stop();
+
+    // Original message should be marked failed
+    const originalMsg = getInboxMessage(stateLoader, inboxMessageId);
+    expect(originalMsg?.status).toBe("failed");
+    expect(originalMsg?.error).toContain("expired");
+
+    // Approval should be expired
+    const resolvedApproval = getApprovalById(stateLoader, approval.id);
+    expect(resolvedApproval?.status).toBe("expired");
+  });
+
+  test("approved message re-runs with approvalGranted and executes tools", async () => {
+    // This test verifies the full flow:
+    // 1. Message triggers mutating tool -> needsApproval
+    // 2. Approval created, message linked
+    // 3. Approve response -> message re-queued with approvalGranted
+    // 4. Re-run executes tools
+
+    let callNum = 0;
+    mockSynapseHandler = async () => {
+      callNum++;
+      if (callNum === 1) {
+        // First call: return tool call
+        return Response.json(
+          openaiToolCallResponse([
+            { name: "dangerous.delete", arguments: '{"id":"999"}' },
+          ]),
+        );
+      }
+      if (callNum === 2) {
+        // Second call: approval message generation
+        return Response.json(
+          openaiResponse("I need to delete item 999. Is that ok?"),
+        );
+      }
+      if (callNum === 3) {
+        // Third call: re-run after approval, return tool call again
+        return Response.json(
+          openaiToolCallResponse([
+            { name: "dangerous.delete", arguments: '{"id":"999"}' },
+          ]),
+        );
+      }
+      // Fourth call: final response after tool execution
+      return Response.json(openaiResponse("Item 999 deleted successfully"));
+    };
+
+    const { id: inboxMessageId } = ingestMessage({
+      text: "Delete item 999",
+      topicKey: "topic-full-flow",
+    });
+
+    const loop = startProcessingLoop(
+      testConfig(),
+      createMockRegistry({}),
+      makeFastLoop(),
+    );
+
+    // Wait for approval to be created
+    await waitFor(() => {
+      const pending = listPendingApprovals(stateLoader, "topic-full-flow");
+      return pending.length > 0;
+    });
+
+    const pending = listPendingApprovals(stateLoader, "topic-full-flow");
+    const approval = pending[0];
+
+    // Message should be waiting for approval
+    const waitingMsg = getInboxMessage(stateLoader, inboxMessageId);
+    expect(waitingMsg?.approvalId).toBe(approval.id);
+    expect(waitingMsg?.status).toBe("pending");
+    expect(waitingMsg?.next_attempt_at).toBeGreaterThan(Date.now());
+
+    // Send approval response
+    const { eventId: responseId } = ingestMessage({
+      text: "approve",
+      topicKey: "topic-full-flow",
+      metadata: {
+        type: "approval_response",
+        approvalId: approval.id,
+        action: "approve",
+      },
+    });
+
+    // Wait for approval response to be processed
+    await waitFor(
+      () => getInboxMessage(stateLoader, responseId)?.status === "done",
+    );
+
+    // Wait for original message to be processed (re-run)
+    await waitFor(
+      () => getInboxMessage(stateLoader, inboxMessageId)?.status === "done",
+    );
+
+    await loop.stop();
+
+    // Original message should be done
+    const finalMsg = getInboxMessage(stateLoader, inboxMessageId);
+    expect(finalMsg?.status).toBe("done");
+
+    // Should have outbox messages including final response
+    const outbox = listOutboxMessagesByTopic(stateLoader, "topic-full-flow");
+    const finalResponse = outbox.find((m) => m.text.includes("deleted"));
+    expect(finalResponse).toBeTruthy();
   });
 });

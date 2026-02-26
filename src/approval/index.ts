@@ -18,12 +18,10 @@ export const APPROVAL_TTL_MS = 15 * 60 * 1000;
 export interface ProposeApprovalInput {
   topicKey: string;
   action: string;
+  /** The inbox message ID that triggered this approval */
+  inboxMessageId: string;
   toolName?: string;
   toolArgsJson?: string;
-  /** Serialized agent state (messages array) for resumption */
-  agentStateJson?: string;
-  /** Serialized tool calls blocked pending approval */
-  toolCallsJson?: string;
 }
 
 /**
@@ -38,11 +36,24 @@ export function isExpired(
 
 /**
  * Create a new pending approval request.
+ *
+ * Throws if the inbox message already has a pending approval (uniqueness constraint).
  */
 export function proposeApproval(
   loader: StateLoader,
   input: ProposeApprovalInput,
 ): PendingApproval {
+  // Uniqueness check: fail if message already has pending approval
+  const existing = loader.find(PendingApproval, {
+    where: { inboxMessageId: input.inboxMessageId, status: "pending" },
+    limit: 1,
+  });
+  if (existing.length > 0) {
+    throw new Error(
+      `Message ${input.inboxMessageId} already has a pending approval: ${existing[0].id}`,
+    );
+  }
+
   const now = Date.now();
   return loader.create(PendingApproval, {
     id: crypto.randomUUID(),
@@ -53,8 +64,7 @@ export function proposeApproval(
     status: "pending" as ApprovalStatus,
     proposedAt: now,
     resolvedAt: null,
-    agentStateJson: input.agentStateJson ?? null,
-    toolCallsJson: input.toolCallsJson ?? null,
+    inboxMessageId: input.inboxMessageId,
     expiresAt: now + APPROVAL_TTL_MS,
   });
 }
@@ -97,43 +107,12 @@ export function listPendingApprovals(
 }
 
 /**
- * Get the most recent approved approval for a specific tool.
- * Returns null if no approved approval exists.
+ * Get an approval by ID.
+ * Returns null if not found.
  */
-export function getApprovalForTool(
-  loader: StateLoader,
-  topicKey: string,
-  toolName: string,
-): PendingApproval | null {
-  const approvals = loader.find(PendingApproval, {
-    where: { status: "approved", topicKey, toolName },
-    orderBy: { proposedAt: "desc" },
-    limit: 1,
-  });
-  return approvals.length > 0 ? approvals[0] : null;
-}
-
-/**
- * Mark an approved approval as consumed.
- * Logs a warning if the approval is not found or not in approved status.
- */
-export async function consumeApproval(
+export function getApprovalById(
   loader: StateLoader,
   id: string,
-): Promise<void> {
-  const approval = loader.get(PendingApproval, id);
-  if (!approval) {
-    console.warn(`consumeApproval: approval not found: ${id}`);
-    return;
-  }
-
-  if (approval.status !== "approved") {
-    console.warn(
-      `consumeApproval: approval not in approved status: ${id} (status: ${approval.status})`,
-    );
-    return;
-  }
-
-  approval.status = "consumed";
-  await approval.save();
+): PendingApproval | null {
+  return loader.get(PendingApproval, id);
 }

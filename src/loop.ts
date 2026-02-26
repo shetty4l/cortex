@@ -20,9 +20,10 @@
 import { createLogger } from "@shetty4l/core/log";
 import { runAgentLoop } from "./agent";
 import {
+  getApprovalById,
   isExpired,
   listPendingApprovals,
-  PendingApproval,
+  proposeApproval,
   resolveApproval,
 } from "./approval";
 import type { CortexConfig } from "./config";
@@ -38,6 +39,7 @@ import {
 import {
   claimNextInboxMessage,
   completeInboxMessage,
+  getInboxMessage,
   retryInboxMessage,
 } from "./inbox";
 import { enqueueOutboxMessage } from "./outbox";
@@ -215,32 +217,133 @@ export function startProcessingLoop(
                 `[${message.topic_key}] approval response: ${approvalId} -> ${action}`,
               );
 
-              const result = await handleApprovalResponse(
-                stateLoader,
-                approvalId,
-                action,
-                config,
-                registry,
-                openAITools,
-              );
+              const approval = getApprovalById(stateLoader, approvalId);
 
-              if (result) {
-                // Save turns to history if any
-                if (result.turns.length > 0) {
-                  await saveAgentHistoryWithLoader(
-                    stateLoader,
-                    message.topic_key,
-                    result.turns,
-                  );
-                }
-
-                // Enqueue response to outbox
+              if (!approval) {
                 enqueueOutboxMessage(stateLoader, {
                   channel: resolveOutputChannel(message.channel, config),
                   topicKey: message.topic_key,
-                  text: result.response,
+                  text: "This approval request was not found or has already been processed.",
                 });
+                const processingMs = Math.round(performance.now() - startMs);
+                await completeInboxMessage(
+                  stateLoader,
+                  message.id,
+                  processingMs,
+                );
+                return;
               }
+
+              if (approval.status !== "pending") {
+                enqueueOutboxMessage(stateLoader, {
+                  channel: resolveOutputChannel(message.channel, config),
+                  topicKey: message.topic_key,
+                  text: "This approval request has already been processed.",
+                });
+                const processingMs = Math.round(performance.now() - startMs);
+                await completeInboxMessage(
+                  stateLoader,
+                  message.id,
+                  processingMs,
+                );
+                return;
+              }
+
+              if (isExpired(approval)) {
+                // Expired: resolve approval and mark original message as failed
+                await resolveApproval(stateLoader, approvalId, "expired");
+                const originalMessage = getInboxMessage(
+                  stateLoader,
+                  approval.inboxMessageId,
+                );
+                if (originalMessage) {
+                  originalMessage.status = "failed";
+                  originalMessage.error = "Approval expired";
+                  await originalMessage.save();
+                }
+                enqueueOutboxMessage(stateLoader, {
+                  channel: resolveOutputChannel(message.channel, config),
+                  topicKey: message.topic_key,
+                  text: "This approval request has expired. Please try your request again.",
+                });
+                const processingMs = Math.round(performance.now() - startMs);
+                await completeInboxMessage(
+                  stateLoader,
+                  message.id,
+                  processingMs,
+                );
+
+                if (debug.isEnabled()) {
+                  debug.log({
+                    type: "done",
+                    traceId,
+                    timestamp: new Date().toISOString(),
+                    totalMs: processingMs,
+                    ok: true,
+                    approvalId,
+                    action: "expired",
+                  });
+                }
+
+                return;
+              }
+
+              if (action === "reject") {
+                // Rejected: resolve approval and complete original message
+                await resolveApproval(stateLoader, approvalId, "rejected");
+                const originalMessage = getInboxMessage(
+                  stateLoader,
+                  approval.inboxMessageId,
+                );
+                if (originalMessage) {
+                  originalMessage.status = "done";
+                  await originalMessage.save();
+                }
+                enqueueOutboxMessage(stateLoader, {
+                  channel: resolveOutputChannel(message.channel, config),
+                  topicKey: message.topic_key,
+                  text: "Action cancelled.",
+                });
+                const processingMs = Math.round(performance.now() - startMs);
+                await completeInboxMessage(
+                  stateLoader,
+                  message.id,
+                  processingMs,
+                );
+
+                if (debug.isEnabled()) {
+                  debug.log({
+                    type: "done",
+                    traceId,
+                    timestamp: new Date().toISOString(),
+                    totalMs: processingMs,
+                    ok: true,
+                    approvalId,
+                    action,
+                  });
+                }
+
+                return;
+              }
+
+              // Approve: resolve approval, re-queue original message for processing
+              await resolveApproval(stateLoader, approvalId, "approved");
+              const originalMessage = getInboxMessage(
+                stateLoader,
+                approval.inboxMessageId,
+              );
+              if (originalMessage) {
+                // Re-queue: set status back to pending so it gets picked up
+                originalMessage.status = "pending";
+                originalMessage.next_attempt_at = 0;
+                await originalMessage.save();
+              }
+
+              enqueueOutboxMessage(stateLoader, {
+                channel: resolveOutputChannel(message.channel, config),
+                topicKey: message.topic_key,
+                text: "Approved. Processing your request...",
+              });
 
               const processingMs = Math.round(performance.now() - startMs);
               await completeInboxMessage(stateLoader, message.id, processingMs);
@@ -260,50 +363,77 @@ export function startProcessingLoop(
               return; // Exit trace context, continue loop
             }
 
-            // Check for pending approvals - block new messages if approval pending
-            const pendingApprovals = listPendingApprovals(
-              stateLoader,
-              message.topic_key,
-            );
-            if (pendingApprovals.length > 0) {
-              const approval = pendingApprovals[0]; // Most recent
-
-              if (!isExpired(approval)) {
-                // Re-present approval buttons
+            // Check message.approvalId: if linked to an approved approval, set approvalGranted=true
+            let approvalGranted = false;
+            if (message.approvalId) {
+              const linkedApproval = getApprovalById(
+                stateLoader,
+                message.approvalId,
+              );
+              if (linkedApproval?.status === "approved") {
+                approvalGranted = true;
                 log(
-                  `[${message.topic_key}] blocked by pending approval: ${approval.id}`,
+                  `[${message.topic_key}] approval granted for message: ${message.approvalId}`,
                 );
-
-                enqueueOutboxMessage(stateLoader, {
-                  channel: resolveOutputChannel(message.channel, config),
-                  topicKey: message.topic_key,
-                  text: "Please respond to the pending approval request first.",
-                  payload: {
-                    buttons: [
-                      {
-                        label: "✓ Approve",
-                        data: `approval:${approval.id}:approve`,
-                      },
-                      {
-                        label: "✗ Reject",
-                        data: `approval:${approval.id}:reject`,
-                      },
-                    ],
-                  },
-                });
-
-                // Mark inbox message as done (we handled it by re-presenting)
-                const processingMs = Math.round(performance.now() - startMs);
-                await completeInboxMessage(
-                  stateLoader,
-                  message.id,
-                  processingMs,
-                );
-                return; // Exit the trace context, continue loop
               }
+            }
 
-              // Approval expired - resolve it and continue processing
-              await resolveApproval(stateLoader, approval.id, "expired");
+            // Check for pending approvals - block new messages if approval pending
+            // (only if this message doesn't already have approval granted)
+            if (!approvalGranted) {
+              const pendingApprovals = listPendingApprovals(
+                stateLoader,
+                message.topic_key,
+              );
+              if (pendingApprovals.length > 0) {
+                const approval = pendingApprovals[0]; // Most recent
+
+                if (!isExpired(approval)) {
+                  // Re-present approval buttons
+                  log(
+                    `[${message.topic_key}] blocked by pending approval: ${approval.id}`,
+                  );
+
+                  enqueueOutboxMessage(stateLoader, {
+                    channel: resolveOutputChannel(message.channel, config),
+                    topicKey: message.topic_key,
+                    text: "Please respond to the pending approval request first.",
+                    payload: {
+                      buttons: [
+                        {
+                          label: "✓ Approve",
+                          data: `approval:${approval.id}:approve`,
+                        },
+                        {
+                          label: "✗ Reject",
+                          data: `approval:${approval.id}:reject`,
+                        },
+                      ],
+                    },
+                  });
+
+                  // Mark inbox message as done (we handled it by re-presenting)
+                  const processingMs = Math.round(performance.now() - startMs);
+                  await completeInboxMessage(
+                    stateLoader,
+                    message.id,
+                    processingMs,
+                  );
+                  return; // Exit the trace context, continue loop
+                }
+
+                // Approval expired - resolve it and mark original message as failed
+                await resolveApproval(stateLoader, approval.id, "expired");
+                const originalMessage = getInboxMessage(
+                  stateLoader,
+                  approval.inboxMessageId,
+                );
+                if (originalMessage && originalMessage.id !== message.id) {
+                  originalMessage.status = "failed";
+                  originalMessage.error = "Approval expired";
+                  await originalMessage.save();
+                }
+              }
             }
 
             // 1. Recall memories from Engram (graceful on failure)
@@ -377,7 +507,6 @@ export function startProcessingLoop(
             let ok: boolean;
             let errorMsg: string | undefined;
             let needsApproval = false;
-            let approvalId: string | undefined;
             let blockedToolCalls: ToolCall[] | undefined;
 
             if (hasTools) {
@@ -393,31 +522,19 @@ export function startProcessingLoop(
                   skillConfig: config.skillConfig,
                   synapseTimeoutMs: config.synapseTimeoutMs,
                 },
-                stateLoader,
                 topicKey: message.topic_key,
+                approvalGranted,
               });
 
               if (agentResult.ok) {
                 // Check if agent needs approval
                 if (agentResult.value.needsApproval) {
                   needsApproval = true;
-                  approvalId = agentResult.value.approvalId;
                   blockedToolCalls = agentResult.value.blockedToolCalls;
                   ok = true;
                   responseText = "";
 
-                  // Save partial history (up to where we blocked)
-                  if (agentResult.value.turns.length > 0) {
-                    const userMessage = {
-                      role: "user" as const,
-                      content: message.text,
-                    };
-                    await saveAgentHistoryWithLoader(
-                      stateLoader,
-                      message.topic_key,
-                      [userMessage, ...agentResult.value.turns],
-                    );
-                  }
+                  // Don't save partial history when blocked - we'll re-run the full request on approval
                 } else {
                   ok = true;
                   responseText = agentResult.value.response;
@@ -468,7 +585,37 @@ export function startProcessingLoop(
 
             if (ok) {
               // Handle approval request case
-              if (needsApproval && approvalId && blockedToolCalls) {
+              if (needsApproval && blockedToolCalls) {
+                // Build tool description for the approval action
+                const toolDescriptions = blockedToolCalls
+                  .filter((tc) => registry.isMutating(tc.function.name))
+                  .map((tc) => {
+                    try {
+                      const args = JSON.parse(tc.function.arguments);
+                      return `${tc.function.name}(${JSON.stringify(args)})`;
+                    } catch {
+                      return `${tc.function.name}(${tc.function.arguments})`;
+                    }
+                  })
+                  .join(", ");
+
+                const mutatingToolCall = blockedToolCalls.find((tc) =>
+                  registry.isMutating(tc.function.name),
+                );
+
+                // Create approval with inboxMessageId
+                const approval = proposeApproval(stateLoader, {
+                  topicKey: message.topic_key,
+                  action: `execute: ${toolDescriptions}`,
+                  inboxMessageId: message.id,
+                  toolName: mutatingToolCall?.function.name,
+                  toolArgsJson: mutatingToolCall?.function.arguments,
+                });
+
+                // Link approval to message
+                message.approvalId = approval.id;
+                await message.save();
+
                 // Generate approval request message with buttons
                 const approvalMessage = await generateApprovalMessage(
                   blockedToolCalls,
@@ -485,23 +632,24 @@ export function startProcessingLoop(
                     buttons: [
                       {
                         label: "✓ Approve",
-                        data: `approval:${approvalId}:approve`,
+                        data: `approval:${approval.id}:approve`,
                       },
                       {
                         label: "✗ Reject",
-                        data: `approval:${approvalId}:reject`,
+                        data: `approval:${approval.id}:reject`,
                       },
                     ],
                   },
                 });
 
-                await completeInboxMessage(
-                  stateLoader,
-                  message.id,
-                  processingMs,
-                );
+                // Don't complete the message - leave it for re-processing after approval
+                // Set status back to pending but with a flag that it's waiting for approval
+                message.status = "pending";
+                // Set next_attempt_at far in future - approval response will reset it
+                message.next_attempt_at = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+                await message.save();
 
-                log(`[${message.topic_key}] approval required: ${approvalId}`);
+                log(`[${message.topic_key}] approval required: ${approval.id}`);
 
                 // Emit done event
                 if (debug.isEnabled()) {
@@ -511,7 +659,7 @@ export function startProcessingLoop(
                     timestamp: new Date().toISOString(),
                     totalMs: processingMs,
                     ok: true,
-                    approvalId,
+                    approvalId: approval.id,
                   });
                 }
               } else {
@@ -685,102 +833,4 @@ Do not include the buttons in your response - they will be added automatically.`
   // Fallback to a simple message if LLM fails
   const toolNames = blockedToolCalls.map((tc) => tc.function.name).join(", ");
   return `The following action requires your approval: **${toolNames}**\n\nPlease review and approve or reject.`;
-}
-
-/**
- * Handle an approval response (approve/reject callback from button click).
- * Returns the response text to send to the user, or null if the approval
- * should be handled by resuming the agent loop.
- */
-export async function handleApprovalResponse(
-  stateLoader: IStateLoader,
-  approvalId: string,
-  action: "approve" | "reject",
-  config: CortexConfig,
-  registry: SkillRegistry,
-  openAITools: OpenAITool[],
-): Promise<{ response: string; turns: ChatMessage[] } | null> {
-  const approval = stateLoader.get(PendingApproval, approvalId);
-
-  if (!approval) {
-    return {
-      response:
-        "This approval request was not found or has already been processed.",
-      turns: [],
-    };
-  }
-
-  if (approval.status !== "pending") {
-    return {
-      response: "This approval request has already been processed.",
-      turns: [],
-    };
-  }
-
-  if (isExpired(approval)) {
-    await resolveApproval(stateLoader, approvalId, "expired");
-    return {
-      response:
-        "This approval request has expired. Please try your request again.",
-      turns: [],
-    };
-  }
-
-  if (action === "reject") {
-    await resolveApproval(stateLoader, approvalId, "rejected");
-    return { response: "Action cancelled.", turns: [] };
-  }
-
-  // Approve: mark as approved and resume agent loop
-  await resolveApproval(stateLoader, approvalId, "approved");
-
-  // Deserialize state and resume
-  if (!approval.agentStateJson || !approval.toolCallsJson) {
-    return { response: "Unable to resume: missing state data.", turns: [] };
-  }
-
-  try {
-    const messages = JSON.parse(approval.agentStateJson) as ChatMessage[];
-    const toolCalls = JSON.parse(approval.toolCallsJson) as ToolCall[];
-
-    // Resume the agent loop with the restored state and execute blocked tools directly
-    const agentResult = await runAgentLoop({
-      messages,
-      tools: openAITools,
-      registry,
-      config: {
-        models: config.models,
-        synapseUrl: config.synapseUrl,
-        toolTimeoutMs: config.toolTimeoutMs,
-        maxToolRounds: config.maxToolRounds,
-        skillConfig: config.skillConfig,
-        synapseTimeoutMs: config.synapseTimeoutMs,
-      },
-      stateLoader,
-      topicKey: approval.topicKey,
-      resumeToolCalls: toolCalls,
-    });
-
-    if (agentResult.ok) {
-      if (agentResult.value.needsApproval) {
-        // Shouldn't happen since we just approved, but handle gracefully
-        return {
-          response: "Additional approval required.",
-          turns: agentResult.value.turns,
-        };
-      }
-      return {
-        response: agentResult.value.response,
-        turns: agentResult.value.turns,
-      };
-    }
-
-    return {
-      response: `Error executing action: ${agentResult.error}`,
-      turns: [],
-    };
-  } catch (e) {
-    const errorMsg = e instanceof Error ? e.message : String(e);
-    return { response: `Error resuming action: ${errorMsg}`, turns: [] };
-  }
 }

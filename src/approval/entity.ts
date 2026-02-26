@@ -30,10 +30,8 @@ export class PendingApproval extends CollectionEntity {
   @Field("string") @Index() status: ApprovalStatus = "pending";
   @Field("number") @Index() proposedAt: number = 0;
   @Field("number") resolvedAt: number | null = null;
-  /** Serialized agent state (messages array) for resumption after approval */
-  @Field("string") agentStateJson: string | null = null;
-  /** Serialized tool calls blocked pending approval */
-  @Field("string") toolCallsJson: string | null = null;
+  /** Links back to the inbox message that triggered this approval */
+  @Field("string") @Index() inboxMessageId: string = "";
   /** Timestamp when this approval expires (proposedAt + TTL) */
   @Field("number") @Index() expiresAt: number = 0;
 

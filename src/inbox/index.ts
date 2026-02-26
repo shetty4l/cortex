@@ -37,6 +37,8 @@ export class InboxMessage extends CollectionEntity {
   @Field("number") @Index() next_attempt_at: number = 0;
   @Field("string") error: string | null = null;
   @Field("number") processing_ms: number | null = null;
+  /** Links to approval if this message triggered one; set when approval created */
+  @Field("string") approvalId: string | null = null;
 
   async save(): Promise<void> {
     throw new Error("Not bound to StateLoader");

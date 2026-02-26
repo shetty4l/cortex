@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { StateLoader } from "@shetty4l/core/state";
 import {
   APPROVAL_TTL_MS,
-  consumeApproval,
-  getApprovalForTool,
+  getApprovalById,
   isExpired,
   listPendingApprovals,
   proposeApproval,
   resolveApproval,
 } from "../src/approval/index";
 import { closeDatabase, getDatabase, initDatabase } from "../src/db";
+import { enqueueInboxMessage } from "../src/inbox";
 
 let stateLoader: StateLoader;
 
@@ -23,12 +23,29 @@ afterEach(async () => {
   closeDatabase();
 });
 
+// Helper to create an inbox message for approval tests
+function createInboxMessage(): string {
+  const id = crypto.randomUUID().slice(0, 8);
+  const result = enqueueInboxMessage(stateLoader, {
+    channel: "test",
+    externalMessageId: `msg-${id}`,
+    topicKey: "topic-1",
+    userId: "user-1",
+    text: "Test message",
+    occurredAt: Date.now(),
+    idempotencyKey: `key-${id}`,
+  });
+  return result.id;
+}
+
 describe("approval CRUD", () => {
   test("proposeApproval returns PendingApproval with status pending", () => {
+    const inboxMessageId = createInboxMessage();
     const before = Date.now();
     const approval = proposeApproval(stateLoader, {
       topicKey: "trip-japan",
       action: "book_hotel",
+      inboxMessageId,
     });
     const after = Date.now();
 
@@ -41,16 +58,17 @@ describe("approval CRUD", () => {
     expect(approval.proposedAt).toBeGreaterThanOrEqual(before);
     expect(approval.proposedAt).toBeLessThanOrEqual(after);
     expect(approval.resolvedAt).toBeNull();
-    expect(approval.agentStateJson).toBeNull();
-    expect(approval.toolCallsJson).toBeNull();
+    expect(approval.inboxMessageId).toBe(inboxMessageId);
     expect(approval.expiresAt).toBeGreaterThanOrEqual(before + APPROVAL_TTL_MS);
     expect(approval.expiresAt).toBeLessThanOrEqual(after + APPROVAL_TTL_MS);
   });
 
   test("proposeApproval with toolName and toolArgsJson", () => {
+    const inboxMessageId = createInboxMessage();
     const approval = proposeApproval(stateLoader, {
       topicKey: "trip",
       action: "send_email",
+      inboxMessageId,
       toolName: "gmail.send",
       toolArgsJson: '{"to":"test@example.com"}',
     });
@@ -59,27 +77,32 @@ describe("approval CRUD", () => {
     expect(approval.toolArgsJson).toBe('{"to":"test@example.com"}');
   });
 
-  test("proposeApproval with agentStateJson and toolCallsJson", () => {
-    const agentState = JSON.stringify([{ role: "user", content: "test" }]);
-    const toolCalls = JSON.stringify([
-      { id: "tc1", function: { name: "test" } },
-    ]);
+  test("proposeApproval throws if message already has pending approval", () => {
+    const inboxMessageId = createInboxMessage();
 
-    const approval = proposeApproval(stateLoader, {
+    // First approval should succeed
+    proposeApproval(stateLoader, {
       topicKey: "trip",
-      action: "execute_tool",
-      agentStateJson: agentState,
-      toolCallsJson: toolCalls,
+      action: "first_action",
+      inboxMessageId,
     });
 
-    expect(approval.agentStateJson).toBe(agentState);
-    expect(approval.toolCallsJson).toBe(toolCalls);
+    // Second approval for same message should throw
+    expect(() =>
+      proposeApproval(stateLoader, {
+        topicKey: "trip",
+        action: "second_action",
+        inboxMessageId,
+      }),
+    ).toThrow(/already has a pending approval/);
   });
 
   test("resolveApproval with approved sets status and resolved_at", async () => {
+    const inboxMessageId = createInboxMessage();
     const approval = proposeApproval(stateLoader, {
       topicKey: "trip",
       action: "book_flight",
+      inboxMessageId,
     });
 
     await resolveApproval(stateLoader, approval.id, "approved");
@@ -89,9 +112,11 @@ describe("approval CRUD", () => {
   });
 
   test("resolveApproval with rejected sets status and resolved_at", async () => {
+    const inboxMessageId = createInboxMessage();
     const approval = proposeApproval(stateLoader, {
       topicKey: "trip",
       action: "delete_account",
+      inboxMessageId,
     });
 
     await resolveApproval(stateLoader, approval.id, "rejected");
@@ -101,8 +126,18 @@ describe("approval CRUD", () => {
   });
 
   test("listPendingApprovals returns only pending status", async () => {
-    const a1 = proposeApproval(stateLoader, { topicKey: "t1", action: "a1" });
-    proposeApproval(stateLoader, { topicKey: "t2", action: "a2" });
+    const inboxMessageId1 = createInboxMessage();
+    const inboxMessageId2 = createInboxMessage();
+    const a1 = proposeApproval(stateLoader, {
+      topicKey: "t1",
+      action: "a1",
+      inboxMessageId: inboxMessageId1,
+    });
+    proposeApproval(stateLoader, {
+      topicKey: "t2",
+      action: "a2",
+      inboxMessageId: inboxMessageId2,
+    });
     await resolveApproval(stateLoader, a1.id, "approved");
 
     const pending = listPendingApprovals(stateLoader);
@@ -111,9 +146,24 @@ describe("approval CRUD", () => {
   });
 
   test("listPendingApprovals filtered by topicKey", () => {
-    proposeApproval(stateLoader, { topicKey: "trip-japan", action: "a1" });
-    proposeApproval(stateLoader, { topicKey: "trip-paris", action: "a2" });
-    proposeApproval(stateLoader, { topicKey: "trip-japan", action: "a3" });
+    const inboxMessageId1 = createInboxMessage();
+    const inboxMessageId2 = createInboxMessage();
+    const inboxMessageId3 = createInboxMessage();
+    proposeApproval(stateLoader, {
+      topicKey: "trip-japan",
+      action: "a1",
+      inboxMessageId: inboxMessageId1,
+    });
+    proposeApproval(stateLoader, {
+      topicKey: "trip-paris",
+      action: "a2",
+      inboxMessageId: inboxMessageId2,
+    });
+    proposeApproval(stateLoader, {
+      topicKey: "trip-japan",
+      action: "a3",
+      inboxMessageId: inboxMessageId3,
+    });
 
     const japan = listPendingApprovals(stateLoader, "trip-japan");
     expect(japan).toHaveLength(2);
@@ -126,75 +176,34 @@ describe("approval CRUD", () => {
     expect(paris[0].topicKey).toBe("trip-paris");
   });
 
-  test("getApprovalForTool returns most recent approved approval", async () => {
-    const a1 = proposeApproval(stateLoader, {
+  test("getApprovalById returns approval by ID", async () => {
+    const inboxMessageId = createInboxMessage();
+    const created = proposeApproval(stateLoader, {
       topicKey: "trip",
       action: "call_tool",
+      inboxMessageId,
       toolName: "gmail.send",
     });
-    await resolveApproval(stateLoader, a1.id, "approved");
 
-    const approval = getApprovalForTool(stateLoader, "trip", "gmail.send");
+    const approval = getApprovalById(stateLoader, created.id);
     expect(approval).not.toBeNull();
-    expect(approval!.id).toBe(a1.id);
-    expect(approval!.status).toBe("approved");
+    expect(approval!.id).toBe(created.id);
+    expect(approval!.status).toBe("pending");
   });
 
-  test("getApprovalForTool returns null when no approval exists", () => {
-    const approval = getApprovalForTool(stateLoader, "trip", "gmail.send");
+  test("getApprovalById returns null when no approval exists", () => {
+    const approval = getApprovalById(stateLoader, "non-existent-id");
     expect(approval).toBeNull();
-  });
-
-  test("consumeApproval marks approved approval as consumed", async () => {
-    const a1 = proposeApproval(stateLoader, {
-      topicKey: "trip",
-      action: "call_tool",
-      toolName: "gmail.send",
-    });
-    await resolveApproval(stateLoader, a1.id, "approved");
-
-    await consumeApproval(stateLoader, a1.id);
-
-    // Should no longer appear in getApprovalForTool
-    const approval = getApprovalForTool(stateLoader, "trip", "gmail.send");
-    expect(approval).toBeNull();
-  });
-
-  test("consumeApproval logs warning for non-existent approval", async () => {
-    const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (msg: string) => warnings.push(msg);
-
-    await consumeApproval(stateLoader, "non-existent-id");
-
-    console.warn = originalWarn;
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("not found");
-  });
-
-  test("consumeApproval logs warning for non-approved approval", async () => {
-    const a1 = proposeApproval(stateLoader, {
-      topicKey: "trip",
-      action: "call_tool",
-    });
-
-    const warnings: string[] = [];
-    const originalWarn = console.warn;
-    console.warn = (msg: string) => warnings.push(msg);
-
-    await consumeApproval(stateLoader, a1.id);
-
-    console.warn = originalWarn;
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain("not in approved status");
   });
 });
 
 describe("isExpired", () => {
   test("returns false when expiresAt is 0", () => {
+    const inboxMessageId = createInboxMessage();
     const approval = proposeApproval(stateLoader, {
       topicKey: "trip",
       action: "test",
+      inboxMessageId,
     });
     // Manually set expiresAt to 0 to test edge case
     approval.expiresAt = 0;
@@ -203,9 +212,11 @@ describe("isExpired", () => {
   });
 
   test("returns false when current time is before expiresAt", () => {
+    const inboxMessageId = createInboxMessage();
     const approval = proposeApproval(stateLoader, {
       topicKey: "trip",
       action: "test",
+      inboxMessageId,
     });
 
     // Check with current time (should not be expired)
@@ -213,9 +224,11 @@ describe("isExpired", () => {
   });
 
   test("returns true when current time equals expiresAt", () => {
+    const inboxMessageId = createInboxMessage();
     const approval = proposeApproval(stateLoader, {
       topicKey: "trip",
       action: "test",
+      inboxMessageId,
     });
 
     // Check at exact expiry time
@@ -223,9 +236,11 @@ describe("isExpired", () => {
   });
 
   test("returns true when current time is after expiresAt", () => {
+    const inboxMessageId = createInboxMessage();
     const approval = proposeApproval(stateLoader, {
       topicKey: "trip",
       action: "test",
+      inboxMessageId,
     });
 
     // Check after expiry
