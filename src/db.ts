@@ -129,6 +129,7 @@ export function createConnectionPool(dbPath: string): ConnectionPool {
         if (dbPath !== ":memory:") {
           conn.exec("PRAGMA journal_mode = WAL;");
         }
+        conn.exec("PRAGMA busy_timeout = 5000;"); // Wait up to 5s for locks
         conn.exec("PRAGMA foreign_keys = ON");
         connections.set(consumerId, conn);
       }
