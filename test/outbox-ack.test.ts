@@ -101,12 +101,15 @@ describe("POST /outbox/ack", () => {
       text: "Hello",
     });
 
+    // Poll with status="pending" since we're bypassing Cerebellum in this test
     const results = await pollOutboxMessages(
       stateLoader,
       "telegram",
       1,
       60,
       10,
+      undefined, // topicKey
+      "pending", // status
     );
     expect(results).toHaveLength(1);
     expect(results[0].messageId).toBe(outboxId);

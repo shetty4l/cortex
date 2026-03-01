@@ -194,6 +194,8 @@ interface PollRequestBody {
   topicKey?: string;
   max?: number;
   leaseSeconds?: number;
+  /** Status filter. Defaults to "ready". */
+  status?: string;
 }
 
 function validatePollBody(body: PollRequestBody): string[] {
@@ -230,6 +232,14 @@ function validatePollBody(body: PollRequestBody): string[] {
     } else if (body.leaseSeconds < 10 || body.leaseSeconds > 300) {
       details.push("leaseSeconds must be between 10 and 300");
     }
+  }
+
+  if (
+    body.status !== undefined &&
+    body.status !== null &&
+    (typeof body.status !== "string" || body.status.length === 0)
+  ) {
+    details.push("status must be a non-empty string");
   }
 
   return details;
@@ -281,6 +291,7 @@ async function handleOutboxPoll(
     leaseSeconds,
     config.outboxMaxAttempts,
     body.topicKey ?? undefined,
+    body.status ?? "ready",
   );
 
   const response = jsonOk({ messages }, 200);
