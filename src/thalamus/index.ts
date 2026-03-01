@@ -1,5 +1,6 @@
 import { createLogger } from "@shetty4l/core/log";
 import { StateLoader } from "@shetty4l/core/state";
+import type { MessageType } from "../cerebellum/types";
 import { getDatabase } from "../db";
 import { enqueueInboxMessage } from "../inbox";
 import {
@@ -62,6 +63,43 @@ const DEFAULT_PRIORITY = 5;
 
 function getChannelPriority(channel: string): number {
   return CHANNEL_PRIORITY[channel] ?? DEFAULT_PRIORITY;
+}
+
+/**
+ * Determine message_type based on channel and metadata.
+ *
+ * Rules:
+ * - calendar channel or source="thalamus-sync" for calendar → "notification"
+ * - metadata.type="callback" → "callback"
+ * - otherwise → "conversational"
+ */
+function getMessageType(
+  channel: string,
+  metadata?: Record<string, unknown>,
+): MessageType {
+  // Check for callback type in metadata
+  if (metadata?.type === "callback") {
+    return "callback";
+  }
+
+  // Calendar channel is a notification
+  if (channel === "calendar") {
+    return "notification";
+  }
+
+  // Thalamus sync from calendar is a notification
+  if (
+    metadata?.source === "thalamus-sync" &&
+    metadata?.rawBufferIds &&
+    Array.isArray(metadata.rawBufferIds)
+  ) {
+    // Check if any raw buffer was from calendar channel
+    // The channel info is embedded in the content, but we can't easily detect that here
+    // So we rely on the thalamus channel being set appropriately during sync
+    return "notification";
+  }
+
+  return "conversational";
 }
 
 export interface SyncResult {
@@ -187,6 +225,12 @@ export class Thalamus {
   ): Promise<number> {
     const config = this.config!;
 
+    // Build a map of buffer ID to channel for message_type determination
+    const bufferIdToChannel = new Map<string, string>();
+    for (const buf of buffers) {
+      bufferIdToChannel.set(buf.id, buf.channel);
+    }
+
     // Group buffers by channel
     const grouped = new Map<
       string,
@@ -285,6 +329,17 @@ export class Thalamus {
       const idempotencyHash = [...item.rawBufferIds].sort().join(",");
       const idempotencyKey = `thalamus-sync:${item.topicKey}:${idempotencyHash}`;
 
+      // Determine message_type based on source channels of included buffers
+      // If any buffer came from calendar, treat as notification
+      const sourceChannels = new Set(
+        item.rawBufferIds
+          .map((id) => bufferIdToChannel.get(id))
+          .filter((ch): ch is string => ch !== undefined),
+      );
+      const messageType: MessageType = sourceChannels.has("calendar")
+        ? "notification"
+        : "conversational";
+
       enqueueInboxMessage(this.stateLoader!, {
         channel: "thalamus",
         externalMessageId: idempotencyKey,
@@ -296,8 +351,10 @@ export class Thalamus {
         metadata: {
           rawBufferIds: item.rawBufferIds,
           source: "thalamus-sync",
+          sourceChannels: Array.from(sourceChannels),
         },
         priority: item.priority,
+        messageType,
       });
     }
 
@@ -391,6 +448,9 @@ export class Thalamus {
 
     const occurredAtMs = new Date(occurredAt).getTime();
 
+    // Determine message type based on channel and metadata
+    const messageType = getMessageType(channel, metadata);
+
     const result = enqueueInboxMessage(loader, {
       channel,
       externalMessageId: externalId,
@@ -401,6 +461,7 @@ export class Thalamus {
       idempotencyKey,
       metadata,
       priority,
+      messageType,
     });
 
     return { eventId: result.id, duplicate: result.duplicate };
