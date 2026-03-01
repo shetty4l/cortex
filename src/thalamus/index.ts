@@ -44,7 +44,6 @@ export interface ReceiveResult {
 export interface ThalamusConfig {
   synapseUrl: string;
   thalamusModels: string[];
-  thalamusExtractionModel?: string;
   synapseTimeoutMs: number;
   syncIntervalMs: number;
   stateLoader: IStateLoader;
@@ -220,10 +219,7 @@ export class Thalamus {
     );
     const userPrompt = buildTriageUserPrompt(channelBuffers, existingTopics);
 
-    // Use extraction model if configured, otherwise fall back to thalamus models
-    const models = config.thalamusExtractionModel
-      ? [config.thalamusExtractionModel]
-      : config.thalamusModels;
+    const models = config.thalamusModels;
 
     // Call Synapse via shared chat() — gets model fallback for free
     const chatResult = await chat(

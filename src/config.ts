@@ -66,7 +66,6 @@ export interface CortexConfig {
   // Thalamus
   thalamusModels: string[];
   thalamusSyncIntervalMs: number;
-  thalamusExtractionModel?: string;
 
   // Output routing
   silentChannelAlias?: string;
@@ -102,7 +101,6 @@ const DEFAULTS: Omit<
   synapseTimeoutMs: 60_000,
   thalamusModels: ["gpt-oss:20b"],
   thalamusSyncIntervalMs: 21_600_000,
-  thalamusExtractionModel: "trinity-large-preview-free",
 };
 
 // --- Validation ---
@@ -131,7 +129,6 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
     { key: "engramUrl", label: "engramUrl" },
     { key: "systemPromptFile", label: "systemPromptFile" },
     { key: "silentChannelAlias", label: "silentChannelAlias" },
-    { key: "thalamusExtractionModel", label: "thalamusExtractionModel" },
   ];
 
   for (const field of stringFields) {
