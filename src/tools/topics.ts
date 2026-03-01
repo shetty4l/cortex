@@ -31,10 +31,6 @@ export function createTopicsCreateTool(stateLoader: StateLoader): BuiltinTool {
             type: "string",
             description: "Optional topic description",
           },
-          telegram_thread_id: {
-            type: "number",
-            description: "Optional Telegram thread ID to link",
-          },
         },
         required: ["key"],
       },
@@ -46,7 +42,6 @@ export function createTopicsCreateTool(stateLoader: StateLoader): BuiltinTool {
         key?: string;
         name?: string;
         description?: string;
-        telegram_thread_id?: number;
       };
 
       if (!args.key || typeof args.key !== "string") {
@@ -57,7 +52,6 @@ export function createTopicsCreateTool(stateLoader: StateLoader): BuiltinTool {
         key: args.key,
         name: args.name ?? args.key,
         description: args.description,
-        telegram_thread_id: args.telegram_thread_id,
       });
 
       return ok({
@@ -67,7 +61,6 @@ export function createTopicsCreateTool(stateLoader: StateLoader): BuiltinTool {
           name: topic.name,
           description: topic.description,
           status: topic.status,
-          telegram_thread_id: topic.telegram_thread_id,
         }),
       });
     },
@@ -108,7 +101,6 @@ export function createTopicsListTool(stateLoader: StateLoader): BuiltinTool {
         name: t.name,
         description: t.description,
         status: t.status,
-        telegram_thread_id: t.telegram_thread_id,
       }));
 
       return ok({ content: JSON.stringify(result) });
@@ -190,7 +182,6 @@ export function createTopicsUpdateTool(stateLoader: StateLoader): BuiltinTool {
           name: updated!.name,
           description: updated!.description,
           status: updated!.status,
-          telegram_thread_id: updated!.telegram_thread_id,
           message: "Topic updated",
         }),
       });

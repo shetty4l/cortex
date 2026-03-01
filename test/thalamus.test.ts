@@ -395,6 +395,7 @@ describe("thalamus.syncAll()", () => {
         makeSynapseResponse([
           {
             topicKey: "weekly-schedule",
+            topicName: "Weekly Schedule",
             priority: 2,
             summary: "2 upcoming appointments this week",
             rawBufferIds: ["rb_1", "rb_2"],
@@ -593,6 +594,7 @@ describe("thalamus.syncAll()", () => {
         makeSynapseResponse([
           {
             topicKey: "meeting",
+            topicName: "Meeting",
             priority: 1,
             summary: "Meeting scheduled",
             rawBufferIds: ["rb_1"],

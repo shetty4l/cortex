@@ -42,13 +42,11 @@ describe("topics CRUD", () => {
       description: "Annual team conference",
       starts_at: 1700000000000,
       ends_at: 1700100000000,
-      telegram_thread_id: 42,
     });
 
     expect(topic.description).toBe("Annual team conference");
     expect(topic.starts_at).toBe(1700000000000);
     expect(topic.ends_at).toBe(1700100000000);
-    expect(topic.telegram_thread_id).toBe(42);
   });
 
   test("getTopic returns null for non-existent id", () => {
