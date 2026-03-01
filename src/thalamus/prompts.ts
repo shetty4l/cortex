@@ -13,7 +13,7 @@ const log = createLogger("cortex");
 // --- Types ---
 
 export interface SyncOutputItem {
-  topicKey: string;
+  topicKey: string | null;
   topicName: string;
   priority: number;
   summary: string;
@@ -236,14 +236,18 @@ export function parseSyncOutput(llmResponse: string): ParseResult {
 
     const valid: SyncOutputItem[] = [];
     for (const item of parsed.items) {
+      const itemObj = item as Record<string, unknown>;
+      const topicKeyValid =
+        typeof itemObj.topicKey === "string" || itemObj.topicKey === null;
+
       if (
         typeof item === "object" &&
         item !== null &&
-        typeof (item as Record<string, unknown>).topicKey === "string" &&
-        typeof (item as Record<string, unknown>).topicName === "string" &&
-        typeof (item as Record<string, unknown>).priority === "number" &&
-        typeof (item as Record<string, unknown>).summary === "string" &&
-        Array.isArray((item as Record<string, unknown>).rawBufferIds)
+        topicKeyValid &&
+        typeof itemObj.topicName === "string" &&
+        typeof itemObj.priority === "number" &&
+        typeof itemObj.summary === "string" &&
+        Array.isArray(itemObj.rawBufferIds)
       ) {
         valid.push(item as SyncOutputItem);
       } else {

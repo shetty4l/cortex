@@ -54,7 +54,7 @@ export class InboxMessage extends CollectionEntity {
 export interface EnqueueInboxInput {
   channel: string;
   externalMessageId: string;
-  topicKey: string;
+  topicKey: string | null;
   userId: string;
   text: string;
   occurredAt: number;
@@ -128,7 +128,7 @@ export function enqueueInboxMessage(
     id: `evt_${crypto.randomUUID()}`,
     channel: input.channel,
     external_message_id: input.externalMessageId,
-    topic_key: input.topicKey,
+    topic_key: input.topicKey ?? "",
     user_id: input.userId,
     text: input.text,
     occurred_at: input.occurredAt,

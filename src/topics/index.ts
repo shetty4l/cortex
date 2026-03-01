@@ -86,15 +86,16 @@ export function getTopicByKey(
 
 /**
  * Get a topic by key, or create it if it doesn't exist.
- * When creating, uses the key as both the key and name.
+ * When creating, uses the provided name or defaults to the key.
  */
 export function getOrCreateTopicByKey(
   stateLoader: StateLoader,
   key: string,
+  name?: string,
 ): Topic {
   const existing = getTopicByKey(stateLoader, key);
   if (existing) return existing;
-  return createTopic(stateLoader, { key, name: key });
+  return createTopic(stateLoader, { key, name: name ?? key });
 }
 
 /**
