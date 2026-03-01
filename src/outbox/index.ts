@@ -160,7 +160,7 @@ export function listOutboxMessagesByTopic(
  *
  * Atomically claims eligible messages by setting a lease.
  * Eligible messages: matching channel, next_attempt_at <= now, and either
- * status='pending' OR (status='leased' AND lease_expires_at <= now).
+ * status='ready' (default) OR (status='leased' AND lease_expires_at <= now).
  *
  * Messages exceeding maxAttempts are moved to 'dead' status (DLQ).
  *
@@ -169,6 +169,8 @@ export function listOutboxMessagesByTopic(
  * @param leaseSeconds Lease duration in seconds
  * @param maxAttempts Max attempts before dead-lettering
  * @param topicKey Optional topic filter
+ * @param status Status to poll for (default: "ready"). "pending" messages are
+ *               routed by Cerebellum before becoming "ready".
  * @returns Array of leased messages (excludes dead-lettered ones)
  */
 export async function pollOutboxMessages(
@@ -178,25 +180,26 @@ export async function pollOutboxMessages(
   leaseSeconds: number,
   maxAttempts: number,
   topicKey?: string,
+  status: string = "ready",
 ): Promise<OutboxPollResult[]> {
   const now = Date.now();
 
   return stateLoader.transaction(async () => {
     const results: OutboxPollResult[] = [];
 
-    // Find eligible messages: pending OR expired leases
-    // First get pending messages
-    const pendingWhere: Record<string, unknown> = {
+    // Find eligible messages: ready (or specified status) OR expired leases
+    // First get messages with the requested status
+    const readyWhere: Record<string, unknown> = {
       channel,
-      status: "pending",
+      status,
       next_attempt_at: { op: "lte", value: now },
     };
     if (topicKey) {
-      pendingWhere.topic_key = topicKey;
+      readyWhere.topic_key = topicKey;
     }
 
-    const pending = stateLoader.find(OutboxMessage, {
-      where: pendingWhere,
+    const ready = stateLoader.find(OutboxMessage, {
+      where: readyWhere,
       orderBy: { next_attempt_at: "asc" },
       limit: max,
     });
@@ -218,7 +221,7 @@ export async function pollOutboxMessages(
     });
 
     // Combine and sort by next_attempt_at, then id
-    const eligible = [...pending, ...expiredLeased];
+    const eligible = [...ready, ...expiredLeased];
     eligible.sort((a, b) => {
       if (a.next_attempt_at !== b.next_attempt_at) {
         return a.next_attempt_at - b.next_attempt_at;

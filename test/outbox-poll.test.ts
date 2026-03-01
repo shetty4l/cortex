@@ -140,13 +140,23 @@ describe("POST /outbox/poll", () => {
       channel: string;
       topicKey: string;
       text: string;
+      status: string;
     }> = {},
   ): string {
-    return enqueueOutboxMessage(stateLoader, {
+    const id = enqueueOutboxMessage(stateLoader, {
       channel: overrides.channel ?? "telegram",
       topicKey: overrides.topicKey ?? "topic-1",
       text: overrides.text ?? "Hello from assistant",
     });
+    // Set status to "ready" by default (simulates Cerebellum routing)
+    // unless explicitly overridden
+    if (overrides.status !== "pending") {
+      const db = getDatabase();
+      db.prepare(
+        "UPDATE outbox_messages SET status = $status WHERE id = $id",
+      ).run({ $status: overrides.status ?? "ready", $id: id });
+    }
+    return id;
   }
 
   // --- Auth ---
@@ -242,9 +252,34 @@ describe("POST /outbox/poll", () => {
     expect(body.messages).toHaveLength(0);
   });
 
+  test("ignores pending messages by default (only returns ready)", async () => {
+    // Seed a pending message (not routed by Cerebellum yet)
+    seedOutbox({ status: "pending" });
+
+    // Default poll should not return pending messages
+    const response = await post({ channel: "telegram" }, API_KEY);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { messages: unknown[] };
+    expect(body.messages).toHaveLength(0);
+  });
+
+  test("can poll for pending messages with status filter", async () => {
+    // Seed a pending message
+    seedOutbox({ status: "pending" });
+
+    // Poll with explicit status=pending
+    const response = await post(
+      { channel: "telegram", status: "pending" },
+      API_KEY,
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { messages: unknown[] };
+    expect(body.messages).toHaveLength(1);
+  });
+
   // --- Successful claims ---
 
-  test("claims a single pending outbox message", async () => {
+  test("claims a single ready outbox message", async () => {
     const outboxId = seedOutbox();
 
     const response = await post({ channel: "telegram" }, API_KEY);
@@ -371,11 +406,18 @@ describe("POST /outbox/poll", () => {
   // --- Payload ---
 
   test("returns parsed payload from outbox message", async () => {
-    enqueueOutboxMessage(stateLoader, {
+    const id = enqueueOutboxMessage(stateLoader, {
       channel: "telegram",
       topicKey: "topic-1",
       text: "text with payload",
       payload: { buttons: [{ label: "Yes" }] },
+    });
+    // Set status to ready (simulates Cerebellum routing)
+    const db = getDatabase();
+    db.prepare(
+      "UPDATE outbox_messages SET status = 'ready' WHERE id = $id",
+    ).run({
+      $id: id,
     });
 
     const response = await post({ channel: "telegram" }, API_KEY);
