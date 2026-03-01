@@ -7,9 +7,11 @@ import {
   expect,
   test,
 } from "bun:test";
+import { StateLoader } from "@shetty4l/core/state";
+import { Cerebellum } from "../src/cerebellum";
 import { CEREBELLUM_DEFAULTS } from "../src/cerebellum/types";
 import type { CortexConfig } from "../src/config";
-import { closeDatabase, initDatabase } from "../src/db";
+import { closeDatabase, getDatabase, initDatabase } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
 import { sendMessage } from "../src/send";
 import { startServer } from "../src/server";
@@ -93,6 +95,7 @@ function openaiResponse(content: string) {
 describe("sendMessage (end-to-end)", () => {
   let cortexServer: { port: number; stop: () => void };
   let loop: { stop: () => Promise<void> };
+  let cerebellum: Cerebellum;
   let baseUrl: string;
   let config: CortexConfig;
 
@@ -116,9 +119,15 @@ describe("sendMessage (end-to-end)", () => {
       createEmptyRegistry(),
       { pollBusyMs: 10, pollIdleMs: 50 },
     );
+    // Start Cerebellum to route pending -> ready
+    const db = getDatabase();
+    const stateLoader = new StateLoader(db);
+    cerebellum = new Cerebellum({ pollIntervalMs: 50 }, stateLoader);
+    cerebellum.start();
   });
 
   afterEach(async () => {
+    cerebellum.stop();
     await loop.stop();
   });
 
