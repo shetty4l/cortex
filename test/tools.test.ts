@@ -1,48 +1,12 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { ChannelRegistry } from "../src/channels";
-import { SilentChannel } from "../src/channels/silent";
-import { closeDatabase, initDatabase } from "../src/db";
+import { describe, expect, test } from "bun:test";
 import type { SkillRegistry } from "../src/skills";
 import {
   type BuiltinToolContext,
   createCombinedRegistry,
   resolveOutputChannel,
 } from "../src/tools";
-import { createSendMessageTool } from "../src/tools/send-message";
 
 // --- Helpers ---
-
-/** Minimal deliverable channel for testing. */
-class FakeDeliverChannel {
-  readonly name = "telegram";
-  readonly canReceive = true;
-  readonly canDeliver = true;
-  readonly mode = "realtime" as const;
-  readonly priority = 0;
-  async start() {}
-  async stop() {}
-  async sync() {}
-}
-
-function makeChannelRegistry(
-  ...extra: Array<{ name: string; canDeliver: boolean }>
-) {
-  const registry = new ChannelRegistry();
-  for (const ch of extra) {
-    registry.register({
-      name: ch.name,
-      canReceive: true,
-      canDeliver: ch.canDeliver,
-      mode: "realtime" as const,
-      priority: 0,
-      start: async () => {},
-      stop: async () => {},
-      sync: async () => {},
-    });
-  }
-  registry.register(new SilentChannel());
-  return registry;
-}
 
 function emptySkillRegistry(): SkillRegistry {
   return {
@@ -169,113 +133,5 @@ describe("createCombinedRegistry", () => {
 
     expect(combined.isMutating("mutating_tool")).toBe(true);
     expect(combined.isMutating("unknown")).toBe(false);
-  });
-});
-
-// --- send_message tool ---
-
-describe("send_message tool", () => {
-  beforeEach(() => {
-    initDatabase(":memory:");
-  });
-
-  afterEach(() => {
-    closeDatabase();
-  });
-
-  test("queues a message to a valid channel", async () => {
-    const channels = makeChannelRegistry({
-      name: "telegram",
-      canDeliver: true,
-    });
-    const tool = createSendMessageTool(channels);
-    const ctx: BuiltinToolContext = { topicKey: "trip-japan" };
-
-    const result = await tool.execute(
-      JSON.stringify({ channel: "telegram", text: "Hello!" }),
-      ctx,
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.content).toContain("telegram");
-    }
-  });
-
-  test("rejects unknown channel", async () => {
-    const channels = makeChannelRegistry({
-      name: "telegram",
-      canDeliver: true,
-    });
-    const tool = createSendMessageTool(channels);
-    const ctx: BuiltinToolContext = { topicKey: "trip-japan" };
-
-    const result = await tool.execute(
-      JSON.stringify({ channel: "email", text: "Hello!" }),
-      ctx,
-    );
-
-    expect(result.ok).toBe(false);
-  });
-
-  test("rejects channel that cannot deliver", async () => {
-    const channels = makeChannelRegistry({
-      name: "calendar",
-      canDeliver: false,
-    });
-    const tool = createSendMessageTool(channels);
-    const ctx: BuiltinToolContext = { topicKey: "trip-japan" };
-
-    const result = await tool.execute(
-      JSON.stringify({ channel: "calendar", text: "Hello!" }),
-      ctx,
-    );
-
-    expect(result.ok).toBe(false);
-  });
-
-  test("rejects system channel (thalamus)", async () => {
-    const channels = makeChannelRegistry({
-      name: "telegram",
-      canDeliver: true,
-    });
-    const tool = createSendMessageTool(channels);
-    const ctx: BuiltinToolContext = { topicKey: "trip-japan" };
-
-    const result = await tool.execute(
-      JSON.stringify({ channel: "thalamus", text: "Routed!" }),
-      ctx,
-    );
-
-    // thalamus is not registered as a channel, so should fail
-    expect(result.ok).toBe(false);
-  });
-
-  test("requires channel argument", async () => {
-    const channels = makeChannelRegistry({
-      name: "telegram",
-      canDeliver: true,
-    });
-    const tool = createSendMessageTool(channels);
-
-    const result = await tool.execute(JSON.stringify({ text: "Hello!" }), {
-      topicKey: "test",
-    });
-
-    expect(result.ok).toBe(false);
-  });
-
-  test("requires text argument", async () => {
-    const channels = makeChannelRegistry({
-      name: "telegram",
-      canDeliver: true,
-    });
-    const tool = createSendMessageTool(channels);
-
-    const result = await tool.execute(JSON.stringify({ channel: "telegram" }), {
-      topicKey: "test",
-    });
-
-    expect(result.ok).toBe(false);
   });
 });

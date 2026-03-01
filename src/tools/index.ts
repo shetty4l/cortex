@@ -3,7 +3,7 @@
  *
  * Built-in tools are first-party primitives that run inside the agent loop
  * with direct access to cortex internals (outbox, channels, config).
- * They are NOT namespaced — tool names are bare (e.g. "send_message").
+ * They are NOT namespaced — tool names are bare (e.g. "tasks_create").
  *
  * External skills loaded from skillDirs are namespaced as "skillId.toolName".
  * External tools from registered providers are namespaced as "providerId.toolName".

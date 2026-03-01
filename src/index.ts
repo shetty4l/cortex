@@ -30,7 +30,6 @@ import { StateLoader } from "./state";
 import { Thalamus } from "./thalamus";
 import { Tick } from "./tick";
 import { type BuiltinToolContext, createCombinedRegistry } from "./tools";
-import { createSendMessageTool } from "./tools/send-message";
 import { createTaskTools } from "./tools/tasks";
 import { createTopicTools } from "./tools/topics";
 import { VERSION } from "./version";
@@ -112,7 +111,6 @@ export async function startCortexRuntime(
   // Create built-in tools with mutable per-message context
   const builtinCtx: BuiltinToolContext = { topicKey: "" };
   const builtinTools = [
-    createSendMessageTool(channels, stateLoader),
     ...createTaskTools(stateLoader),
     ...createTopicTools(stateLoader),
   ];
