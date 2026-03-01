@@ -62,25 +62,6 @@ describe("topics_create tool", () => {
     expect(topic!.name).toBe("My Topic");
   });
 
-  test("creates topic with telegram_thread_id", async () => {
-    const tool = getTool("topics_create");
-    const ctx: BuiltinToolContext = { topicKey: "" };
-
-    const result = await tool.execute(
-      JSON.stringify({
-        key: "telegram-topic",
-        telegram_thread_id: 12345,
-      }),
-      ctx,
-    );
-
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      const data = JSON.parse(result.value.content);
-      expect(data.telegram_thread_id).toBe(12345);
-    }
-  });
-
   test("uses key as name when name not provided", async () => {
     const tool = getTool("topics_create");
     const ctx: BuiltinToolContext = { topicKey: "" };

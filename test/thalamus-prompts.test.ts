@@ -135,6 +135,7 @@ describe("parseSyncOutput", () => {
       items: [
         {
           topicKey: "japan-trip",
+          topicName: "Japan Trip",
           priority: 2,
           summary: "3 upcoming events for Japan trip",
           rawBufferIds: ["rb_1", "rb_2"],
@@ -146,6 +147,7 @@ describe("parseSyncOutput", () => {
     expect(result.ok).toBe(true);
     expect(result.items).toHaveLength(1);
     expect(result.items[0].topicKey).toBe("japan-trip");
+    expect(result.items[0].topicName).toBe("Japan Trip");
     expect(result.items[0].priority).toBe(2);
     expect(result.items[0].summary).toBe("3 upcoming events for Japan trip");
     expect(result.items[0].rawBufferIds).toEqual(["rb_1", "rb_2"]);
@@ -157,6 +159,7 @@ describe("parseSyncOutput", () => {
   "items": [
     {
       "topicKey": "work",
+      "topicName": "Work",
       "priority": 1,
       "summary": "Deadline today",
       "rawBufferIds": ["rb_3"]
@@ -169,11 +172,12 @@ describe("parseSyncOutput", () => {
     expect(result.ok).toBe(true);
     expect(result.items).toHaveLength(1);
     expect(result.items[0].topicKey).toBe("work");
+    expect(result.items[0].topicName).toBe("Work");
   });
 
   test("handles code fences without language tag", () => {
     const input = `\`\`\`
-{"items":[{"topicKey":"t","priority":0,"summary":"s","rawBufferIds":["rb_1"]}]}
+{"items":[{"topicKey":"t","topicName":"T","priority":0,"summary":"s","rawBufferIds":["rb_1"]}]}
 \`\`\``;
 
     const result = parseSyncOutput(input);
@@ -204,12 +208,29 @@ describe("parseSyncOutput", () => {
       items: [
         {
           topicKey: "valid",
+          topicName: "Valid",
           priority: 1,
           summary: "OK",
           rawBufferIds: ["rb_1"],
         },
-        { topicKey: "missing-priority", summary: "Bad", rawBufferIds: [] },
-        { priority: 1, summary: "Missing topic", rawBufferIds: [] },
+        {
+          topicKey: "missing-priority",
+          topicName: "Missing",
+          summary: "Bad",
+          rawBufferIds: [],
+        },
+        {
+          priority: 1,
+          topicName: "Missing Key",
+          summary: "Missing topic",
+          rawBufferIds: [],
+        },
+        {
+          topicKey: "missing-name",
+          priority: 1,
+          summary: "Missing name",
+          rawBufferIds: [],
+        },
         "not-an-object",
       ],
     });
@@ -231,12 +252,14 @@ describe("parseSyncOutput", () => {
       items: [
         {
           topicKey: "a",
+          topicName: "A",
           priority: 0,
           summary: "First",
           rawBufferIds: ["rb_1"],
         },
         {
           topicKey: "b",
+          topicName: "B",
           priority: 3,
           summary: "Second",
           rawBufferIds: ["rb_2", "rb_3"],
@@ -248,6 +271,8 @@ describe("parseSyncOutput", () => {
     expect(result.ok).toBe(true);
     expect(result.items).toHaveLength(2);
     expect(result.items[0].topicKey).toBe("a");
+    expect(result.items[0].topicName).toBe("A");
     expect(result.items[1].topicKey).toBe("b");
+    expect(result.items[1].topicName).toBe("B");
   });
 });

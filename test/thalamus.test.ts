@@ -21,6 +21,7 @@ import {
   Thalamus,
   type ThalamusConfig,
 } from "../src/thalamus";
+import { getTopicByKey, listTopics } from "../src/topics";
 
 let stateLoader: StateLoader;
 
@@ -214,6 +215,86 @@ describe("thalamus.receive()", () => {
     const msg = getInboxMessage(stateLoader, result.eventId);
     expect(msg?.idempotency_key).toBe("cli:my-ext-id");
   });
+
+  // --- Topic creation tests ---
+
+  test("creates Topic record when topicKey is provided", () => {
+    thalamus.receive(
+      makePayload({ data: { text: "msg", topicKey: "new-topic-key" } }),
+    );
+
+    const topic = getTopicByKey(stateLoader, "new-topic-key");
+    expect(topic).not.toBeNull();
+    expect(topic!.key).toBe("new-topic-key");
+    expect(topic!.name).toBe("new-topic-key");
+  });
+
+  test("creates Topic with custom name when topicName is provided", () => {
+    thalamus.receive(
+      makePayload({
+        data: {
+          text: "msg",
+          topicKey: "project-alpha",
+          topicName: "Project Alpha",
+        },
+      }),
+    );
+
+    const topic = getTopicByKey(stateLoader, "project-alpha");
+    expect(topic).not.toBeNull();
+    expect(topic!.key).toBe("project-alpha");
+    expect(topic!.name).toBe("Project Alpha");
+  });
+
+  test("reuses existing Topic record (no duplicate)", () => {
+    // First message creates the topic
+    thalamus.receive(
+      makePayload({
+        externalId: "ext-1",
+        data: { text: "msg1", topicKey: "reuse-key" },
+      }),
+    );
+
+    const firstTopic = getTopicByKey(stateLoader, "reuse-key");
+    expect(firstTopic).not.toBeNull();
+    const firstTopicId = firstTopic!.id;
+
+    // Second message should reuse the same topic
+    thalamus.receive(
+      makePayload({
+        externalId: "ext-2",
+        data: { text: "msg2", topicKey: "reuse-key" },
+      }),
+    );
+
+    const secondTopic = getTopicByKey(stateLoader, "reuse-key");
+    expect(secondTopic!.id).toBe(firstTopicId);
+
+    // Verify only one topic with this key exists
+    const allTopics = listTopics(stateLoader);
+    const matching = allTopics.filter((t) => t.key === "reuse-key");
+    expect(matching).toHaveLength(1);
+  });
+
+  test("does not create Topic when topicKey is null (General thread)", () => {
+    thalamus.receive(makePayload({ data: { text: "msg", topicKey: null } }));
+
+    // No topic should be created for null topicKey
+    const allTopics = listTopics(stateLoader);
+    expect(allTopics).toHaveLength(0);
+  });
+
+  test("creates Topic with channel name when topicKey not in data", () => {
+    thalamus.receive(
+      makePayload({ channel: "telegram", data: { text: "msg" } }),
+    );
+
+    // topicKey defaults to channel name
+    const topic = getTopicByKey(stateLoader, "telegram");
+    expect(topic).not.toBeNull();
+    expect(topic!.key).toBe("telegram");
+    expect(topic!.name).toBe("telegram");
+  });
 });
 
 describe("thalamus.receive() with mode=buffered", () => {
@@ -395,6 +476,7 @@ describe("thalamus.syncAll()", () => {
         makeSynapseResponse([
           {
             topicKey: "weekly-schedule",
+            topicName: "Weekly Schedule",
             priority: 2,
             summary: "2 upcoming appointments this week",
             rawBufferIds: ["rb_1", "rb_2"],
@@ -559,6 +641,148 @@ describe("thalamus.syncAll()", () => {
     expect(remaining).toHaveLength(0);
   });
 
+  // --- Topic creation during sync tests ---
+
+  test("creates Topic record with correct key and name during sync", async () => {
+    insertReceptorBuffer(stateLoader, {
+      channel: "calendar",
+      externalId: "cal-1",
+      content: "Meeting with Bob",
+      occurredAt: Date.now(),
+    });
+
+    mockSynapseHandler = () =>
+      Response.json(
+        makeSynapseResponse([
+          {
+            topicKey: "bob-meetings",
+            topicName: "Bob Meetings",
+            priority: 2,
+            summary: "Meeting with Bob",
+            rawBufferIds: ["rb_1"],
+          },
+        ]),
+      );
+
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
+    await thalamus.syncAll();
+
+    // Topic should be created with correct key and name
+    const topic = getTopicByKey(stateLoader, "bob-meetings");
+    expect(topic).not.toBeNull();
+    expect(topic!.key).toBe("bob-meetings");
+    expect(topic!.name).toBe("Bob Meetings");
+  });
+
+  test("reuses existing Topic during sync (no duplicate)", async () => {
+    // Pre-create a topic
+    const { createTopic } = await import("../src/topics");
+    const existingTopic = createTopic(stateLoader, {
+      key: "existing-topic",
+      name: "Existing Topic",
+    });
+
+    insertReceptorBuffer(stateLoader, {
+      channel: "calendar",
+      externalId: "cal-1",
+      content: "New event",
+      occurredAt: Date.now(),
+    });
+
+    mockSynapseHandler = () =>
+      Response.json(
+        makeSynapseResponse([
+          {
+            topicKey: "existing-topic",
+            topicName: "New Name Ignored",
+            priority: 2,
+            summary: "New event",
+            rawBufferIds: ["rb_1"],
+          },
+        ]),
+      );
+
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
+    await thalamus.syncAll();
+
+    // Should reuse existing topic, not create duplicate
+    const topic = getTopicByKey(stateLoader, "existing-topic");
+    expect(topic).not.toBeNull();
+    expect(topic!.id).toBe(existingTopic.id);
+    expect(topic!.name).toBe("Existing Topic"); // Name unchanged
+
+    // Verify only one topic with this key
+    const allTopics = listTopics(stateLoader);
+    const matching = allTopics.filter((t) => t.key === "existing-topic");
+    expect(matching).toHaveLength(1);
+  });
+
+  test("does not create Topic when topicKey is null during sync (General thread)", async () => {
+    insertReceptorBuffer(stateLoader, {
+      channel: "calendar",
+      externalId: "cal-1",
+      content: "General message",
+      occurredAt: Date.now(),
+    });
+
+    mockSynapseHandler = () =>
+      Response.json(
+        makeSynapseResponse([
+          {
+            topicKey: null,
+            topicName: "General",
+            priority: 5,
+            summary: "General message",
+            rawBufferIds: ["rb_1"],
+          },
+        ]),
+      );
+
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
+    await thalamus.syncAll();
+
+    // No topics should be created (topicKey is null)
+    const allTopics = listTopics(stateLoader);
+    expect(allTopics).toHaveLength(0);
+
+    // But inbox message should still be created
+    const msg = await claimNextInboxMessage(stateLoader);
+    expect(msg).not.toBeNull();
+    // topic_key is stored as empty string in inbox when null
+    expect(msg!.topic_key).toBe("");
+  });
+
+  test("uses topicKey as name when topicName not provided during sync", async () => {
+    insertReceptorBuffer(stateLoader, {
+      channel: "calendar",
+      externalId: "cal-1",
+      content: "Event",
+      occurredAt: Date.now(),
+    });
+
+    mockSynapseHandler = () =>
+      Response.json(
+        makeSynapseResponse([
+          {
+            topicKey: "unnamed-topic",
+            topicName: "", // Empty string - Thalamus uses topicKey as fallback
+            priority: 2,
+            summary: "Event summary",
+            rawBufferIds: ["rb_1"],
+          },
+        ]),
+      );
+
+    const thalamus = new Thalamus(makeThalamusConfig(stateLoader));
+    await thalamus.syncAll();
+
+    // Topic should use key as name when topicName is empty
+    const topic = getTopicByKey(stateLoader, "unnamed-topic");
+    expect(topic).not.toBeNull();
+    expect(topic!.key).toBe("unnamed-topic");
+    expect(topic!.name).toBe("unnamed-topic");
+  });
+
   test("retries with correction prompt on parse failure", async () => {
     insertReceptorBuffer(stateLoader, {
       channel: "calendar",
@@ -593,6 +817,7 @@ describe("thalamus.syncAll()", () => {
         makeSynapseResponse([
           {
             topicKey: "meeting",
+            topicName: "Meeting",
             priority: 1,
             summary: "Meeting scheduled",
             rawBufferIds: ["rb_1"],

@@ -28,7 +28,6 @@ export class Topic extends CollectionEntity {
   @Field("string") @Index() status: string = "active";
   @Field("number") starts_at: number | null = null;
   @Field("number") ends_at: number | null = null;
-  @Field("number") telegram_thread_id: number | null = null;
 
   async save(): Promise<void> {
     throw new Error("Not bound to StateLoader");
@@ -45,7 +44,6 @@ export interface CreateTopicInput {
   description?: string;
   starts_at?: number;
   ends_at?: number;
-  telegram_thread_id?: number;
 }
 
 /**
@@ -62,7 +60,6 @@ export function createTopic(
     description: input.description ?? null,
     starts_at: input.starts_at ?? null,
     ends_at: input.ends_at ?? null,
-    telegram_thread_id: input.telegram_thread_id ?? null,
   });
 }
 
@@ -89,15 +86,16 @@ export function getTopicByKey(
 
 /**
  * Get a topic by key, or create it if it doesn't exist.
- * When creating, uses the key as both the key and name.
+ * When creating, uses the provided name or defaults to the key.
  */
 export function getOrCreateTopicByKey(
   stateLoader: StateLoader,
   key: string,
+  name?: string,
 ): Topic {
   const existing = getTopicByKey(stateLoader, key);
   if (existing) return existing;
-  return createTopic(stateLoader, { key, name: key });
+  return createTopic(stateLoader, { key, name: name ?? key });
 }
 
 /**
@@ -122,15 +120,7 @@ export async function updateTopic(
   stateLoader: StateLoader,
   id: string,
   updates: Partial<
-    Pick<
-      Topic,
-      | "name"
-      | "description"
-      | "status"
-      | "starts_at"
-      | "ends_at"
-      | "telegram_thread_id"
-    >
+    Pick<Topic, "name" | "description" | "status" | "starts_at" | "ends_at">
   >,
 ): Promise<void> {
   const topic = stateLoader.get(Topic, id);
@@ -142,9 +132,6 @@ export async function updateTopic(
   if (updates.status !== undefined) topic.status = updates.status;
   if (updates.starts_at !== undefined) topic.starts_at = updates.starts_at;
   if (updates.ends_at !== undefined) topic.ends_at = updates.ends_at;
-  if (updates.telegram_thread_id !== undefined) {
-    topic.telegram_thread_id = updates.telegram_thread_id;
-  }
 
   await topic.save();
 }

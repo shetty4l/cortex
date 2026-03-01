@@ -13,7 +13,7 @@ import {
   ThalamusState,
 } from "../state";
 import { chat } from "../synapse";
-import { listTopics } from "../topics";
+import { getOrCreateTopicByKey, listTopics } from "../topics";
 import { formatChannelData } from "./formatters";
 import {
   buildTriageUserPrompt,
@@ -44,6 +44,7 @@ export interface ReceiveResult {
 export interface ThalamusConfig {
   synapseUrl: string;
   thalamusModels: string[];
+  thalamusExtractionModel?: string;
   synapseTimeoutMs: number;
   syncIntervalMs: number;
   stateLoader: IStateLoader;
@@ -219,13 +220,18 @@ export class Thalamus {
     );
     const userPrompt = buildTriageUserPrompt(channelBuffers, existingTopics);
 
+    // Use extraction model if configured, otherwise fall back to thalamus models
+    const models = config.thalamusExtractionModel
+      ? [config.thalamusExtractionModel]
+      : config.thalamusModels;
+
     // Call Synapse via shared chat() — gets model fallback for free
     const chatResult = await chat(
       [
         { role: "system", content: THALAMUS_TRIAGE_SYSTEM_PROMPT },
         { role: "user", content: userPrompt },
       ],
-      config.thalamusModels,
+      models,
       config.synapseUrl,
       { temperature: 0.1, timeoutMs: config.synapseTimeoutMs },
     );
@@ -248,7 +254,7 @@ export class Thalamus {
           { role: "assistant", content: messageContent },
           { role: "user", content: THALAMUS_RETRY_PROMPT },
         ],
-        config.thalamusModels,
+        models,
         config.synapseUrl,
         { temperature: 0.1, timeoutMs: config.synapseTimeoutMs },
       );
@@ -273,6 +279,13 @@ export class Thalamus {
 
     // Create inbox messages for each triaged group
     for (const item of items) {
+      // Create topic if topicKey is non-null (null = General thread, no Topic record)
+      if (item.topicKey !== null) {
+        // Use topicName from LLM if provided, otherwise default to key
+        const topicName = item.topicName || item.topicKey;
+        getOrCreateTopicByKey(this.stateLoader!, item.topicKey, topicName);
+      }
+
       const idempotencyHash = [...item.rawBufferIds].sort().join(",");
       const idempotencyKey = `thalamus-sync:${item.topicKey}:${idempotencyHash}`;
 
@@ -343,22 +356,41 @@ export class Thalamus {
     const text = formatChannelData(channel, data);
     const idempotencyKey = `${channel}:${externalId}`;
 
-    // Extract topicKey from data if present, otherwise use channel name
-    const topicKey =
-      data !== null &&
-      typeof data === "object" &&
-      "topicKey" in (data as Record<string, unknown>) &&
-      typeof (data as Record<string, unknown>).topicKey === "string"
-        ? ((data as Record<string, unknown>).topicKey as string)
-        : channel;
+    // Extract topicKey from data if present
+    // null means General thread (no Topic record), undefined falls back to channel
+    const dataObj =
+      data !== null && typeof data === "object"
+        ? (data as Record<string, unknown>)
+        : null;
+
+    const hasExplicitTopicKey =
+      dataObj !== null &&
+      "topicKey" in dataObj &&
+      (typeof dataObj.topicKey === "string" || dataObj.topicKey === null);
+
+    const topicKey = hasExplicitTopicKey
+      ? (dataObj!.topicKey as string | null)
+      : channel;
+
+    // Extract topicName from data if present (for creating new topics)
+    const topicName =
+      dataObj !== null &&
+      "topicName" in dataObj &&
+      typeof dataObj.topicName === "string"
+        ? dataObj.topicName
+        : undefined;
+
+    // Create topic if topicKey is non-null (null = General thread, no Topic record)
+    if (topicKey !== null) {
+      getOrCreateTopicByKey(loader, topicKey, topicName ?? topicKey);
+    }
 
     // Extract userId from data if present, otherwise use "system"
     const userId =
-      data !== null &&
-      typeof data === "object" &&
-      "userId" in (data as Record<string, unknown>) &&
-      typeof (data as Record<string, unknown>).userId === "string"
-        ? ((data as Record<string, unknown>).userId as string)
+      dataObj !== null &&
+      "userId" in dataObj &&
+      typeof dataObj.userId === "string"
+        ? dataObj.userId
         : "system";
 
     const occurredAtMs = new Date(occurredAt).getTime();
