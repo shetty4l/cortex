@@ -694,6 +694,8 @@ export function startProcessingLoop(
                   channel: resolveOutputChannel(message.channel, config),
                   topicKey: message.topic_key,
                   text: responseText,
+                  messageType: message.message_type,
+                  responseTo: message.id,
                 });
 
                 await completeInboxMessage(

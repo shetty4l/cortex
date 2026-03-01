@@ -13,6 +13,7 @@ import {
   PersistedCollection,
   type StateLoader,
 } from "@shetty4l/core/state";
+import type { MessageType } from "../cerebellum/types";
 
 /**
  * InboxMessage entity persisted to SQLite via StateLoader.
@@ -39,6 +40,8 @@ export class InboxMessage extends CollectionEntity {
   @Field("number") processing_ms: number | null = null;
   /** Links to approval if this message triggered one; set when approval created */
   @Field("string") approvalId: string | null = null;
+  /** Message type for Cerebellum routing. Default: "conversational" */
+  @Field("string") @Index() message_type: MessageType = "conversational";
 
   async save(): Promise<void> {
     throw new Error("Not bound to StateLoader");
@@ -61,6 +64,8 @@ export interface EnqueueInboxInput {
   idempotencyKey: string;
   metadata?: Record<string, unknown>;
   priority?: number;
+  /** Message type for Cerebellum routing. Default: "conversational" */
+  messageType?: MessageType;
 }
 
 export interface EnqueueResult {
@@ -140,6 +145,7 @@ export function enqueueInboxMessage(
     next_attempt_at: 0,
     error: null,
     processing_ms: null,
+    message_type: input.messageType ?? "conversational",
   });
 
   return { id: message.id, eventId: message.id, duplicate: false };
