@@ -8,6 +8,7 @@
 import { createLogger } from "@shetty4l/core/log";
 import { ok } from "@shetty4l/core/result";
 import { onShutdown } from "@shetty4l/core/signals";
+import { Cerebellum } from "./cerebellum";
 import { ChannelRegistry } from "./channels";
 import { SilentChannel } from "./channels/silent";
 import type { CortexConfig } from "./config";
@@ -144,10 +145,14 @@ export async function startCortexRuntime(
   const hippocampus = new Hippocampus();
   const ras = new RAS();
 
+  const cerebellum = new Cerebellum(config.cerebellum, stateLoader);
+  cerebellum.start();
+
   return {
     async stop() {
       await ras.stop();
       await hippocampus.stop();
+      cerebellum.stop();
       await tick.stop();
       await thalamus.stop();
       await channels.stopAll();
