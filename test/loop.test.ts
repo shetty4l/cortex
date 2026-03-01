@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ok } from "@shetty4l/core/result";
 import { StateLoader } from "@shetty4l/core/state";
+import { CEREBELLUM_DEFAULTS } from "../src/cerebellum/types";
 import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
@@ -137,6 +138,7 @@ function testConfig(): CortexConfig {
     synapseTimeoutMs: 60_000,
     thalamusModels: ["test-model"],
     thalamusSyncIntervalMs: 21_600_000,
+    cerebellum: CEREBELLUM_DEFAULTS,
   };
 }
 

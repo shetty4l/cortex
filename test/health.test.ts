@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { CEREBELLUM_DEFAULTS } from "../src/cerebellum/types";
 import type { CortexConfig } from "../src/config";
 import { initDatabase } from "../src/db";
 import { startServer } from "../src/server";
@@ -35,6 +36,7 @@ describe("health endpoint", () => {
       synapseTimeoutMs: 60_000,
       thalamusModels: ["test-model"],
       thalamusSyncIntervalMs: 21_600_000,
+      cerebellum: CEREBELLUM_DEFAULTS,
     };
 
     initDatabase(":memory:");

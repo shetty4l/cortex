@@ -7,6 +7,7 @@ import {
   test,
 } from "bun:test";
 import { StateLoader } from "@shetty4l/core/state";
+import { CEREBELLUM_DEFAULTS } from "../src/cerebellum/types";
 import type { CortexConfig } from "../src/config";
 import {
   closeDatabase,
@@ -45,6 +46,7 @@ function makeConfig(): CortexConfig {
     synapseTimeoutMs: 60_000,
     thalamusModels: ["test-model"],
     thalamusSyncIntervalMs: 21_600_000,
+    cerebellum: CEREBELLUM_DEFAULTS,
   };
 }
 

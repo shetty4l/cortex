@@ -32,6 +32,7 @@ import {
   proposeApproval,
   resolveApproval,
 } from "../src/approval";
+import { CEREBELLUM_DEFAULTS } from "../src/cerebellum/types";
 import type { CortexConfig } from "../src/config";
 import { closeDatabase, getDatabase, initDatabase } from "../src/db";
 import {
@@ -107,6 +108,7 @@ function testConfig(): CortexConfig {
     synapseTimeoutMs: 60_000,
     thalamusModels: ["test-model"],
     thalamusSyncIntervalMs: 21_600_000,
+    cerebellum: CEREBELLUM_DEFAULTS,
   };
 }
 

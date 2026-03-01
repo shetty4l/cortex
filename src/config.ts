@@ -13,6 +13,7 @@ import { expandPath, loadJsonConfig, parsePort } from "@shetty4l/core/config";
 import { createLogger } from "@shetty4l/core/log";
 import type { Result } from "@shetty4l/core/result";
 import { err, ok } from "@shetty4l/core/result";
+import { CEREBELLUM_DEFAULTS, type CerebellumConfig } from "./cerebellum/types";
 
 const log = createLogger("cortex");
 
@@ -70,6 +71,9 @@ export interface CortexConfig {
   // Output routing
   silentChannelAlias?: string;
 
+  // Cerebellum
+  cerebellum: CerebellumConfig;
+
   // Debug logging
   debugPipeline?: boolean;
   debugPrompt?: boolean;
@@ -101,6 +105,7 @@ const DEFAULTS: Omit<
   synapseTimeoutMs: 60_000,
   thalamusModels: ["gpt-oss:20b"],
   thalamusSyncIntervalMs: 21_600_000,
+  cerebellum: CEREBELLUM_DEFAULTS,
 };
 
 // --- Validation ---
@@ -263,6 +268,32 @@ function validateConfig(raw: unknown): Result<Partial<CortexConfig>> {
       string,
       Record<string, unknown>
     >;
+  }
+
+  // Cerebellum config validation
+  if (obj.cerebellum !== undefined) {
+    if (
+      typeof obj.cerebellum !== "object" ||
+      obj.cerebellum === null ||
+      Array.isArray(obj.cerebellum)
+    ) {
+      return err("cerebellum: must be an object");
+    }
+    const cerebellumObj = obj.cerebellum as Record<string, unknown>;
+    const cerebellumResult: Partial<CerebellumConfig> = {};
+
+    if (cerebellumObj.pollIntervalMs !== undefined) {
+      const val = cerebellumObj.pollIntervalMs;
+      if (typeof val !== "number" || !Number.isInteger(val)) {
+        return err("cerebellum.pollIntervalMs: must be an integer");
+      }
+      if (val < 100) {
+        return err("cerebellum.pollIntervalMs: must be >= 100");
+      }
+      cerebellumResult.pollIntervalMs = val;
+    }
+
+    result.cerebellum = { ...CEREBELLUM_DEFAULTS, ...cerebellumResult };
   }
 
   // Boolean fields

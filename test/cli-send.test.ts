@@ -7,6 +7,7 @@ import {
   expect,
   test,
 } from "bun:test";
+import { CEREBELLUM_DEFAULTS } from "../src/cerebellum/types";
 import type { CortexConfig } from "../src/config";
 import { closeDatabase, initDatabase } from "../src/db";
 import { startProcessingLoop } from "../src/loop";
@@ -68,6 +69,7 @@ function testConfig(port: number): CortexConfig {
     synapseTimeoutMs: 60_000,
     thalamusModels: ["test-model"],
     thalamusSyncIntervalMs: 21_600_000,
+    cerebellum: CEREBELLUM_DEFAULTS,
   };
 }
 
