@@ -97,7 +97,6 @@ export async function startCortexRuntime(
   const thalamus = new Thalamus({
     synapseUrl: config.synapseUrl,
     thalamusModels: config.thalamusModels,
-    thalamusExtractionModel: config.thalamusExtractionModel,
     synapseTimeoutMs: config.synapseTimeoutMs,
     syncIntervalMs: config.thalamusSyncIntervalMs,
     stateLoader,
