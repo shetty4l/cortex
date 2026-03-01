@@ -17,6 +17,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { createLogger } from "@shetty4l/core/log";
+import type { MessageType } from "./cerebellum/types";
 import type { Memory } from "./engram";
 import type { ChatMessage } from "./synapse";
 import { renderTemplate } from "./template";
@@ -47,6 +48,22 @@ Keep responses concise.`;
 const MEMORY_HEADER = "What you know about the user:";
 
 const SUMMARY_HEADER = "Current conversation context:";
+
+// --- Message type behavioral addenda ---
+
+/**
+ * Behavioral instructions appended to the system prompt based on message_type.
+ * These guide the model to respond appropriately for non-conversational messages.
+ */
+const MESSAGE_TYPE_ADDENDA: Record<MessageType, string | null> = {
+  conversational: null, // Normal behavior, no addendum
+  notification:
+    "IMPORTANT: This is a notification message. Inform the user, offer actions, do NOT ask clarifying questions.",
+  reminder:
+    "IMPORTANT: This is a reminder message. Be brief and direct, state what's being reminded.",
+  callback:
+    "IMPORTANT: This is a callback message. Acknowledge the action, execute or confirm.",
+};
 
 // --- System prompt loader ---
 
@@ -104,6 +121,8 @@ export interface BuildPromptOpts {
   turns: ChatMessage[];
   /** The current user message text. */
   userText: string;
+  /** Message type for behavioral adjustments (default: "conversational"). */
+  messageType?: MessageType;
 }
 
 /**
@@ -113,14 +132,16 @@ export interface BuildPromptOpts {
  * - System message (pre-rendered, frozen prefix for cache)
  * - Memory block appended to system message (if memories present)
  * - Topic summary appended to system message (if summary present)
+ * - Message type behavioral addendum (if non-conversational)
  * - Turn history (alternating user/assistant messages)
  * - Current user message (always present)
  */
 export function buildPrompt(opts: BuildPromptOpts): ChatMessage[] {
-  const { systemPrompt, memories, topicSummary, turns, userText } = opts;
+  const { systemPrompt, memories, topicSummary, turns, userText, messageType } =
+    opts;
   const messages: ChatMessage[] = [];
 
-  // 1. System message (with optional memory block and topic summary)
+  // 1. System message (with optional memory block, topic summary, and behavioral addendum)
   let systemContent = systemPrompt;
 
   if (memories.length > 0) {
@@ -130,6 +151,14 @@ export function buildPrompt(opts: BuildPromptOpts): ChatMessage[] {
 
   if (topicSummary) {
     systemContent += `\n\n${SUMMARY_HEADER}\n${topicSummary}`;
+  }
+
+  // Append behavioral addendum for non-conversational message types
+  const addendum = messageType
+    ? MESSAGE_TYPE_ADDENDA[messageType]
+    : MESSAGE_TYPE_ADDENDA.conversational;
+  if (addendum) {
+    systemContent += `\n\n${addendum}`;
   }
 
   messages.push({ role: "system", content: systemContent });
