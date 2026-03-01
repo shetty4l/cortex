@@ -13,6 +13,7 @@ import {
   PersistedCollection,
   type StateLoader,
 } from "@shetty4l/core/state";
+import type { MessageType } from "../cerebellum/types";
 
 /**
  * OutboxMessage entity persisted to SQLite via StateLoader.
@@ -34,6 +35,12 @@ export class OutboxMessage extends CollectionEntity {
   @Field("string") last_error: string | null = null;
   @Field("number") @Index() created_at_ms: number = 0;
 
+  // Routing fields for Cerebellum
+  @Field("string") @Index() message_type: MessageType = "conversational";
+  @Field("string") urgency: string = "normal";
+  @Field("number") scheduled_for: number | null = null;
+  @Field("string") response_to: string | null = null;
+
   async save(): Promise<void> {
     throw new Error("Not bound to StateLoader");
   }
@@ -50,6 +57,14 @@ export interface EnqueueOutboxInput {
   topicKey: string;
   text: string;
   payload?: Record<string, unknown>;
+  /** Message type for Cerebellum routing. Default: "conversational" */
+  messageType?: MessageType;
+  /** Urgency level for routing. Default: "normal" */
+  urgency?: string;
+  /** Scheduled delivery time (epoch ms). Default: null (immediate) */
+  scheduledFor?: number | null;
+  /** ID of message this is a response to. Default: null */
+  responseTo?: string | null;
 }
 
 export interface OutboxPollResult {
@@ -107,6 +122,11 @@ export function enqueueOutboxMessage(
     lease_expires_at: null,
     last_error: null,
     created_at_ms: now,
+    // Routing fields
+    message_type: input.messageType ?? "conversational",
+    urgency: input.urgency ?? "normal",
+    scheduled_for: input.scheduledFor ?? null,
+    response_to: input.responseTo ?? null,
   });
 
   return message.id;

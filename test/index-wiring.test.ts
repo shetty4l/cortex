@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
+import { CEREBELLUM_DEFAULTS } from "../src/cerebellum/types";
 import type { Channel } from "../src/channels";
 import { ChannelRegistry } from "../src/channels";
 import type { CortexConfig } from "../src/config";
@@ -31,6 +32,7 @@ function testConfig(overrides: Partial<CortexConfig> = {}): CortexConfig {
     synapseTimeoutMs: 60_000,
     thalamusModels: ["test-model"],
     thalamusSyncIntervalMs: 21_600_000,
+    cerebellum: CEREBELLUM_DEFAULTS,
     ...overrides,
   };
 }
