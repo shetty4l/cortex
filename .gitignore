@@ -26,3 +26,7 @@ Thumbs.db
 # Logs
 logs/
 *.log
+
+# E2E tests
+e2e/node_modules/
+e2e/results/

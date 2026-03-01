@@ -48,7 +48,13 @@ export function resolveOutputChannel(
   inputChannel: string,
   config: Pick<CortexConfig, "silentChannelAlias">,
 ): string {
-  const channel = SYSTEM_CHANNELS.has(inputChannel) ? "silent" : inputChannel;
+  // TODO: Remove when Cerebellum slow-path routes tick messages properly
+  const channel =
+    inputChannel === "tick"
+      ? "telegram"
+      : SYSTEM_CHANNELS.has(inputChannel)
+        ? "silent"
+        : inputChannel;
   if (channel === "silent" && config.silentChannelAlias) {
     return config.silentChannelAlias;
   }

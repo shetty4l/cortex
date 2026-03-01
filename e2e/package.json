@@ -1,0 +1,15 @@
+{
+  "name": "wilson-e2e",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun run tests/runner.ts",
+    "test:one": "bun run tests/runner.ts --only",
+    "cleanup": "bun run scripts/cleanup.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.0.0"
+  }
+}
