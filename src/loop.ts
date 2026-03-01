@@ -462,6 +462,7 @@ export function startProcessingLoop(
               topicSummary,
               turns,
               userText: message.text,
+              messageType: message.message_type,
             });
 
             // Emit context event (char counts only)
