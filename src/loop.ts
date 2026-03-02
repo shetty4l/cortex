@@ -44,7 +44,7 @@ import {
 } from "./inbox";
 import { enqueueOutboxMessage } from "./outbox";
 import { buildPrompt, loadAndRenderSystemPrompt } from "./prompt";
-import type { SkillRegistry } from "./skills";
+import type { SkillRegistry, SkillRuntimeContext } from "./skills";
 import {
   ExtractionCursorState,
   type StateLoader as IStateLoader,
@@ -326,24 +326,96 @@ export function startProcessingLoop(
                 return;
               }
 
-              // Approve: resolve approval, re-queue original message for processing
+              // Approve: execute the stored tool call, then re-queue for continuation
               await resolveApproval(stateLoader, approvalId, "approved");
               const originalMessage = getInboxMessage(
                 stateLoader,
                 approval.inboxMessageId,
               );
-              if (originalMessage) {
-                // Re-queue: set status back to pending so it gets picked up
+
+              if (
+                originalMessage &&
+                approval.toolName &&
+                approval.toolArgsJson
+              ) {
+                // Build runtime context for tool execution
+                const toolCtx: SkillRuntimeContext = {
+                  nowIso: new Date().toISOString(),
+                  config:
+                    config.skillConfig?.[approval.toolName.split(".")[0]] ?? {},
+                  db: {
+                    query: () => {
+                      throw new Error("db not available in approval context");
+                    },
+                    run: () => {
+                      throw new Error("db not available in approval context");
+                    },
+                  },
+                  http: { fetch: globalThis.fetch },
+                };
+
+                // Execute the approved tool directly
+                log(
+                  `[${message.topic_key}] executing approved tool: ${approval.toolName}`,
+                );
+                const toolResult = await registry.executeTool(
+                  approval.toolName,
+                  approval.toolArgsJson,
+                  toolCtx,
+                );
+
+                if (!toolResult.ok) {
+                  // Tool failed - retry the original message
+                  log(
+                    `[${message.topic_key}] approved tool failed: ${toolResult.error}, will retry`,
+                  );
+                  originalMessage.status = "pending";
+                  originalMessage.next_attempt_at = Date.now() + 5000; // Retry in 5s
+                  originalMessage.error = `Approved tool failed: ${toolResult.error}`;
+                  await originalMessage.save();
+
+                  enqueueOutboxMessage(stateLoader, {
+                    channel: resolveOutputChannel(message.channel, config),
+                    topicKey: message.topic_key,
+                    text: "Approved, but execution failed. Retrying...",
+                  });
+                } else {
+                  // Tool succeeded - store result and re-queue for LLM continuation
+                  log(
+                    `[${message.topic_key}] approved tool succeeded: ${approval.toolName}`,
+                  );
+
+                  originalMessage.approval_tool_result = JSON.stringify({
+                    tool_call_id: `approved_${approval.id}`,
+                    name: approval.toolName,
+                    arguments: approval.toolArgsJson,
+                    content: toolResult.value.content,
+                  });
+                  originalMessage.status = "pending";
+                  originalMessage.next_attempt_at = 0;
+                  await originalMessage.save();
+
+                  enqueueOutboxMessage(stateLoader, {
+                    channel: resolveOutputChannel(message.channel, config),
+                    topicKey: message.topic_key,
+                    text: "Approved. Processing your request...",
+                  });
+                }
+              } else if (originalMessage) {
+                // No tool stored - just re-queue (fallback, shouldn't happen)
+                log(
+                  `[${message.topic_key}] approval has no stored tool, re-queuing message`,
+                );
                 originalMessage.status = "pending";
                 originalMessage.next_attempt_at = 0;
                 await originalMessage.save();
-              }
 
-              enqueueOutboxMessage(stateLoader, {
-                channel: resolveOutputChannel(message.channel, config),
-                topicKey: message.topic_key,
-                text: "Approved. Processing your request...",
-              });
+                enqueueOutboxMessage(stateLoader, {
+                  channel: resolveOutputChannel(message.channel, config),
+                  topicKey: message.topic_key,
+                  text: "Approved. Processing your request...",
+                });
+              }
 
               const processingMs = Math.round(performance.now() - startMs);
               await completeInboxMessage(stateLoader, message.id, processingMs);
@@ -464,6 +536,49 @@ export function startProcessingLoop(
               userText: message.text,
               messageType: message.message_type,
             });
+
+            // 4b. Inject pre-executed tool result if this is a re-run after approval
+            if (approvalGranted && message.approval_tool_result) {
+              try {
+                const stored = JSON.parse(message.approval_tool_result);
+
+                // Inject assistant message with tool call
+                messages.push({
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: stored.tool_call_id,
+                      type: "function",
+                      function: {
+                        name: stored.name,
+                        arguments: stored.arguments,
+                      },
+                    },
+                  ],
+                });
+
+                // Inject tool result
+                messages.push({
+                  role: "tool",
+                  content: stored.content,
+                  tool_call_id: stored.tool_call_id,
+                  name: stored.name,
+                });
+
+                log(
+                  `[${message.topic_key}] injected pre-executed tool result for ${stored.name}`,
+                );
+
+                // Clear after use
+                message.approval_tool_result = null;
+                await message.save();
+              } catch (e) {
+                log(
+                  `[${message.topic_key}] failed to parse approval_tool_result: ${e}`,
+                );
+              }
+            }
 
             // Emit context event (char counts only)
             if (debug.isEnabled()) {

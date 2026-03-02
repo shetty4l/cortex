@@ -766,4 +766,106 @@ describe("approval gate - processing loop integration", () => {
     const finalResponse = outbox.find((m) => m.text.includes("deleted"));
     expect(finalResponse).toBeTruthy();
   });
+
+  test("approved tool executes directly on approval (not on LLM re-run)", async () => {
+    // This test verifies: the stored tool call executes immediately on approval,
+    // regardless of what the LLM might return on a second call.
+    //
+    // BUG: Currently, approval just re-queues the message and hopes the LLM
+    // makes the same tool call again. This test proves that's unreliable.
+
+    let toolExecuted = false;
+    let executedArgs = "";
+
+    const mockRegistry: SkillRegistry = {
+      tools: [
+        {
+          name: "dangerous.delete",
+          description: "Mutating tool",
+          inputSchema: {
+            type: "object",
+            properties: { id: { type: "string" } },
+          },
+          mutatesState: true,
+        },
+      ],
+      async executeTool(name: string, argsJson: string) {
+        if (name === "dangerous.delete") {
+          toolExecuted = true;
+          executedArgs = argsJson;
+          return ok({ content: `Deleted ${JSON.parse(argsJson).id}` });
+        }
+        return ok({ content: "ok" });
+      },
+      isMutating(name) {
+        return name === "dangerous.delete";
+      },
+    };
+
+    let callNum = 0;
+    mockSynapseHandler = async () => {
+      callNum++;
+      if (callNum === 1) {
+        // First: LLM requests tool call with id=999
+        return Response.json(
+          openaiToolCallResponse([
+            { name: "dangerous.delete", arguments: '{"id":"999"}' },
+          ]),
+        );
+      }
+      if (callNum === 2) {
+        // Second: approval message generation
+        return Response.json(openaiResponse("Delete item 999?"));
+      }
+      // Third+: After approval, LLM returns DIFFERENT response (simulating non-determinism)
+      // It does NOT call the tool again - just returns text
+      return Response.json(openaiResponse("What would you like me to delete?"));
+    };
+
+    const { id: inboxMessageId } = ingestMessage({
+      text: "Delete item 999",
+      topicKey: "topic-direct-exec",
+    });
+
+    const loop = startProcessingLoop(
+      testConfig(),
+      mockRegistry,
+      makeFastLoop(),
+    );
+
+    // Wait for approval to be created
+    await waitFor(
+      () => listPendingApprovals(stateLoader, "topic-direct-exec").length > 0,
+    );
+    const approval = listPendingApprovals(stateLoader, "topic-direct-exec")[0];
+
+    // Verify tool details are stored in approval
+    expect(approval.toolName).toBe("dangerous.delete");
+    expect(approval.toolArgsJson).toBe('{"id":"999"}');
+
+    // Tool should NOT have executed yet
+    expect(toolExecuted).toBe(false);
+
+    // Send approval response
+    ingestMessage({
+      text: "approve",
+      topicKey: "topic-direct-exec",
+      metadata: {
+        type: "approval_response",
+        approvalId: approval.id,
+        action: "approve",
+      },
+    });
+
+    // Wait for original message to complete
+    await waitFor(
+      () => getInboxMessage(stateLoader, inboxMessageId)?.status === "done",
+    );
+    await loop.stop();
+
+    // CRITICAL ASSERTION: Tool was executed with the STORED args from approval
+    // This should FAIL with current implementation (bug) and PASS after fix
+    expect(toolExecuted).toBe(true);
+    expect(executedArgs).toEqual('{"id":"999"}');
+  });
 });
