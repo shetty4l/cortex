@@ -40,6 +40,8 @@ export class InboxMessage extends CollectionEntity {
   @Field("number") processing_ms: number | null = null;
   /** Links to approval if this message triggered one; set when approval created */
   @Field("string") approvalId: string | null = null;
+  /** Tool result from approved tool execution (JSON string with tool_call_id, name, arguments, content) */
+  @Field("string") approval_tool_result: string | null = null;
   /** Message type for Cerebellum routing. Default: "conversational" */
   @Field("string") @Index() message_type: MessageType = "conversational";
 
