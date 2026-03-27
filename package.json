@@ -7,7 +7,7 @@
     "@types/bun": "latest",
     "husky": "^9.1.7",
     "oxlint": "^1.50.0",
-    "typescript": "^5.9.3"
+    "typescript": "^6.0.2"
   },
   "bin": {
     "cortex": "./src/cli.ts"
